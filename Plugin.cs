@@ -15,6 +15,7 @@ namespace GridNrootUpdate;
 public sealed class Plugin : IDalamudPlugin
 {
     private const string CommandName = "/thegrid";
+    private const byte MaleNonPlayerCharacterCollectionType = 3;
     private readonly CancellationTokenSource lifetime = new();
     private readonly GitHubReleaseClient github = new();
     private readonly PenumbraIpc penumbra;
@@ -471,9 +472,11 @@ public sealed class Plugin : IDalamudPlugin
         if (collection is null)
         {
             mapping.LastStatus = $"Collection '{mapping.CollectionName}' does not exist.";
+            PluginService.Chat.PrintError($"Collection '{mapping.CollectionName}' does not exist. Create it in Penumbra first, then run /thegrid assign.", "TheGrid");
             return;
         }
 
+        var simpleAssignmentStatus = AssignMaleNonPlayerCharacters(mapping, collection.Value);
         var assigned = 0;
         for (var i = 0; i < PluginService.Objects.Length; i++)
         {
@@ -488,9 +491,21 @@ public sealed class Plugin : IDalamudPlugin
                 PluginService.Log.Warning("Could not assign collection {Collection} to {Npc} at object index {Index}: {Code}", mapping.CollectionName, mapping.NpcName, i, errorCode);
         }
 
-        mapping.LastStatus = assigned == 0
+        var objectAssignmentStatus = assigned == 0
             ? $"No loaded NPC named '{mapping.NpcName}' found. Assignment will retry on territory changes."
             : $"Assigned '{mapping.CollectionName}' to {assigned} loaded '{mapping.NpcName}' object(s).";
+
+        mapping.LastStatus = $"{objectAssignmentStatus} {simpleAssignmentStatus}";
+    }
+
+    private string AssignMaleNonPlayerCharacters(ModMapping mapping, (Guid Id, string Name) collection)
+    {
+        var (errorCode, _) = penumbra.SetCollection(MaleNonPlayerCharacterCollectionType, collection.Id);
+        if (IsSuccess(errorCode))
+            return $"Assigned '{mapping.CollectionName}' to Male Non-Player Characters.";
+
+        PluginService.Log.Warning("Could not assign collection {Collection} to Male Non-Player Characters: {Code}", mapping.CollectionName, errorCode);
+        return $"Could not assign '{mapping.CollectionName}' to Male Non-Player Characters. Penumbra code {errorCode}.";
     }
 
     private (Guid Id, string Name)? FindCollection(string collectionName)

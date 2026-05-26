@@ -52,4 +52,8 @@ internal sealed class PenumbraIpc
     public (int ErrorCode, (Guid Id, string Name)? OldCollection) SetCollectionForObject(int objectIndex, Guid collectionId)
         => pluginInterface.GetIpcSubscriber<int, Guid?, bool, bool, (int ErrorCode, (Guid Id, string Name)? OldCollection)>("Penumbra.SetCollectionForObject.V5")
             .InvokeFunc(objectIndex, collectionId, true, false);
+
+    public (int ErrorCode, (Guid Id, string Name)? OldCollection) SetCollection(byte collectionType, Guid collectionId)
+        => pluginInterface.GetIpcSubscriber<byte, Guid?, bool, bool, (int ErrorCode, (Guid Id, string Name)? OldCollection)>("Penumbra.SetCollection.V5")
+            .InvokeFunc(collectionType, collectionId, true, false);
 }
