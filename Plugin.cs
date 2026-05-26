@@ -278,14 +278,16 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        var modsBeforeInstall = penumbra.GetModList();
         var installCode = penumbra.InstallMod(download.Path);
         if (!IsSuccess(installCode))
             throw new InvalidOperationException($"Penumbra rejected package '{Path.GetFileName(download.Path)}' with code {installCode}.");
+        var modsAfterInstall = penumbra.GetModList();
 
         var collection = FindCollection(mapping.CollectionName)
             ?? throw new InvalidOperationException($"Collection '{mapping.CollectionName}' does not exist. Create it in Penumbra once, then run /thegrid update.");
 
-        var modDirectory = ResolveModDirectory(mapping);
+        var modDirectory = ResolveModDirectory(mapping, modsAfterInstall, modsBeforeInstall);
         var enableCode = penumbra.TrySetMod(collection.Id, modDirectory, mapping.ModName, true);
         if (!IsSuccess(enableCode))
             throw new InvalidOperationException($"Could not enable mod '{modDirectory}' in '{mapping.CollectionName}'. Penumbra code {enableCode}.");
@@ -361,16 +363,24 @@ public sealed class Plugin : IDalamudPlugin
                 ? collection
                 : null;
 
-    private string ResolveModDirectory(ModMapping mapping)
+    private static string ResolveModDirectory(ModMapping mapping, System.Collections.Generic.Dictionary<string, string> mods, System.Collections.Generic.Dictionary<string, string> modsBeforeInstall)
     {
-        var mods = penumbra.GetModList();
         if (mods.ContainsKey(mapping.ModDirectory))
             return mapping.ModDirectory;
+
+        var addedMod = mods.FirstOrDefault(kvp => !modsBeforeInstall.ContainsKey(kvp.Key));
+        if (!string.IsNullOrEmpty(addedMod.Key))
+        {
+            mapping.ModName = addedMod.Value;
+            return addedMod.Key;
+        }
 
         var byName = mods.FirstOrDefault(kvp =>
             string.Equals(kvp.Value, mapping.ModName, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(kvp.Value, mapping.Name, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(kvp.Key, mapping.Name, StringComparison.OrdinalIgnoreCase));
+            string.Equals(kvp.Key, mapping.Name, StringComparison.OrdinalIgnoreCase) ||
+            kvp.Value.Contains(mapping.Name, StringComparison.OrdinalIgnoreCase) ||
+            kvp.Key.Contains(mapping.Name, StringComparison.OrdinalIgnoreCase));
 
         if (!string.IsNullOrEmpty(byName.Key))
             return byName.Key;
