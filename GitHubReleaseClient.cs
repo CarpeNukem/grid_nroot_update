@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -24,19 +23,8 @@ internal sealed class GitHubReleaseClient : IDisposable
 
     public async Task<DownloadedAsset> DownloadLatestReleaseAssetAsync(ModMapping mapping, string cacheDirectory, CancellationToken cancellationToken)
     {
-        var releaseUri = new Uri($"https://api.github.com/repos/{ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}/releases/latest");
-        using var releaseResponse = await httpClient.GetAsync(releaseUri, cancellationToken).ConfigureAwait(false);
-        if (releaseResponse.StatusCode == HttpStatusCode.NotFound)
-            throw new InvalidOperationException($"No latest GitHub release exists for {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}. Create a release and attach '{mapping.AssetPattern}'.");
-
-        releaseResponse.EnsureSuccessStatusCode();
-
-        await using var releaseStream = await releaseResponse.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        var release = await JsonSerializer.DeserializeAsync<GitHubRelease>(releaseStream, cancellationToken: cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("GitHub returned an empty release payload.");
-
-        var asset = release.Assets.FirstOrDefault(a => Glob.IsMatch(a.Name, mapping.AssetPattern))
-            ?? throw new InvalidOperationException($"Latest release '{release.TagName}' has no asset matching '{mapping.AssetPattern}'.");
+        var release = await GetLatestUsableReleaseAsync(mapping, cancellationToken).ConfigureAwait(false);
+        var asset = release.Assets.First(a => Glob.IsMatch(a.Name, mapping.AssetPattern));
 
         Directory.CreateDirectory(cacheDirectory);
         var version = NormalizeVersion(release.TagName);
@@ -49,6 +37,24 @@ internal sealed class GitHubReleaseClient : IDisposable
         await source.CopyToAsync(target, cancellationToken).ConfigureAwait(false);
 
         return new DownloadedAsset(targetPath, version);
+    }
+
+    private async Task<GitHubRelease> GetLatestUsableReleaseAsync(ModMapping mapping, CancellationToken cancellationToken)
+    {
+        var releasesUri = new Uri($"https://api.github.com/repos/{ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}/releases?per_page=30");
+        using var releasesResponse = await httpClient.GetAsync(releasesUri, cancellationToken).ConfigureAwait(false);
+        releasesResponse.EnsureSuccessStatusCode();
+
+        await using var releasesStream = await releasesResponse.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        var releases = await JsonSerializer.DeserializeAsync<List<GitHubRelease>>(releasesStream, cancellationToken: cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("GitHub returned an empty releases payload.");
+
+        var release = releases
+            .Where(r => !r.Draft)
+            .FirstOrDefault(r => r.Assets.Any(a => Glob.IsMatch(a.Name, mapping.AssetPattern)));
+
+        return release
+            ?? throw new InvalidOperationException($"No published GitHub release in {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo} has an asset matching '{mapping.AssetPattern}'.");
     }
 
     public void Dispose()
@@ -67,6 +73,9 @@ internal sealed class GitHubReleaseClient : IDisposable
     {
         [JsonPropertyName("tag_name")]
         public string TagName { get; set; } = string.Empty;
+
+        [JsonPropertyName("draft")]
+        public bool Draft { get; set; }
 
         [JsonPropertyName("assets")]
         public List<GitHubAsset> Assets { get; set; } = [];
