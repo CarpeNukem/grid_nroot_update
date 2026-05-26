@@ -34,7 +34,7 @@ Build the release package:
 dotnet build GridNrootUpdate.csproj -c Release
 ```
 
-Upload `bin/Release/dist/GridNrootUpdate-0.1.0.0.zip` to a GitHub release named `plugin-v0.1.0`, then users can add this custom repository URL in Dalamud:
+Upload `bin/Release/dist/GridNrootUpdate-0.2.0.0.zip` to a GitHub release named `plugin-v0.2.0`, then users can add this custom repository URL in Dalamud:
 
 ```text
 https://raw.githubusercontent.com/CarpeNukem/grid_nroot_update/main/repo.json
