@@ -124,13 +124,9 @@ public sealed class Plugin : IDalamudPlugin
 
         foreach (var mapping in Config.Mappings)
         {
-            ImGui.TextUnformatted(mapping.Name);
-            ImGui.Separator();
+            ImGui.TextUnformatted("TheGrid");
+            ImGui.TextUnformatted($"{ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
             ImGui.TextUnformatted($"Last applied: {DisplayValue(mapping.LastAppliedVersion)}");
-            ImGui.TextUnformatted($"Repository: {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
-            ImGui.TextUnformatted($"Asset pattern: {mapping.AssetPattern}");
-            ImGui.TextUnformatted($"Collection: {mapping.CollectionName}");
-            ImGui.TextUnformatted($"NPC: {mapping.NpcName}");
             ImGui.TextWrapped(mapping.LastStatus);
 
             if (ImGui.Button("Update"))
