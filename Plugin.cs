@@ -87,8 +87,13 @@ public sealed class Plugin : IDalamudPlugin
                 SetAssetPattern(value);
                 break;
             case "update":
+                QueueReconcile();
+                PluginService.Chat.Print("Queued update check.", "TheGrid");
+                break;
+            case "force":
+            case "reinstall":
                 QueueReconcile(forceDownload: true);
-                PluginService.Chat.Print("Queued update reconciliation.", "TheGrid");
+                PluginService.Chat.Print("Queued forced reinstall.", "TheGrid");
                 break;
             case "assign":
                 _ = AssignAllAsync(lifetime.Token);
@@ -97,7 +102,7 @@ public sealed class Plugin : IDalamudPlugin
                 OpenConfigUi();
                 break;
             default:
-                PluginService.Chat.PrintError($"Unknown command '{args}'. Use status, asset, update, assign, or config.", "TheGrid");
+                PluginService.Chat.PrintError($"Unknown command '{args}'. Use status, asset, update, reinstall, assign, or config.", "TheGrid");
                 break;
         }
     }
@@ -148,11 +153,15 @@ public sealed class Plugin : IDalamudPlugin
         ImGui.TextWrapped(mapping.LastStatus);
 
         if (ImGui.Button("Update"))
-            QueueReconcile(forceDownload: true);
+            QueueReconcile();
 
         ImGui.SameLine();
         if (ImGui.Button("Assign"))
             _ = AssignAllAsync(lifetime.Token);
+
+        ImGui.SameLine();
+        if (ImGui.Button("Force Reinstall"))
+            QueueReconcile(forceDownload: true);
 
         ImGui.Spacing();
 
@@ -195,7 +204,7 @@ public sealed class Plugin : IDalamudPlugin
         if (ImGui.Button("Save and Update"))
         {
             Config.Save();
-            QueueReconcile(forceDownload: true);
+            QueueReconcile();
         }
 
         ImGui.SameLine();
