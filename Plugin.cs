@@ -295,12 +295,14 @@ public sealed class Plugin : IDalamudPlugin
     private async Task ReconcileMappingAsync(ModMapping mapping, CancellationToken cancellationToken)
     {
         var cacheDirectory = Path.Combine(PluginService.PluginInterface.ConfigDirectory.FullName, "cache");
-        var download = await github.DownloadLatestReleaseAssetAsync(mapping, cacheDirectory, cancellationToken).ConfigureAwait(false);
-        if (string.Equals(download.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
+        var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, cancellationToken).ConfigureAwait(false);
+        if (string.Equals(latestAsset.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
         {
-            mapping.LastStatus = $"Latest release {download.Version} already applied.";
+            mapping.LastStatus = $"Latest release {latestAsset.Version} already applied.";
             return;
         }
+
+        var download = await github.DownloadReleaseAssetAsync(mapping, latestAsset, cacheDirectory, cancellationToken).ConfigureAwait(false);
 
         var previousModDirectory = NormalizeManagedModDirectory(mapping.ModDirectory);
         mapping.ModDirectory = previousModDirectory;

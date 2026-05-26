@@ -22,22 +22,25 @@ internal sealed class GitHubReleaseClient : IDisposable
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
     }
 
-    public async Task<DownloadedAsset> DownloadLatestReleaseAssetAsync(ModMapping mapping, string cacheDirectory, CancellationToken cancellationToken)
+    public async Task<ReleaseAssetInfo> GetLatestReleaseAssetInfoAsync(ModMapping mapping, CancellationToken cancellationToken)
     {
         var release = await GetLatestUsableReleaseAsync(mapping, cancellationToken).ConfigureAwait(false);
         var asset = release.Assets.First(a => Glob.IsMatch(a.Name, mapping.AssetPattern));
+        return new ReleaseAssetInfo(NormalizeVersion(release.TagName), asset.Name, asset.BrowserDownloadUrl);
+    }
 
+    public async Task<DownloadedAsset> DownloadReleaseAssetAsync(ModMapping mapping, ReleaseAssetInfo asset, string cacheDirectory, CancellationToken cancellationToken)
+    {
         Directory.CreateDirectory(cacheDirectory);
-        var version = NormalizeVersion(release.TagName);
-        var targetPath = Path.Combine(cacheDirectory, $"{SanitizeFileName(mapping.Name)}-{version}-{asset.Name}");
+        var targetPath = Path.Combine(cacheDirectory, $"{SanitizeFileName(mapping.Name)}-{asset.Version}-{asset.Name}");
 
-        using var assetResponse = await httpClient.GetAsync(asset.BrowserDownloadUrl, cancellationToken).ConfigureAwait(false);
+        using var assetResponse = await httpClient.GetAsync(asset.DownloadUrl, cancellationToken).ConfigureAwait(false);
         assetResponse.EnsureSuccessStatusCode();
         await using var source = await assetResponse.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         await using var target = File.Create(targetPath);
         await source.CopyToAsync(target, cancellationToken).ConfigureAwait(false);
 
-        return new DownloadedAsset(targetPath, version);
+        return new DownloadedAsset(targetPath, asset.Version);
     }
 
     private async Task<GitHubRelease> GetLatestUsableReleaseAsync(ModMapping mapping, CancellationToken cancellationToken)
@@ -96,3 +99,4 @@ internal sealed class GitHubReleaseClient : IDisposable
 }
 
 internal readonly record struct DownloadedAsset(string Path, string Version);
+internal readonly record struct ReleaseAssetInfo(string Version, string Name, string DownloadUrl);
