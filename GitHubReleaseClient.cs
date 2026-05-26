@@ -23,10 +23,7 @@ internal sealed class GitHubReleaseClient : IDisposable
 
     public async Task<string> DownloadReleaseAssetAsync(ModMapping mapping, string cacheDirectory, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(mapping.GitHubOwner) || string.IsNullOrWhiteSpace(mapping.GitHubRepo))
-            throw new InvalidOperationException($"Mapping '{mapping.Name}' needs GitHubOwner and GitHubRepo configured.");
-
-        var releaseUri = new Uri($"https://api.github.com/repos/{mapping.GitHubOwner}/{mapping.GitHubRepo}/releases/tags/{Uri.EscapeDataString(mapping.ReleaseTag)}");
+        var releaseUri = new Uri($"https://api.github.com/repos/{ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}/releases/tags/{Uri.EscapeDataString(mapping.ReleaseTag)}");
         using var releaseResponse = await httpClient.GetAsync(releaseUri, cancellationToken).ConfigureAwait(false);
         releaseResponse.EnsureSuccessStatusCode();
 

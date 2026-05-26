@@ -83,9 +83,6 @@ public sealed class Plugin : IDalamudPlugin
             case "version":
                 SetDesiredVersion(value);
                 break;
-            case "repo":
-                SetGitHubRepository(value);
-                break;
             case "asset":
                 SetAssetPattern(value);
                 break;
@@ -100,7 +97,7 @@ public sealed class Plugin : IDalamudPlugin
                 OpenConfigUi();
                 break;
             default:
-                PluginService.Chat.PrintError($"Unknown command '{args}'. Use status, version, repo, asset, update, assign, or config.", "TheGrid");
+                PluginService.Chat.PrintError($"Unknown command '{args}'. Use status, version, asset, update, assign, or config.", "TheGrid");
                 break;
         }
     }
@@ -134,7 +131,7 @@ public sealed class Plugin : IDalamudPlugin
             ImGui.Separator();
             ImGui.TextUnformatted($"Desired version: {mapping.DesiredVersion}");
             ImGui.TextUnformatted($"Last applied: {DisplayValue(mapping.LastAppliedVersion)}");
-            ImGui.TextUnformatted($"Repository: {DisplayValue(mapping.GitHubOwner)}/{DisplayValue(mapping.GitHubRepo)}");
+            ImGui.TextUnformatted($"Repository: {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
             ImGui.TextUnformatted($"Asset pattern: {mapping.AssetPattern}");
             ImGui.TextUnformatted($"Collection: {mapping.CollectionName}");
             ImGui.TextUnformatted($"NPC: {mapping.NpcName}");
@@ -173,8 +170,7 @@ public sealed class Plugin : IDalamudPlugin
         var mapping = Config.Mappings[0];
         var changed = false;
 
-        changed |= InputText("GitHub owner", mapping.GitHubOwner, value => mapping.GitHubOwner = value);
-        changed |= InputText("GitHub repo", mapping.GitHubRepo, value => mapping.GitHubRepo = value);
+        ImGui.TextUnformatted($"Repository: {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
         changed |= InputText("Desired version", mapping.DesiredVersion, value => mapping.DesiredVersion = value);
         changed |= InputText("Release tag pattern", mapping.ReleaseTagPattern, value => mapping.ReleaseTagPattern = value);
         changed |= InputText("Asset pattern", mapping.AssetPattern, value => mapping.AssetPattern = value);
@@ -447,26 +443,6 @@ public sealed class Plugin : IDalamudPlugin
         PluginService.Chat.Print($"Queued version {version}.", "TheGrid");
     }
 
-    private void SetGitHubRepository(string repository)
-    {
-        var parts = repository.Split('/', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length != 2)
-        {
-            PluginService.Chat.PrintError("Usage: /thegrid repo <owner>/<repo>", "TheGrid");
-            return;
-        }
-
-        foreach (var mapping in Config.Mappings)
-        {
-            mapping.GitHubOwner = parts[0];
-            mapping.GitHubRepo = parts[1];
-            mapping.LastStatus = $"Configured repository {repository}.";
-        }
-
-        Config.Save();
-        PluginService.Chat.Print($"Configured repository {repository}.", "TheGrid");
-    }
-
     private void SetAssetPattern(string pattern)
     {
         if (string.IsNullOrWhiteSpace(pattern))
@@ -486,7 +462,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private static void PrintConfigHelp()
-        => PluginService.Chat.Print("Use /thegrid repo <owner>/<repo>, /thegrid asset <glob>, /thegrid version <version>, then /thegrid update. Edit config JSON for ModDirectory, ModName, CollectionName, NpcName, or additional mappings.", "TheGrid");
+        => PluginService.Chat.Print($"Updates are locked to {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}. Use /thegrid asset <glob>, /thegrid version <version>, then /thegrid update. Edit config JSON for ModDirectory, ModName, CollectionName, NpcName, or additional mappings.", "TheGrid");
 
     private void SetAllStatus(string status)
     {
