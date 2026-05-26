@@ -9,4 +9,21 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <Version>0.1.0.0</Version>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="GridNrootUpdate.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="PackagePlugin" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <ItemGroup>
+      <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).dll" />
+      <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).json" />
+      <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).deps.json" />
+    </ItemGroup>
+    <RemoveDir Directories="$(OutputPath)package" />
+    <MakeDir Directories="$(OutputPath)package" />
+    <MakeDir Directories="$(OutputPath)dist" />
+    <Copy SourceFiles="@(PluginPackageFiles)" DestinationFolder="$(OutputPath)package" />
+    <ZipDirectory SourceDirectory="$(OutputPath)package" DestinationFile="$(OutputPath)dist\$(AssemblyName)-$(Version).zip" Overwrite="true" />
+  </Target>
 </Project>

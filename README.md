@@ -25,3 +25,17 @@ The release source is locked to `CarpeNukem/grid_nroot_update`. The plugin alway
 ## Notes
 
 The plugin uses Penumbra's public IPC to install mod packages, enable the configured mod in an existing collection, set mod priority, and assign that collection to a loaded object. Current Penumbra API V5 exposes collection lookup and assignment, but not named collection creation, so `TheGrid` must exist before the first update.
+
+## Dalamud Repository
+
+Build the release package:
+
+```text
+dotnet build GridNrootUpdate.csproj -c Release
+```
+
+Upload `bin/Release/dist/GridNrootUpdate-0.1.0.0.zip` to a GitHub release named `plugin-v0.1.0`, then users can add this custom repository URL in Dalamud:
+
+```text
+https://raw.githubusercontent.com/CarpeNukem/grid_nroot_update/main/repo.json
+```

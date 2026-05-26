@@ -1,0 +1,21 @@
+[
+  {
+    "Author": "aecid",
+    "Name": "TheGrid Updater",
+    "Punchline": "Keeps TheGrid venue Penumbra mod assigned to Chromiel.",
+    "Description": "Downloads the latest configured venue mod release, enables it in TheGrid, and assigns the collection to Chromiel.",
+    "Tags": [
+      "penumbra",
+      "modding",
+      "utility"
+    ],
+    "InternalName": "GridNrootUpdate",
+    "AssemblyVersion": "0.1.0.0",
+    "RepoUrl": "https://github.com/CarpeNukem/grid_nroot_update",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "DownloadLinkInstall": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.1.0/GridNrootUpdate-0.1.0.0.zip",
+    "DownloadLinkUpdate": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.1.0/GridNrootUpdate-0.1.0.0.zip",
+    "DownloadLinkTesting": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.1.0/GridNrootUpdate-0.1.0.0.zip"
+  }
+]
