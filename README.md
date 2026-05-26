@@ -7,21 +7,19 @@ Dalamud plugin for keeping a configured Penumbra venue mod updated from GitHub r
 1. Install and enable Penumbra.
 2. Create a persistent Penumbra collection named `TheGrid`.
 3. Load the plugin as a dev plugin.
-4. Configure the release version in game:
+4. Configure the release asset pattern if needed:
 
 ```text
 /thegrid asset *.pmp
-/thegrid version 1.0.0
 ```
 
-The release source is locked to `CarpeNukem/grid_nroot_update`. The default release tag is `v{version}`. For `1.0.0`, the plugin first downloads assets from the GitHub release tag `v1.0.0`. If that release does not exist, it falls back to matching files in `pmp/` on the `main` branch.
+The release source is locked to `CarpeNukem/grid_nroot_update`. The plugin always checks GitHub's latest release and downloads the matching asset from that release. If no release exists yet, it falls back to matching files in `pmp/` on the `main` branch.
 
 ## Commands
 
 - `/thegrid status` prints current mapping status.
 - `/thegrid asset <glob>` sets the release asset pattern. The default is `n_root_the_grid_beta.pmp`.
-- `/thegrid version <version>` bumps the desired version and queues update reconciliation.
-- `/thegrid update` forces a redownload/reapply for the current desired version.
+- `/thegrid update` checks GitHub's latest release and applies it if it has not already been applied.
 - `/thegrid assign` reapplies `TheGrid` to currently loaded `Chromiel` objects.
 
 ## Notes

@@ -8,9 +8,7 @@ public sealed class ModMapping
     public const string FixedAssetFolder = "pmp";
 
     public string Name { get; set; } = "TheGrid";
-    public string DesiredVersion { get; set; } = "0.0.0";
     public string LastAppliedVersion { get; set; } = string.Empty;
-    public string ReleaseTagPattern { get; set; } = "v{version}";
     public string AssetPattern { get; set; } = "n_root_the_grid_beta.pmp";
     public string CollectionName { get; set; } = "TheGrid";
     public string NpcName { get; set; } = "Chromiel";
@@ -18,9 +16,6 @@ public sealed class ModMapping
     public string ModName { get; set; } = "";
     public int Priority { get; set; } = 0;
     public string LastStatus { get; set; } = "Not applied yet.";
-
-    public string ReleaseTag
-        => ReleaseTagPattern.Replace("{version}", DesiredVersion);
 
     public static ModMapping CreateDefault()
         => new();

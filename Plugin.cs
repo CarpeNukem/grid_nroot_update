@@ -80,9 +80,6 @@ public sealed class Plugin : IDalamudPlugin
             case "status":
                 PrintStatus();
                 break;
-            case "version":
-                SetDesiredVersion(value);
-                break;
             case "asset":
                 SetAssetPattern(value);
                 break;
@@ -97,7 +94,7 @@ public sealed class Plugin : IDalamudPlugin
                 OpenConfigUi();
                 break;
             default:
-                PluginService.Chat.PrintError($"Unknown command '{args}'. Use status, version, asset, update, assign, or config.", "TheGrid");
+                PluginService.Chat.PrintError($"Unknown command '{args}'. Use status, asset, update, assign, or config.", "TheGrid");
                 break;
         }
     }
@@ -129,7 +126,6 @@ public sealed class Plugin : IDalamudPlugin
         {
             ImGui.TextUnformatted(mapping.Name);
             ImGui.Separator();
-            ImGui.TextUnformatted($"Desired version: {mapping.DesiredVersion}");
             ImGui.TextUnformatted($"Last applied: {DisplayValue(mapping.LastAppliedVersion)}");
             ImGui.TextUnformatted($"Repository: {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
             ImGui.TextUnformatted($"Asset pattern: {mapping.AssetPattern}");
@@ -171,8 +167,6 @@ public sealed class Plugin : IDalamudPlugin
         var changed = false;
 
         ImGui.TextUnformatted($"Repository: {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
-        changed |= InputText("Desired version", mapping.DesiredVersion, value => mapping.DesiredVersion = value);
-        changed |= InputText("Release tag pattern", mapping.ReleaseTagPattern, value => mapping.ReleaseTagPattern = value);
         changed |= InputText("Asset pattern", mapping.AssetPattern, value => mapping.AssetPattern = value);
         changed |= InputText("Collection name", mapping.CollectionName, value => mapping.CollectionName = value);
         changed |= InputText("NPC name", mapping.NpcName, value => mapping.NpcName = value);
@@ -289,18 +283,17 @@ public sealed class Plugin : IDalamudPlugin
 
     private async Task ReconcileMappingAsync(ModMapping mapping, CancellationToken cancellationToken)
     {
-        if (string.Equals(mapping.DesiredVersion, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
+        var cacheDirectory = Path.Combine(PluginService.PluginInterface.ConfigDirectory.FullName, "cache");
+        var download = await github.DownloadLatestReleaseAssetAsync(mapping, cacheDirectory, cancellationToken).ConfigureAwait(false);
+        if (!download.FromRepositoryFallback && string.Equals(download.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
         {
-            mapping.LastStatus = $"Version {mapping.DesiredVersion} already applied.";
+            mapping.LastStatus = $"Latest release {download.Version} already applied.";
             return;
         }
 
-        var cacheDirectory = Path.Combine(PluginService.PluginInterface.ConfigDirectory.FullName, "cache");
-        var packagePath = await github.DownloadReleaseAssetAsync(mapping, cacheDirectory, cancellationToken).ConfigureAwait(false);
-
-        var installCode = penumbra.InstallMod(packagePath);
+        var installCode = penumbra.InstallMod(download.Path);
         if (!IsSuccess(installCode))
-            throw new InvalidOperationException($"Penumbra rejected package '{Path.GetFileName(packagePath)}' with code {installCode}.");
+            throw new InvalidOperationException($"Penumbra rejected package '{Path.GetFileName(download.Path)}' with code {installCode}.");
 
         var collection = FindCollection(mapping.CollectionName)
             ?? throw new InvalidOperationException($"Collection '{mapping.CollectionName}' does not exist. Create it in Penumbra once, then run /thegrid update.");
@@ -315,9 +308,11 @@ public sealed class Plugin : IDalamudPlugin
             throw new InvalidOperationException($"Could not set mod priority for '{modDirectory}'. Penumbra code {priorityCode}.");
 
         mapping.ModDirectory = modDirectory;
-        mapping.LastAppliedVersion = mapping.DesiredVersion;
-        mapping.LastStatus = $"Applied version {mapping.DesiredVersion}.";
-        PluginService.Chat.Print($"{mapping.Name}: applied version {mapping.DesiredVersion}.", "TheGrid");
+        mapping.LastAppliedVersion = download.Version;
+        mapping.LastStatus = download.FromRepositoryFallback
+            ? $"Applied fallback package from {ModMapping.FixedGitHubBranch}."
+            : $"Applied latest release {download.Version}.";
+        PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
     }
 
     private async Task AssignAllAsync(CancellationToken cancellationToken)
@@ -418,29 +413,9 @@ public sealed class Plugin : IDalamudPlugin
         foreach (var mapping in Config.Mappings)
         {
             PluginService.Chat.Print(
-                $"{mapping.Name}: desired={mapping.DesiredVersion}, lastApplied={mapping.LastAppliedVersion}, collection={mapping.CollectionName}, npc={mapping.NpcName}, status={mapping.LastStatus}",
+                $"{mapping.Name}: latestRelease=auto, lastApplied={mapping.LastAppliedVersion}, collection={mapping.CollectionName}, npc={mapping.NpcName}, status={mapping.LastStatus}",
                 "TheGrid");
         }
-    }
-
-    private void SetDesiredVersion(string version)
-    {
-        if (string.IsNullOrWhiteSpace(version))
-        {
-            PluginService.Chat.PrintError("Usage: /thegrid version <version>", "TheGrid");
-            return;
-        }
-
-        foreach (var mapping in Config.Mappings)
-        {
-            mapping.DesiredVersion = version;
-            mapping.LastAppliedVersion = string.Empty;
-            mapping.LastStatus = $"Queued version {version}.";
-        }
-
-        Config.Save();
-        QueueReconcile();
-        PluginService.Chat.Print($"Queued version {version}.", "TheGrid");
     }
 
     private void SetAssetPattern(string pattern)
@@ -462,7 +437,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private static void PrintConfigHelp()
-        => PluginService.Chat.Print($"Updates are locked to {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}. Use /thegrid asset <glob>, /thegrid version <version>, then /thegrid update. Edit config JSON for ModDirectory, ModName, CollectionName, NpcName, or additional mappings.", "TheGrid");
+        => PluginService.Chat.Print($"Updates are locked to the latest release from {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}. Use /thegrid asset <glob>, then /thegrid update. Edit config JSON for ModDirectory, ModName, CollectionName, NpcName, or additional mappings.", "TheGrid");
 
     private void SetAllStatus(string status)
     {
