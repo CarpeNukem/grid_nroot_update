@@ -293,18 +293,28 @@ public sealed class Plugin : IDalamudPlugin
         var collection = FindCollection(mapping.CollectionName)
             ?? throw new InvalidOperationException($"Collection '{mapping.CollectionName}' does not exist. Create it in Penumbra once, then run /thegrid update.");
 
-        var modDirectory = ResolveModDirectory(mapping, modsAfterInstall, modsBeforeInstall);
-        var enableCode = penumbra.TrySetMod(collection.Id, modDirectory, mapping.ModName, true);
-        if (!IsSuccess(enableCode))
-            throw new InvalidOperationException($"Could not enable mod '{modDirectory}' in '{mapping.CollectionName}'. Penumbra code {enableCode}.");
+        var modDirectory = TryResolveModDirectory(mapping, modsAfterInstall, modsBeforeInstall);
+        if (modDirectory is not null)
+        {
+            var enableCode = penumbra.TrySetMod(collection.Id, modDirectory, mapping.ModName, true);
+            if (!IsSuccess(enableCode))
+                PluginService.Log.Warning("Could not enable mod {ModDirectory} in {Collection}. Penumbra code {Code}.", modDirectory, mapping.CollectionName, enableCode);
 
-        var priorityCode = penumbra.TrySetModPriority(collection.Id, modDirectory, mapping.ModName, mapping.Priority);
-        if (!IsSuccess(priorityCode))
-            throw new InvalidOperationException($"Could not set mod priority for '{modDirectory}'. Penumbra code {priorityCode}.");
+            var priorityCode = penumbra.TrySetModPriority(collection.Id, modDirectory, mapping.ModName, mapping.Priority);
+            if (!IsSuccess(priorityCode))
+                PluginService.Log.Warning("Could not set mod priority for {ModDirectory}. Penumbra code {Code}.", modDirectory, priorityCode);
 
-        mapping.ModDirectory = modDirectory;
+            mapping.ModDirectory = modDirectory;
+        }
+        else
+        {
+            PluginService.Log.Warning("Penumbra accepted package {Package}, but the imported mod was not visible in the IPC mod list immediately after import.", Path.GetFileName(download.Path));
+        }
+
         mapping.LastAppliedVersion = download.Version;
-        mapping.LastStatus = $"Applied latest release {download.Version}.";
+        mapping.LastStatus = modDirectory is null
+            ? $"Imported latest release {download.Version}; Penumbra did not expose the mod in IPC immediately."
+            : $"Applied latest release {download.Version}.";
         PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
     }
 
@@ -407,7 +417,7 @@ public sealed class Plugin : IDalamudPlugin
                 ? collection
                 : null;
 
-    private static string ResolveModDirectory(ModMapping mapping, System.Collections.Generic.Dictionary<string, string> mods, System.Collections.Generic.Dictionary<string, string> modsBeforeInstall)
+    private static string? TryResolveModDirectory(ModMapping mapping, System.Collections.Generic.Dictionary<string, string> mods, System.Collections.Generic.Dictionary<string, string> modsBeforeInstall)
     {
         if (mods.ContainsKey(mapping.ModDirectory))
             return mapping.ModDirectory;
@@ -429,7 +439,7 @@ public sealed class Plugin : IDalamudPlugin
         if (!string.IsNullOrEmpty(byName.Key))
             return byName.Key;
 
-        throw new InvalidOperationException($"Installed Penumbra mod '{mapping.ModDirectory}' was not found after import.");
+        return null;
     }
 
     private static bool IsTargetNpc(IGameObject? gameObject, string npcName)
