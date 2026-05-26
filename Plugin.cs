@@ -281,6 +281,9 @@ public sealed class Plugin : IDalamudPlugin
         var previousModDirectory = mapping.ModDirectory;
         var previousModName = mapping.ModName;
         var modsBeforeInstall = penumbra.GetModList();
+        DeleteExistingManagedModBeforeInstall(previousModDirectory, previousModName, modsBeforeInstall);
+        modsBeforeInstall = penumbra.GetModList();
+
         var installCode = penumbra.InstallMod(download.Path);
         if (!IsSuccess(installCode))
             throw new InvalidOperationException($"Penumbra rejected package '{Path.GetFileName(download.Path)}' with code {installCode}.");
@@ -298,30 +301,28 @@ public sealed class Plugin : IDalamudPlugin
         if (!IsSuccess(priorityCode))
             throw new InvalidOperationException($"Could not set mod priority for '{modDirectory}'. Penumbra code {priorityCode}.");
 
-        DeletePreviousModIfReplaced(previousModDirectory, previousModName, modDirectory, mapping.ModName);
-
         mapping.ModDirectory = modDirectory;
         mapping.LastAppliedVersion = download.Version;
         mapping.LastStatus = $"Applied latest release {download.Version}.";
         PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
     }
 
-    private void DeletePreviousModIfReplaced(string previousModDirectory, string previousModName, string currentModDirectory, string currentModName)
+    private void DeleteExistingManagedModBeforeInstall(string previousModDirectory, string previousModName, System.Collections.Generic.Dictionary<string, string> installedMods)
     {
         if (string.IsNullOrWhiteSpace(previousModDirectory))
             return;
 
-        if (string.Equals(previousModDirectory, currentModDirectory, StringComparison.OrdinalIgnoreCase))
+        if (!installedMods.ContainsKey(previousModDirectory))
             return;
 
         var deleteCode = penumbra.DeleteMod(previousModDirectory, previousModName);
         if (IsSuccess(deleteCode))
         {
-            PluginService.Log.Information("Deleted replaced Penumbra mod {PreviousModDirectory}.", previousModDirectory);
+            PluginService.Log.Information("Deleted old managed Penumbra mod {PreviousModDirectory} before update.", previousModDirectory);
             return;
         }
 
-        PluginService.Log.Warning("Could not delete replaced Penumbra mod {PreviousModDirectory} after installing {CurrentModDirectory}. Penumbra code {Code}.", previousModDirectory, currentModDirectory, deleteCode);
+        PluginService.Log.Warning("Could not delete old managed Penumbra mod {PreviousModDirectory} before update. Penumbra code {Code}.", previousModDirectory, deleteCode);
     }
 
     private async Task AssignAllAsync(CancellationToken cancellationToken)
