@@ -9,7 +9,7 @@ public sealed class ModMapping
     public string DesiredVersion { get; set; } = "0.0.0";
     public string LastAppliedVersion { get; set; } = string.Empty;
     public string ReleaseTagPattern { get; set; } = "v{version}";
-    public string AssetPattern { get; set; } = "*.pmp";
+    public string AssetPattern { get; set; } = "n_root_the_grid_beta.pmp";
     public string CollectionName { get; set; } = "TheGrid";
     public string NpcName { get; set; } = "Chromiel";
     public string ModDirectory { get; set; } = "TheGrid";

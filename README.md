@@ -19,7 +19,7 @@ The release source is locked to `CarpeNukem/grid_nroot_update`. The default rele
 ## Commands
 
 - `/thegrid status` prints current mapping status.
-- `/thegrid asset <glob>` sets the release asset pattern, for example `TheGrid-*.pmp`.
+- `/thegrid asset <glob>` sets the release asset pattern. The default is `n_root_the_grid_beta.pmp`.
 - `/thegrid version <version>` bumps the desired version and queues update reconciliation.
 - `/thegrid update` forces a redownload/reapply for the current desired version.
 - `/thegrid assign` reapplies `TheGrid` to currently loaded `Chromiel` objects.
