@@ -14,7 +14,7 @@ Dalamud plugin for keeping a configured Penumbra venue mod updated from GitHub r
 /thegrid version 1.0.0
 ```
 
-The release source is locked to `CarpeNukem/grid_nroot_update`. The default release tag is `v{version}`. For `1.0.0`, the plugin downloads assets from the GitHub release tag `v1.0.0`.
+The release source is locked to `CarpeNukem/grid_nroot_update`. The default release tag is `v{version}`. For `1.0.0`, the plugin first downloads assets from the GitHub release tag `v1.0.0`. If that release does not exist, it falls back to matching files in `pmp/` on the `main` branch.
 
 ## Commands
 
