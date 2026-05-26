@@ -1,8 +1,8 @@
 [
   {
-    "Author": "aecid",
-    "Name": "TheGrid Updater",
-    "Punchline": "Keeps TheGrid venue Penumbra mod assigned to Chromiel.",
+    "Author": "Carpe Nukem",
+    "Name": "The Grid Updater",
+    "Punchline": "Keeps The Grid venue Penumbra mod updated",
     "Description": "Downloads the latest configured venue mod release, enables it in TheGrid, and assigns the collection to Chromiel.",
     "Tags": [
       "penumbra",
