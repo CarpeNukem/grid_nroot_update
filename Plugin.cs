@@ -278,6 +278,8 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        var previousModDirectory = mapping.ModDirectory;
+        var previousModName = mapping.ModName;
         var modsBeforeInstall = penumbra.GetModList();
         var installCode = penumbra.InstallMod(download.Path);
         if (!IsSuccess(installCode))
@@ -296,10 +298,30 @@ public sealed class Plugin : IDalamudPlugin
         if (!IsSuccess(priorityCode))
             throw new InvalidOperationException($"Could not set mod priority for '{modDirectory}'. Penumbra code {priorityCode}.");
 
+        DeletePreviousModIfReplaced(previousModDirectory, previousModName, modDirectory, mapping.ModName);
+
         mapping.ModDirectory = modDirectory;
         mapping.LastAppliedVersion = download.Version;
         mapping.LastStatus = $"Applied latest release {download.Version}.";
         PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
+    }
+
+    private void DeletePreviousModIfReplaced(string previousModDirectory, string previousModName, string currentModDirectory, string currentModName)
+    {
+        if (string.IsNullOrWhiteSpace(previousModDirectory))
+            return;
+
+        if (string.Equals(previousModDirectory, currentModDirectory, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var deleteCode = penumbra.DeleteMod(previousModDirectory, previousModName);
+        if (IsSuccess(deleteCode))
+        {
+            PluginService.Log.Information("Deleted replaced Penumbra mod {PreviousModDirectory}.", previousModDirectory);
+            return;
+        }
+
+        PluginService.Log.Warning("Could not delete replaced Penumbra mod {PreviousModDirectory} after installing {CurrentModDirectory}. Penumbra code {Code}.", previousModDirectory, currentModDirectory, deleteCode);
     }
 
     private async Task AssignAllAsync(CancellationToken cancellationToken)

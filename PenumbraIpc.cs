@@ -28,6 +28,9 @@ internal sealed class PenumbraIpc
     public int InstallMod(string packagePath)
         => pluginInterface.GetIpcSubscriber<string, int>("Penumbra.InstallMod.V5").InvokeFunc(packagePath);
 
+    public int DeleteMod(string modDirectory, string modName)
+        => pluginInterface.GetIpcSubscriber<string, string, int>("Penumbra.DeleteMod.V5").InvokeFunc(modDirectory, modName);
+
     public Dictionary<string, string> GetModList()
         => pluginInterface.GetIpcSubscriber<Dictionary<string, string>>("Penumbra.GetModList").InvokeFunc();
 
