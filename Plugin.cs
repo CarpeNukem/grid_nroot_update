@@ -278,7 +278,8 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        var previousModDirectory = mapping.ModDirectory;
+        var previousModDirectory = NormalizeManagedModDirectory(mapping.ModDirectory);
+        mapping.ModDirectory = previousModDirectory;
         var previousModName = mapping.ModName;
         var modsBeforeInstall = penumbra.GetModList();
         DeleteExistingManagedModBeforeInstall(previousModDirectory, previousModName, modsBeforeInstall);
@@ -313,17 +314,37 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         if (!installedMods.ContainsKey(previousModDirectory))
-            return;
-
-        var deleteCode = penumbra.DeleteMod(previousModDirectory, previousModName);
-        if (IsSuccess(deleteCode))
         {
-            PluginService.Log.Information("Deleted old managed Penumbra mod {PreviousModDirectory} before update.", previousModDirectory);
+            var duplicateDirectories = installedMods.Keys
+                .Where(IsManagedDuplicateDirectory)
+                .ToList();
+
+            foreach (var duplicateDirectory in duplicateDirectories)
+                DeleteManagedMod(duplicateDirectory, previousModName);
+
             return;
         }
 
-        PluginService.Log.Warning("Could not delete old managed Penumbra mod {PreviousModDirectory} before update. Penumbra code {Code}.", previousModDirectory, deleteCode);
+        DeleteManagedMod(previousModDirectory, previousModName);
     }
+
+    private void DeleteManagedMod(string modDirectory, string modName)
+    {
+        var deleteCode = penumbra.DeleteMod(modDirectory, modName);
+        if (IsSuccess(deleteCode))
+        {
+            PluginService.Log.Information("Deleted old managed Penumbra mod {ModDirectory} before update.", modDirectory);
+            return;
+        }
+
+        PluginService.Log.Warning("Could not delete old managed Penumbra mod {ModDirectory} before update. Penumbra code {Code}.", modDirectory, deleteCode);
+    }
+
+    private static string NormalizeManagedModDirectory(string modDirectory)
+        => IsManagedDuplicateDirectory(modDirectory) ? "n_root_the_grid" : modDirectory;
+
+    private static bool IsManagedDuplicateDirectory(string modDirectory)
+        => modDirectory.StartsWith("n_root_the_grid (", StringComparison.OrdinalIgnoreCase);
 
     private async Task AssignAllAsync(CancellationToken cancellationToken)
     {
