@@ -31,6 +31,12 @@ internal sealed class PenumbraIpc
     public int DeleteMod(string modDirectory, string modName)
         => pluginInterface.GetIpcSubscriber<string, string, int>("Penumbra.DeleteMod.V5").InvokeFunc(modDirectory, modName);
 
+    public void SubscribeModAdded(Action<string> handler)
+        => pluginInterface.GetIpcSubscriber<string, object>("Penumbra.ModAdded").Subscribe(handler);
+
+    public void UnsubscribeModAdded(Action<string> handler)
+        => pluginInterface.GetIpcSubscriber<string, object>("Penumbra.ModAdded").Unsubscribe(handler);
+
     public Dictionary<string, string> GetModList()
         => pluginInterface.GetIpcSubscriber<Dictionary<string, string>>("Penumbra.GetModList").InvokeFunc();
 

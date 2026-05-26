@@ -18,10 +18,13 @@ public sealed class Plugin : IDalamudPlugin
     private readonly CancellationTokenSource lifetime = new();
     private readonly GitHubReleaseClient github = new();
     private readonly PenumbraIpc penumbra;
+    private readonly object modAddedLock = new();
     private bool reconcileQueued;
     private bool reconcileRunning;
     private bool mainUiOpen;
     private bool configUiOpen;
+    private bool modAddedSubscribed;
+    private TaskCompletionSource<string>? pendingModAdded;
 
     public Plugin(IDalamudPluginInterface pluginInterface)
     {
@@ -41,6 +44,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginService.ClientState.Login += OnLogin;
         PluginService.ClientState.TerritoryChanged += OnTerritoryChanged;
         PluginService.Framework.Update += OnFrameworkUpdate;
+        TrySubscribePenumbraEvents();
         pluginInterface.UiBuilder.Draw += DrawUi;
         pluginInterface.UiBuilder.OpenMainUi += OpenMainUi;
         pluginInterface.UiBuilder.OpenConfigUi += OpenConfigUi;
@@ -56,6 +60,8 @@ public sealed class Plugin : IDalamudPlugin
         PluginService.Framework.Update -= OnFrameworkUpdate;
         PluginService.ClientState.TerritoryChanged -= OnTerritoryChanged;
         PluginService.ClientState.Login -= OnLogin;
+        if (modAddedSubscribed)
+            penumbra.UnsubscribeModAdded(OnPenumbraModAdded);
         PluginService.PluginInterface.UiBuilder.OpenConfigUi -= OpenConfigUi;
         PluginService.PluginInterface.UiBuilder.OpenMainUi -= OpenMainUi;
         PluginService.PluginInterface.UiBuilder.Draw -= DrawUi;
@@ -98,6 +104,22 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OpenMainUi()
         => mainUiOpen = true;
+
+    private void TrySubscribePenumbraEvents()
+    {
+        if (modAddedSubscribed)
+            return;
+
+        try
+        {
+            penumbra.SubscribeModAdded(OnPenumbraModAdded);
+            modAddedSubscribed = true;
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Debug(ex, "Could not subscribe to Penumbra ModAdded yet.");
+        }
+    }
 
     private void OpenConfigUi()
         => configUiOpen = true;
@@ -249,6 +271,8 @@ public sealed class Plugin : IDalamudPlugin
                 return;
             }
 
+            TrySubscribePenumbraEvents();
+
             await ReconcileMappingAsync(Config.GetPrimaryMapping(), lifetime.Token).ConfigureAwait(false);
 
             Config.Save();
@@ -285,15 +309,18 @@ public sealed class Plugin : IDalamudPlugin
         DeleteExistingManagedModBeforeInstall(previousModDirectory, previousModName, modsBeforeInstall);
         modsBeforeInstall = penumbra.GetModList();
 
+        PrepareForModAdded();
         var installCode = penumbra.InstallMod(download.Path);
         if (!IsSuccess(installCode))
             throw new InvalidOperationException($"Penumbra rejected package '{Path.GetFileName(download.Path)}' with code {installCode}.");
+
+        var addedDirectory = await WaitForModAddedAsync(cancellationToken).ConfigureAwait(false);
         var modsAfterInstall = penumbra.GetModList();
 
         var collection = FindCollection(mapping.CollectionName)
             ?? throw new InvalidOperationException($"Collection '{mapping.CollectionName}' does not exist. Create it in Penumbra once, then run /thegrid update.");
 
-        var modDirectory = TryResolveModDirectory(mapping, modsAfterInstall, modsBeforeInstall);
+        var modDirectory = TryResolveModDirectory(mapping, modsAfterInstall, modsBeforeInstall, addedDirectory);
         if (modDirectory is not null)
         {
             var enableCode = penumbra.TrySetMod(collection.Id, modDirectory, mapping.ModName, true);
@@ -316,6 +343,50 @@ public sealed class Plugin : IDalamudPlugin
             ? $"Imported latest release {download.Version}; Penumbra did not expose the mod in IPC immediately."
             : $"Applied latest release {download.Version}.";
         PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
+    }
+
+    private void PrepareForModAdded()
+    {
+        lock (modAddedLock)
+        {
+            pendingModAdded = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+    }
+
+    private async Task<string?> WaitForModAddedAsync(CancellationToken cancellationToken)
+    {
+        TaskCompletionSource<string>? waiter;
+        lock (modAddedLock)
+        {
+            waiter = pendingModAdded;
+        }
+
+        if (waiter is null)
+            return null;
+
+        try
+        {
+            var completed = await Task.WhenAny(waiter.Task, Task.Delay(TimeSpan.FromSeconds(30), cancellationToken)).ConfigureAwait(false);
+            return completed == waiter.Task
+                ? await waiter.Task.ConfigureAwait(false)
+                : null;
+        }
+        finally
+        {
+            lock (modAddedLock)
+            {
+                if (ReferenceEquals(pendingModAdded, waiter))
+                    pendingModAdded = null;
+            }
+        }
+    }
+
+    private void OnPenumbraModAdded(string modDirectory)
+    {
+        lock (modAddedLock)
+        {
+            pendingModAdded?.TrySetResult(modDirectory);
+        }
     }
 
     private void DeleteExistingManagedModBeforeInstall(string previousModDirectory, string previousModName, System.Collections.Generic.Dictionary<string, string> installedMods)
@@ -417,8 +488,11 @@ public sealed class Plugin : IDalamudPlugin
                 ? collection
                 : null;
 
-    private static string? TryResolveModDirectory(ModMapping mapping, System.Collections.Generic.Dictionary<string, string> mods, System.Collections.Generic.Dictionary<string, string> modsBeforeInstall)
+    private static string? TryResolveModDirectory(ModMapping mapping, System.Collections.Generic.Dictionary<string, string> mods, System.Collections.Generic.Dictionary<string, string> modsBeforeInstall, string? addedDirectory)
     {
+        if (!string.IsNullOrWhiteSpace(addedDirectory) && mods.ContainsKey(addedDirectory))
+            return addedDirectory;
+
         if (mods.ContainsKey(mapping.ModDirectory))
             return mapping.ModDirectory;
 
