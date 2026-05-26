@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -43,6 +44,9 @@ internal sealed class GitHubReleaseClient : IDisposable
     {
         var releasesUri = new Uri($"https://api.github.com/repos/{ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}/releases?per_page=30");
         using var releasesResponse = await httpClient.GetAsync(releasesUri, cancellationToken).ConfigureAwait(false);
+        if (releasesResponse.StatusCode == HttpStatusCode.NotFound)
+            throw new InvalidOperationException($"GitHub API cannot access {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}. Make the repository public, or GitHub returns 404 for unauthenticated plugin update checks.");
+
         releasesResponse.EnsureSuccessStatusCode();
 
         await using var releasesStream = await releasesResponse.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
