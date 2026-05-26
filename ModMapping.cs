@@ -4,8 +4,6 @@ public sealed class ModMapping
 {
     public const string FixedGitHubOwner = "CarpeNukem";
     public const string FixedGitHubRepo = "grid_nroot_update";
-    public const string FixedGitHubBranch = "main";
-    public const string FixedAssetFolder = "pmp";
 
     public string Name { get; set; } = "TheGrid";
     public string LastAppliedVersion { get; set; } = string.Empty;

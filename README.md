@@ -13,7 +13,7 @@ Dalamud plugin for keeping a configured Penumbra venue mod updated from GitHub r
 /thegrid asset *.pmp
 ```
 
-The release source is locked to `CarpeNukem/grid_nroot_update`. The plugin always checks GitHub's latest release and downloads the matching asset from that release. If no release exists yet, it falls back to matching files in `pmp/` on the `main` branch.
+The release source is locked to `CarpeNukem/grid_nroot_update`. The plugin always checks GitHub's latest release and downloads the matching asset from that release.
 
 ## Commands
 

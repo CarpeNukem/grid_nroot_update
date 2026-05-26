@@ -272,7 +272,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         var cacheDirectory = Path.Combine(PluginService.PluginInterface.ConfigDirectory.FullName, "cache");
         var download = await github.DownloadLatestReleaseAssetAsync(mapping, cacheDirectory, cancellationToken).ConfigureAwait(false);
-        if (!download.FromRepositoryFallback && string.Equals(download.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(download.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
         {
             mapping.LastStatus = $"Latest release {download.Version} already applied.";
             return;
@@ -296,9 +296,7 @@ public sealed class Plugin : IDalamudPlugin
 
         mapping.ModDirectory = modDirectory;
         mapping.LastAppliedVersion = download.Version;
-        mapping.LastStatus = download.FromRepositoryFallback
-            ? $"Applied fallback package from {ModMapping.FixedGitHubBranch}."
-            : $"Applied latest release {download.Version}.";
+        mapping.LastStatus = $"Applied latest release {download.Version}.";
         PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
     }
 
