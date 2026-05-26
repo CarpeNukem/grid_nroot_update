@@ -27,11 +27,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         pluginInterface.Create<PluginService>();
         Config = pluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
-        if (Config.Mappings.Count == 0)
-        {
-            Config.Mappings.Add(ModMapping.CreateDefault());
-            Config.Save();
-        }
+        Config.GetPrimaryMapping();
+        Config.Save();
 
         penumbra = new PenumbraIpc(pluginInterface);
 
@@ -122,22 +119,20 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        foreach (var mapping in Config.Mappings)
-        {
-            ImGui.TextUnformatted("TheGrid");
-            ImGui.TextUnformatted($"{ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
-            ImGui.TextUnformatted($"Last applied: {DisplayValue(mapping.LastAppliedVersion)}");
-            ImGui.TextWrapped(mapping.LastStatus);
+        var mapping = Config.GetPrimaryMapping();
+        ImGui.TextUnformatted("TheGrid");
+        ImGui.TextUnformatted($"{ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
+        ImGui.TextUnformatted($"Last applied: {DisplayValue(mapping.LastAppliedVersion)}");
+        ImGui.TextWrapped(mapping.LastStatus);
 
-            if (ImGui.Button("Update"))
-                QueueReconcile(forceDownload: true);
+        if (ImGui.Button("Update"))
+            QueueReconcile(forceDownload: true);
 
-            ImGui.SameLine();
-            if (ImGui.Button("Assign"))
-                _ = AssignAllAsync(lifetime.Token);
+        ImGui.SameLine();
+        if (ImGui.Button("Assign"))
+            _ = AssignAllAsync(lifetime.Token);
 
-            ImGui.Spacing();
-        }
+        ImGui.Spacing();
 
         if (ImGui.Button("Open Config"))
             OpenConfigUi();
@@ -156,10 +151,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        if (Config.Mappings.Count == 0)
-            Config.Mappings.Add(ModMapping.CreateDefault());
-
-        var mapping = Config.Mappings[0];
+        var mapping = Config.GetPrimaryMapping();
         var changed = false;
 
         ImGui.TextUnformatted($"Repository: {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
@@ -236,8 +228,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (forceDownload)
         {
-            foreach (var mapping in Config.Mappings)
-                mapping.LastAppliedVersion = string.Empty;
+            var mapping = Config.GetPrimaryMapping();
+            mapping.LastAppliedVersion = string.Empty;
             Config.Save();
         }
 
@@ -257,8 +249,7 @@ public sealed class Plugin : IDalamudPlugin
                 return;
             }
 
-            foreach (var mapping in Config.Mappings)
-                await ReconcileMappingAsync(mapping, lifetime.Token).ConfigureAwait(false);
+            await ReconcileMappingAsync(Config.GetPrimaryMapping(), lifetime.Token).ConfigureAwait(false);
 
             Config.Save();
             await AssignAllAsync(lifetime.Token).ConfigureAwait(false);
@@ -317,8 +308,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             await PluginService.Framework.RunOnFrameworkThread(() =>
             {
-                foreach (var mapping in Config.Mappings)
-                    AssignMapping(mapping);
+                AssignMapping(Config.GetPrimaryMapping());
 
                 Config.Save();
             });
@@ -406,12 +396,10 @@ public sealed class Plugin : IDalamudPlugin
 
     private void PrintStatus()
     {
-        foreach (var mapping in Config.Mappings)
-        {
-            PluginService.Chat.Print(
-                $"{mapping.Name}: latestRelease=auto, lastApplied={mapping.LastAppliedVersion}, collection={mapping.CollectionName}, npc={mapping.NpcName}, status={mapping.LastStatus}",
-                "TheGrid");
-        }
+        var mapping = Config.GetPrimaryMapping();
+        PluginService.Chat.Print(
+            $"{mapping.Name}: latestRelease=auto, lastApplied={mapping.LastAppliedVersion}, collection={mapping.CollectionName}, npc={mapping.NpcName}, status={mapping.LastStatus}",
+            "TheGrid");
     }
 
     private void SetAssetPattern(string pattern)
@@ -422,11 +410,9 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        foreach (var mapping in Config.Mappings)
-        {
-            mapping.AssetPattern = pattern;
-            mapping.LastStatus = $"Configured asset pattern {pattern}.";
-        }
+        var mapping = Config.GetPrimaryMapping();
+        mapping.AssetPattern = pattern;
+        mapping.LastStatus = $"Configured asset pattern {pattern}.";
 
         Config.Save();
         PluginService.Chat.Print($"Configured asset pattern {pattern}.", "TheGrid");
@@ -437,8 +423,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void SetAllStatus(string status)
     {
-        foreach (var mapping in Config.Mappings)
-            mapping.LastStatus = status;
+        Config.GetPrimaryMapping().LastStatus = status;
 
         Config.Save();
         PluginService.Chat.PrintError(status, "TheGrid");
