@@ -23,6 +23,12 @@ public sealed class PluginConfig : IPluginConfiguration
         if (Mappings.Count > 1)
             Mappings.RemoveRange(1, Mappings.Count - 1);
 
+        if (Mappings[0].ModDirectory == "TheGrid")
+            Mappings[0].ModDirectory = "n_root_the_grid";
+
+        if (string.IsNullOrWhiteSpace(Mappings[0].ModName))
+            Mappings[0].ModName = "n_root_the_grid";
+
         return Mappings[0];
     }
 }
