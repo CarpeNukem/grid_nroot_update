@@ -1,13 +1,20 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Numerics;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using Dalamud.Interface.Textures;
+using Dalamud.Interface.Textures.TextureWraps;
 using Dalamud.Game.ClientState.Objects.Enums;
+using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.Command;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using Dalamud.Utility;
 using Dalamud.Bindings.ImGui;
 
 namespace GridNrootUpdate;
@@ -16,14 +23,44 @@ public sealed class Plugin : IDalamudPlugin
 {
     private const string CommandName = "/thegrid";
     private const byte MaleNonPlayerCharacterCollectionType = 3;
+    private const float DefaultMapZoom = 0.44f;
+    private const string LightlessSyncshellId = "LLS-6AAKEJBAPRB0";
+    private const string PlayerSyncSyncshellId = "n_root";
+    private static readonly DrinkMenuItem[] DrinkMenu =
+    [
+        new("Above The Grid", "10 000", "above_the_grid.png", "gin, elderflower cordial, lemon, ChroManticore Ultraviolet",
+            "A cold, luminous rooftop cocktail for those who have risen above the city's noise. Smooth, silver, and electric-blue.",
+            "Sweet, sharp, and dangerously smooth. Neon blackberry and toxic lime burst first, followed by a cold absinthe edge and a dark berry finish."),
+        new("Toxic Brat (Rhas' Special)", "15 000", "toxic_brat.png", "vodka, blackberry liqueur, lime, ChroManticore Lime, Ab-Synth rinse",
+            "A dangerously sweet neon cocktail with electric absinthe, crystal vodka, dark blackberry notes, cat-ear garnish, and black sugar rim.",
+            "Sweet, sharp, and dangerously smooth. Neon blackberry and toxic lime hit first, while electric absinthe adds a cold chaotic edge underneath."),
+        new("Trust Issues", "10 000", "trust_issues.png", "??? / zero alcohol",
+            "Presented with far too much confidence for something this clear. Chilled, elegant, and treated like a house secret.",
+            "Clean, crisp, alarmingly honest. Notes of nothing, followed by a refreshing finish of betrayal."),
+        new("Chornobyl Vice", "5 000", "chornobyl_vice.png", "Cactus Juice, lychee syrup, pear nectar, lemon, Vatnajokull Sparkling / zero alcohol",
+            "A neon-green rooftop temptation served with a tiny activation vial and radioactive glow.",
+            "Soft, floral, fruity, and lightly sweet, with lychee and pear up front, elderflower underneath, honey for warmth, and lemon for a clean finish."),
+        new("9", "20 000", "nine.png", "vodka, gin, white rum, tequila, blue curacao, lime, lemon, syrup, Vatnajokull Sparkling",
+            "The Grid's overloaded house anomaly: a glowing, chaotic cocktail built from exactly nine ingredients.",
+            "Bright, sharp, and dangerously drinkable. Citrus cuts through the layered spirits, blue curacao adds sweet orange, and soda gives a clean finish."),
+        new("Hurricane Havo", "15 000", "hurricane_havo.png", "tequila, lime, salt",
+            "A deceptively simple tequila shot with lime, salt, and a customer-service incident built in.",
+            "Sharp, clean, and immediate. Ordering includes a brief consensual serving ritual."),
+    ];
+
     private readonly CancellationTokenSource lifetime = new();
     private readonly GitHubReleaseClient github = new();
     private readonly PenumbraIpc penumbra;
     private readonly object modAddedLock = new();
+    private readonly Dictionary<string, ISharedImmediateTexture> textures;
+    private readonly string textureLoadSource;
     private bool reconcileQueued;
     private bool reconcileRunning;
     private bool mainUiOpen;
     private bool configUiOpen;
+    private DeckView selectedView = DeckView.Home;
+    private float mapZoom = DefaultMapZoom;
+    private uint lastAutoOpenedTerritory;
     private bool modAddedSubscribed;
     private TaskCompletionSource<string>? pendingModAdded;
 
@@ -35,10 +72,11 @@ public sealed class Plugin : IDalamudPlugin
         Config.Save();
 
         penumbra = new PenumbraIpc(pluginInterface);
+        (textures, textureLoadSource) = LoadTextures();
 
         PluginService.Commands.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Manage TheGrid Penumbra update and Chromiel assignment.",
+            HelpMessage = "Open The Grid cyberdeck app and manage venue sync/update tools.",
             ShowInHelp = true,
         });
 
@@ -75,35 +113,22 @@ public sealed class Plugin : IDalamudPlugin
     {
         var trimmed = args.Trim();
         var split = trimmed.Split(' ', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        var subCommand = split.Length == 0 ? "status" : split[0].ToLowerInvariant();
-        var value = split.Length > 1 ? split[1] : string.Empty;
+        var subCommand = split.Length == 0 ? string.Empty : split[0].ToLowerInvariant();
 
         switch (subCommand)
         {
             case "":
-            case "status":
-                PrintStatus();
-                break;
-            case "asset":
-                SetAssetPattern(value);
+                OpenMainUi();
                 break;
             case "update":
                 QueueReconcile();
                 PluginService.Chat.Print("Queued update check.", "TheGrid");
                 break;
-            case "force":
-            case "reinstall":
-                QueueReconcile(forceDownload: true);
-                PluginService.Chat.Print("Queued forced reinstall.", "TheGrid");
-                break;
-            case "assign":
-                _ = AssignAllAsync(lifetime.Token);
-                break;
             case "config":
                 OpenConfigUi();
                 break;
             default:
-                PluginService.Chat.PrintError($"Unknown command '{args}'. Use status, asset, update, reinstall, assign, or config.", "TheGrid");
+                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /thegrid update, or /thegrid config.", "TheGrid");
                 break;
         }
     }
@@ -141,17 +166,356 @@ public sealed class Plugin : IDalamudPlugin
         if (!mainUiOpen)
             return;
 
-        if (!ImGui.Begin("TheGrid Updater", ref mainUiOpen))
+        ImGui.SetNextWindowSize(new Vector2(323, 704), ImGuiCond.FirstUseEver);
+        if (!ImGui.Begin("The Grid Cyberdeck", ref mainUiOpen, ImGuiWindowFlags.NoScrollbar))
         {
             ImGui.End();
             return;
         }
 
+        PushCyberdeckStyle();
+        DrawRooftopBackground();
+        if (ImGui.BeginChild("deck_body", new Vector2(0, 0), true))
+        {
+            if (selectedView == DeckView.Home)
+                DrawHomeView();
+            else
+                DrawAppScreen();
+        }
+
+        ImGui.EndChild();
+        PopCyberdeckStyle();
+        ImGui.End();
+    }
+
+    private void DrawHomeView()
+    {
+        DrawDeckHeader();
+        ImGui.Separator();
+        ImGui.Spacing();
+        DrawDeckButtons(ImGui.GetContentRegionAvail().X);
+    }
+
+    private void DrawAppScreen()
+    {
+        if (ImGui.Button("<-"))
+            selectedView = DeckView.Home;
+
+        ImGui.SameLine();
+        ImGui.TextUnformatted(GetDeckViewTitle(selectedView));
+        ImGui.Separator();
+        ImGui.Spacing();
+        DrawDeckView();
+    }
+
+    private void DrawDeckView()
+    {
+        switch (selectedView)
+        {
+            case DeckView.Home:
+                DrawHomeView();
+                break;
+            case DeckView.Wifi:
+                DrawWifiView();
+                break;
+            case DeckView.Map:
+                DrawMapView();
+                break;
+            case DeckView.Menu:
+                DrawMenuView();
+                break;
+            case DeckView.Network:
+                DrawNetworkView();
+                break;
+            case DeckView.Settings:
+                DrawSettingsView();
+                break;
+        }
+    }
+
+    private static string GetDeckViewTitle(DeckView view)
+        => view switch
+        {
+            DeckView.Map => "Address",
+            DeckView.Wifi => "Wi-Fi",
+            DeckView.Menu => "Menu",
+            DeckView.Network => "Network",
+            DeckView.Settings => "Settings",
+            _ => "The Grid",
+        };
+
+    private void DrawDeckHeader()
+    {
+        var wrap = GetTextureWrap("grid.png");
+        if (wrap is not null)
+        {
+            ImGui.Image(wrap.Handle, GetTextureSize(wrap));
+            ImGui.SameLine();
+        }
+
+        ImGui.BeginGroup();
+        ImGui.TextUnformatted("THE GRID // n_root");
+        ImGui.TextWrapped("Welcome to The Grid.");
+        ImGui.TextColored(new Vector4(0.54f, 0.84f, 0.80f, 1.00f), Config.VenueAddress);
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Needs Lifecycle plugin to work");
+            if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+                OpenAddress();
+        }
+
+        ImGui.EndGroup();
+        ImGui.Spacing();
+    }
+
+    private void DrawRooftopBackground()
+    {
+        var wrap = GetTextureWrap("rooftop.png");
+        if (wrap is null)
+            return;
+
+        var contentMin = ImGui.GetCursorScreenPos();
+        var contentSize = ImGui.GetContentRegionAvail();
+        if (contentSize.X <= 0 || contentSize.Y <= 0)
+            return;
+
+        var scale = contentSize.X / wrap.Width;
+        var imageSize = new Vector2(contentSize.X, wrap.Height * scale);
+        if (imageSize.Y < contentSize.Y)
+        {
+            scale = contentSize.Y / wrap.Height;
+            imageSize = new Vector2(wrap.Width * scale, contentSize.Y);
+        }
+
+        var imageMin = new Vector2(contentMin.X + (contentSize.X - imageSize.X) / 2, contentMin.Y);
+        var imageMax = imageMin + imageSize;
+        var contentMax = contentMin + contentSize;
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.PushClipRect(contentMin, contentMax, true);
+        drawList.AddImage(wrap.Handle, imageMin, imageMax, Vector2.Zero, Vector2.One, ImGui.GetColorU32(new Vector4(1, 1, 1, 0.34f)));
+        drawList.AddRectFilled(contentMin, contentMax, ImGui.GetColorU32(new Vector4(0.01f, 0.03f, 0.04f, 0.60f)));
+        drawList.PopClipRect();
+    }
+
+    private void DrawDeckButtons(float width)
+    {
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var buttonWidth = MathF.Max(92, (width - spacing) / 2);
+        var buttonHeight = 158f;
+        var buttonSize = new Vector2(buttonWidth, buttonHeight);
+
+        if (DrawImageNavButton("Menu", "menu.png", buttonSize))
+            selectedView = DeckView.Menu;
+        ImGui.SameLine();
+        if (DrawImageNavButton("Wi-Fi", "wifi.png", buttonSize))
+            selectedView = DeckView.Wifi;
+
+        if (DrawImageNavButton("Address", "address.png", buttonSize))
+            selectedView = DeckView.Map;
+        ImGui.SameLine();
+        if (DrawImageNavButton("Network", "network.png", buttonSize))
+            selectedView = DeckView.Network;
+
+        ImGui.Dummy(buttonSize);
+        ImGui.SameLine();
+        if (DrawImageNavButton("Settings", "settings.png", buttonSize))
+            selectedView = DeckView.Settings;
+    }
+
+    private bool DrawImageNavButton(string label, string imageName, Vector2 size)
+    {
+        ImGui.BeginGroup();
+        var clicked = false;
+        var wrap = GetTextureWrap(imageName);
+        var start = ImGui.GetCursorScreenPos();
+
+        if (wrap is not null)
+        {
+            ImGui.Button($"##tile_{label}", size);
+            clicked = ImGui.IsItemClicked();
+            var iconSize = GetTextureSize(wrap);
+            var iconPos = new Vector2(start.X + (size.X - iconSize.X) / 2, start.Y + 12);
+            ImGui.GetWindowDrawList().AddImage(wrap.Handle, iconPos, iconPos + iconSize);
+        }
+        else
+        {
+            clicked = ImGui.Button(label, size);
+        }
+
+        var textWidth = ImGui.CalcTextSize(label).X;
+        ImGui.GetWindowDrawList().AddText(
+            new Vector2(start.X + MathF.Max(0, (size.X - textWidth) / 2), start.Y + size.Y - 25),
+            ImGui.GetColorU32(ImGuiCol.Text),
+            label);
+        ImGui.EndGroup();
+        return clicked;
+    }
+
+    private void DrawWifiView()
+    {
+        ImGui.TextUnformatted("Wi-Fi / Syncshell");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        DrawTerminalLine("Lightless");
+        DrawCopyableTerminalLine("Id", LightlessSyncshellId, "lightless_id");
+        DrawCopyableTerminalLine("Pwd", LightlessSyncshellId, "lightless_pwd");
+        ImGui.TextDisabled("same as id");
+        ImGui.Spacing();
+
+        DrawTerminalLine("PlayerSync");
+        DrawCopyableTerminalLine("Id", PlayerSyncSyncshellId, "playersync_id");
+        ImGui.TextDisabled("can join without password");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.TextWrapped("Please compress your textures.");
+        ImGui.TextWrapped("Please be SFW.");
+        ImGui.Spacing();
+        if (ImGui.Button("Discord"))
+            OpenDiscord();
+    }
+
+    private void DrawMapView()
+    {
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted(Config.VenueAddress);
+        ImGui.SameLine();
+        if (ImGui.Button("Copy"))
+            CopyToClipboard(Config.VenueAddress);
+        DrawHoverTooltip("Copy to clipboard");
+        ImGui.SameLine();
+        if (ImGui.Button("Navigate"))
+            OpenAddress();
+        DrawHoverTooltip("Needs Lifecycle plugin to work");
+
+        ImGui.Spacing();
+
+        if (ImGui.Button("-"))
+            mapZoom = MathF.Max(0.2f, mapZoom - 0.1f);
+        ImGui.SameLine();
+        if (ImGui.Button("+"))
+            mapZoom = MathF.Min(3.0f, mapZoom + 0.1f);
+        ImGui.SameLine();
+        if (ImGui.Button("Reset"))
+            mapZoom = DefaultMapZoom;
+        ImGui.SameLine();
+        ImGui.TextDisabled($"{mapZoom:0.00}x");
+        ImGui.Separator();
+
+        if (ImGui.BeginChild("map_scroll", new Vector2(0, 0), true, ImGuiWindowFlags.HorizontalScrollbar))
+        {
+            var wrap = GetTextureWrap("map.png");
+            if (wrap is not null)
+            {
+                if (ImGui.IsWindowHovered())
+                {
+                    var wheel = ImGui.GetIO().MouseWheel;
+                    if (Math.Abs(wheel) > 0.001f)
+                        mapZoom = Math.Clamp(mapZoom + (wheel * 0.08f), 0.2f, 3.0f);
+                }
+
+                var imageSize = new Vector2(wrap.Width * mapZoom, wrap.Height * mapZoom);
+                var avail = ImGui.GetContentRegionAvail();
+                if (imageSize.X < avail.X)
+                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (avail.X - imageSize.X) / 2);
+
+                ImGui.Image(wrap.Handle, imageSize);
+            }
+            else
+            {
+                ImGui.TextWrapped("Map image is missing.");
+            }
+        }
+
+        ImGui.EndChild();
+    }
+
+    private void DrawMenuView()
+    {
+        ImGui.TextUnformatted("Drinks Card");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        foreach (var item in DrinkMenu)
+        {
+            var wrap = GetTextureWrap(item.ImageName);
+            if (wrap is not null)
+            {
+                ImGui.Image(wrap.Handle, GetTextureSize(wrap));
+                ImGui.SameLine();
+            }
+
+            ImGui.BeginGroup();
+            ImGui.TextUnformatted($"{item.Name}  /  {item.Price}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Copy##drink_{item.Name}"))
+                CopyToClipboard(item.Name);
+            DrawHoverTooltip("Copy to clipboard");
+            ImGui.TextWrapped(item.Description);
+            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X);
+            ImGui.TextDisabled($"Ingredients: {item.Ingredients}");
+            ImGui.PopTextWrapPos();
+            ImGui.TextWrapped($"Taste: {item.Taste}");
+            ImGui.EndGroup();
+            ImGui.Spacing();
+            ImGui.Separator();
+            ImGui.Spacing();
+        }
+    }
+
+    private void DrawNetworkView()
+    {
+        var players = PluginService.Objects
+            .OfType<IPlayerCharacter>()
+            .Where(player => player.ObjectKind == ObjectKind.Pc && !string.IsNullOrWhiteSpace(player.Name.TextValue))
+            .GroupBy(GetPlayerTellName, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(GetPlayerTellName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        ImGui.TextUnformatted($"Local players detected: {players.Count}");
+        ImGui.TextDisabled("Client-visible players in this instance.");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        if (players.Count == 0)
+        {
+            ImGui.TextWrapped("No local player signals detected.");
+            return;
+        }
+
+        foreach (var player in players)
+        {
+            var tellName = GetPlayerTellName(player);
+            if (ImGui.Selectable(tellName))
+                PluginService.Targets.Target = player;
+        }
+    }
+
+    private void DrawSettingsView()
+    {
         var mapping = Config.GetPrimaryMapping();
-        ImGui.TextUnformatted("TheGrid");
-        ImGui.TextUnformatted($"{ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
+        var penumbraAvailable = penumbra.IsAvailable();
+        var collection = penumbraAvailable ? FindCollectionSafely(mapping.CollectionName) : null;
+        ImGui.TextUnformatted("Settings");
+        ImGui.Separator();
+        ImGui.TextUnformatted($"Repository: {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
+        ImGui.TextUnformatted($"Penumbra: {(penumbraAvailable ? "online" : "offline")}");
+        ImGui.TextUnformatted($"Collection: {mapping.CollectionName} {(collection is null ? "missing" : "found")}");
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Copy##collection_name"))
+            CopyToClipboard(mapping.CollectionName);
+        DrawHoverTooltip("Copy to clipboard");
+        if (collection is null)
+            ImGui.TextWrapped($"Create a persistent Penumbra collection named '{mapping.CollectionName}', then run Update or Assign.");
+
+        ImGui.TextUnformatted($"Images: {textures.Count} loaded");
+        ImGui.TextDisabled(textureLoadSource);
         ImGui.TextUnformatted($"Last applied: {DisplayValue(mapping.LastAppliedVersion)}");
         ImGui.TextWrapped(mapping.LastStatus);
+        ImGui.TextDisabled($"Auto-open looks for configured NPC/mannequin: {mapping.NpcName}");
+        ImGui.Spacing();
 
         if (ImGui.Button("Update"))
             QueueReconcile();
@@ -165,11 +529,52 @@ public sealed class Plugin : IDalamudPlugin
             QueueReconcile(forceDownload: true);
 
         ImGui.Spacing();
-
         if (ImGui.Button("Open Config"))
             OpenConfigUi();
+    }
 
-        ImGui.End();
+    private static void DrawTerminalLine(string text)
+    {
+        ImGui.TextDisabled(">");
+        ImGui.SameLine();
+        ImGui.TextWrapped(text);
+    }
+
+    private static void DrawCopyableTerminalLine(string label, string value, string id)
+    {
+        ImGui.TextDisabled(">");
+        ImGui.SameLine();
+        ImGui.TextUnformatted($"{label}: {value}");
+        ImGui.SameLine();
+        if (ImGui.SmallButton($"Copy##{id}"))
+            CopyToClipboard(value);
+        DrawHoverTooltip("Copy to clipboard");
+    }
+
+    private static void CopyToClipboard(string value)
+        => ImGui.SetClipboardText(value);
+
+    private static void DrawHoverTooltip(string tooltip)
+    {
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(tooltip);
+    }
+
+    private static string GetPlayerTellName(IPlayerCharacter player)
+    {
+        var name = player.Name.TextValue;
+        var world = GetWorldName(player);
+        return $"{name}@{world}";
+    }
+
+    private static string GetWorldName(IPlayerCharacter player)
+    {
+        var homeWorld = player.HomeWorld.ValueNullable?.Name.ExtractText();
+        if (!string.IsNullOrWhiteSpace(homeWorld))
+            return homeWorld;
+
+        var currentWorld = player.CurrentWorld.ValueNullable?.Name.ExtractText();
+        return string.IsNullOrWhiteSpace(currentWorld) ? "Unknown World" : currentWorld;
     }
 
     private void DrawConfigWindow()
@@ -185,22 +590,31 @@ public sealed class Plugin : IDalamudPlugin
 
         var mapping = Config.GetPrimaryMapping();
         var changed = false;
+        var mappingChanged = false;
+
+        changed |= InputText("Venue address", Config.VenueAddress, value => Config.VenueAddress = value);
+        changed |= InputText("Discord URL", Config.DiscordUrl, value => Config.DiscordUrl = value);
+        changed |= InputBool("Auto-open when venue mannequin is detected", Config.AutoOpenOnVenueAddress, value => Config.AutoOpenOnVenueAddress = value);
+        ImGui.Separator();
 
         ImGui.TextUnformatted($"Repository: {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
-        changed |= InputText("Asset pattern", mapping.AssetPattern, value => mapping.AssetPattern = value);
-        changed |= InputText("Collection name", mapping.CollectionName, value => mapping.CollectionName = value);
-        changed |= InputText("NPC name", mapping.NpcName, value => mapping.NpcName = value);
-        changed |= InputText("Penumbra mod directory", mapping.ModDirectory, value => mapping.ModDirectory = value);
-        changed |= InputText("Penumbra mod name", mapping.ModName, value => mapping.ModName = value);
+        mappingChanged |= InputText("Asset pattern", mapping.AssetPattern, value => mapping.AssetPattern = value);
+        mappingChanged |= InputText("Collection name", mapping.CollectionName, value => mapping.CollectionName = value);
+        mappingChanged |= InputText("NPC name", mapping.NpcName, value => mapping.NpcName = value);
+        mappingChanged |= InputText("Penumbra mod directory", mapping.ModDirectory, value => mapping.ModDirectory = value);
+        mappingChanged |= InputText("Penumbra mod name", mapping.ModName, value => mapping.ModName = value);
 
-        changed |= InputInt("Priority", mapping.Priority, value => mapping.Priority = value);
+        mappingChanged |= InputInt("Priority", mapping.Priority, value => mapping.Priority = value);
+        changed |= mappingChanged;
 
-        if (changed)
+        if (mappingChanged)
         {
             mapping.LastAppliedVersion = string.Empty;
             mapping.LastStatus = "Config changed. Run Update to apply.";
-            Config.Save();
         }
+
+        if (changed)
+            Config.Save();
 
         if (ImGui.Button("Save and Update"))
         {
@@ -215,6 +629,16 @@ public sealed class Plugin : IDalamudPlugin
         ImGui.TextWrapped("TheGrid must already exist in Penumbra. Current public Penumbra IPC can assign existing collections but does not expose named collection creation.");
 
         ImGui.End();
+    }
+
+    private static bool InputBool(string label, bool currentValue, Action<bool> setValue)
+    {
+        var value = currentValue;
+        if (!ImGui.Checkbox(label, ref value))
+            return false;
+
+        setValue(value);
+        return true;
     }
 
     private static bool InputText(string label, string currentValue, Action<string> setValue)
@@ -241,10 +665,16 @@ public sealed class Plugin : IDalamudPlugin
         => string.IsNullOrWhiteSpace(value) ? "(unset)" : value;
 
     private void OnLogin()
-        => QueueReconcile();
+    {
+        QueueReconcile();
+        QueueVenueAutoOpenCheck();
+    }
 
     private void OnTerritoryChanged(uint _)
-        => QueueAssignment();
+    {
+        QueueAssignment();
+        QueueVenueAutoOpenCheck();
+    }
 
     private void OnFrameworkUpdate(IFramework framework)
     {
@@ -270,6 +700,134 @@ public sealed class Plugin : IDalamudPlugin
 
     private void QueueAssignment()
         => PluginService.Framework.RunOnTick(() => _ = AssignAllAsync(lifetime.Token), delay: TimeSpan.FromSeconds(2), cancellationToken: lifetime.Token);
+
+    private void QueueVenueAutoOpenCheck()
+    {
+        if (!Config.AutoOpenOnVenueAddress)
+            return;
+
+        for (var attempt = 1; attempt <= 4; attempt++)
+        {
+            PluginService.Framework.RunOnTick(() =>
+            {
+                TryAutoOpenForVenueObject();
+            }, delay: TimeSpan.FromSeconds(attempt * 2), cancellationToken: lifetime.Token);
+        }
+    }
+
+    private void TryAutoOpenForVenueObject()
+    {
+        var territory = PluginService.ClientState.TerritoryType;
+        if (lastAutoOpenedTerritory == territory)
+            return;
+
+        var mapping = Config.GetPrimaryMapping();
+        for (var i = 0; i < PluginService.Objects.Length; i++)
+        {
+            if (!IsTargetNpc(PluginService.Objects[i], mapping.NpcName))
+                continue;
+
+            lastAutoOpenedTerritory = territory;
+            OpenMainUi();
+            return;
+        }
+    }
+
+    private void OpenAddress()
+    {
+        if (string.IsNullOrWhiteSpace(Config.VenueAddress))
+            return;
+
+        PluginService.Commands.ProcessCommand($"/li {Config.VenueAddress}");
+    }
+
+    private void OpenDiscord()
+    {
+        if (!string.IsNullOrWhiteSpace(Config.DiscordUrl))
+            Util.OpenLink(Config.DiscordUrl);
+    }
+
+    private static (Dictionary<string, ISharedImmediateTexture> Textures, string Source) LoadTextures()
+    {
+        var loaded = new Dictionary<string, ISharedImmediateTexture>(StringComparer.OrdinalIgnoreCase);
+        var source = "No image directory found.";
+
+        foreach (var directory in GetTextureSearchDirectories())
+        {
+            LoadTextureIfExists(loaded, Path.Combine(directory, "grid.png"));
+
+            var imageDirectory = Path.Combine(directory, "img");
+            if (!Directory.Exists(imageDirectory))
+                continue;
+
+            foreach (var path in Directory.EnumerateFiles(imageDirectory, "*.png"))
+                LoadTextureIfExists(loaded, path);
+
+            source = imageDirectory;
+            if (loaded.ContainsKey("map.png") && loaded.ContainsKey("address.png"))
+                break;
+        }
+
+        PluginService.Log.Information("Loaded {Count} The Grid image asset(s) from {Source}.", loaded.Count, source);
+        return (loaded, source);
+    }
+
+    private static IEnumerable<string> GetTextureSearchDirectories()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var directory in GetTextureSearchDirectoriesCore())
+        {
+            if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory) && seen.Add(directory))
+                yield return directory;
+        }
+    }
+
+    private static IEnumerable<string?> GetTextureSearchDirectoriesCore()
+    {
+        yield return PluginService.PluginInterface.AssemblyLocation.DirectoryName;
+        yield return Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+        yield return AppContext.BaseDirectory;
+
+        var current = PluginService.PluginInterface.AssemblyLocation.Directory;
+        for (var i = 0; i < 4 && current is not null; i++, current = current.Parent)
+            yield return current.FullName;
+    }
+
+    private static void LoadTextureIfExists(Dictionary<string, ISharedImmediateTexture> loaded, string path)
+    {
+        if (File.Exists(path))
+            loaded[Path.GetFileName(path)] = PluginService.TextureProvider.GetFromFile(path);
+    }
+
+    private IDalamudTextureWrap? GetTextureWrap(string imageName)
+        => textures.TryGetValue(imageName, out var texture) ? texture.GetWrapOrDefault() : null;
+
+    private static Vector2 GetTextureSize(IDalamudTextureWrap texture)
+        => new(texture.Width, texture.Height);
+
+    private static string EscapeChatCommandArgument(string value)
+        => value.Replace("\"", string.Empty, StringComparison.Ordinal);
+
+    private static void PushCyberdeckStyle()
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.79f, 0.96f, 0.94f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.TextDisabled, new Vector4(0.48f, 0.67f, 0.66f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.03f, 0.05f, 0.06f, 0.88f));
+        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.08f, 0.21f, 0.23f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.14f, 0.38f, 0.40f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.23f, 0.57f, 0.58f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.Separator, new Vector4(0.22f, 0.53f, 0.52f, 1.00f));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(18, 18));
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 6);
+    }
+
+    private static void PopCyberdeckStyle()
+    {
+        ImGui.PopStyleVar(3);
+        ImGui.PopStyleColor(7);
+    }
+
 
     private async Task ReconcileAsync()
     {
@@ -514,6 +1072,19 @@ public sealed class Plugin : IDalamudPlugin
                 ? collection
                 : null;
 
+    private (Guid Id, string Name)? FindCollectionSafely(string collectionName)
+    {
+        try
+        {
+            return FindCollection(collectionName);
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Debug(ex, "Could not check Penumbra collection {Collection}.", collectionName);
+            return null;
+        }
+    }
+
     private static string? TryResolveModDirectory(ModMapping mapping, System.Collections.Generic.Dictionary<string, string> mods, System.Collections.Generic.Dictionary<string, string> modsBeforeInstall, string? addedDirectory)
     {
         if (!string.IsNullOrWhiteSpace(addedDirectory) && mods.ContainsKey(addedDirectory))
@@ -547,7 +1118,7 @@ public sealed class Plugin : IDalamudPlugin
         if (gameObject is null)
             return false;
 
-        if (gameObject.ObjectKind is not (ObjectKind.EventNpc or ObjectKind.BattleNpc))
+        if (gameObject.ObjectKind is ObjectKind.Pc)
             return false;
 
         return string.Equals(gameObject.Name.TextValue, npcName, StringComparison.OrdinalIgnoreCase);
@@ -590,4 +1161,16 @@ public sealed class Plugin : IDalamudPlugin
         Config.Save();
         PluginService.Chat.PrintError(status, "TheGrid");
     }
+
+    private enum DeckView
+    {
+        Home,
+        Map,
+        Wifi,
+        Menu,
+        Network,
+        Settings,
+    }
+
+    private sealed record DrinkMenuItem(string Name, string Price, string ImageName, string Ingredients, string Description, string Taste);
 }

@@ -11,7 +11,9 @@ internal sealed class PluginService
     [PluginService] public static IClientState ClientState { get; private set; } = null!;
     [PluginService] public static ICommandManager Commands { get; private set; } = null!;
     [PluginService] public static IObjectTable Objects { get; private set; } = null!;
+    [PluginService] public static ITargetManager Targets { get; private set; } = null!;
     [PluginService] public static IFramework Framework { get; private set; } = null!;
     [PluginService] public static IChatGui Chat { get; private set; } = null!;
     [PluginService] public static IPluginLog Log { get; private set; } = null!;
+    [PluginService] public static ITextureProvider TextureProvider { get; private set; } = null!;
 }

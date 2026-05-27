@@ -7,11 +7,13 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <Version>0.3.1.0</Version>
+    <Version>0.4.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="GridNrootUpdate.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="grid.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="img\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <Target Name="PackagePlugin" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
@@ -19,11 +21,14 @@
       <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).dll" />
       <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).json" />
       <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).deps.json" />
+      <PluginPackageImageFiles Include="$(OutputPath)img\*.png" />
     </ItemGroup>
     <RemoveDir Directories="$(OutputPath)package" />
     <MakeDir Directories="$(OutputPath)package" />
+    <MakeDir Directories="$(OutputPath)package\img" />
     <MakeDir Directories="$(OutputPath)dist" />
     <Copy SourceFiles="@(PluginPackageFiles)" DestinationFolder="$(OutputPath)package" />
+    <Copy SourceFiles="@(PluginPackageImageFiles)" DestinationFolder="$(OutputPath)package\img" />
     <ZipDirectory SourceDirectory="$(OutputPath)package" DestinationFile="$(OutputPath)dist\$(AssemblyName)-$(Version).zip" Overwrite="true" />
   </Target>
 </Project>

@@ -10,13 +10,13 @@
       "utility"
     ],
     "InternalName": "GridNrootUpdate",
-    "AssemblyVersion": "0.3.1.0",
+    "AssemblyVersion": "0.4.0",
     "IconUrl": "https://raw.githubusercontent.com/CarpeNukem/grid_nroot_update/main/grid.png",
     "RepoUrl": "https://github.com/CarpeNukem/grid_nroot_update",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
-    "DownloadLinkInstall": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.3.1/GridNrootUpdate-0.3.1.0.zip",
-    "DownloadLinkUpdate": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.3.1/GridNrootUpdate-0.3.1.0.zip",
-    "DownloadLinkTesting": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.3.1/GridNrootUpdate-0.3.1.0.zip"
+    "DownloadLinkInstall": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.4.0/GridNrootUpdate-0.4.0.zip",
+    "DownloadLinkUpdate": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.4.0/GridNrootUpdate-0.4.0.zip",
+    "DownloadLinkTesting": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.4.0/GridNrootUpdate-0.4.0.zip"
   }
 ]

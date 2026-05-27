@@ -6,6 +6,9 @@ namespace GridNrootUpdate;
 public sealed class PluginConfig : IPluginConfiguration
 {
     public int Version { get; set; } = 1;
+    public string VenueAddress { get; set; } = "Light Raiden Mist W2 P6";
+    public string DiscordUrl { get; set; } = "https://discord.gg/kxZMbP3C5B";
+    public bool AutoOpenOnVenueAddress { get; set; } = true;
 
     public List<ModMapping> Mappings { get; set; } =
     [
