@@ -1,26 +1,21 @@
-# TheGrid Updater
+# The Grid Cyberdeck
 
-Dalamud plugin for keeping a configured Penumbra venue mod updated from GitHub releases and assigned to the loaded `Chromiel` NPC/mannequin through the `TheGrid` collection.
+Dalamud plugin for The Grid venue. It opens a cyberdeck-style app with venue address navigation, syncshell information, drinks menu, Discord link, local network presence, and Penumbra update tools.
 
 ## Setup
 
 1. Install and enable Penumbra.
-2. Create a persistent Penumbra collection named `TheGrid`.
-3. Load the plugin as a dev plugin.
-4. Configure the release asset pattern if needed:
+2. Create a new, unassigned persistent Penumbra collection named `TheGrid`.
+3. Load the plugin as a dev plugin or install it from the custom repository.
+4. Use Settings > Update or `/thegrid update` to install/update the venue mod and assign the collection.
 
-```text
-/thegrid asset *.pmp
-```
-
-The release source is locked to `CarpeNukem/grid_nroot_update`. The plugin always checks GitHub's latest release and downloads the matching asset from that release.
+The release source is locked to `CarpeNukem/grid_nroot_update`. The plugin checks GitHub releases and downloads the configured venue mod asset.
 
 ## Commands
 
-- `/thegrid status` prints current mapping status.
-- `/thegrid asset <glob>` sets the release asset pattern. The default is `n_root_the_grid_beta.pmp`.
-- `/thegrid update` checks GitHub's latest release and applies it if it has not already been applied.
-- `/thegrid assign` reapplies `TheGrid` to currently loaded `Chromiel` objects.
+- `/thegrid` opens The Grid Cyberdeck.
+- `/thegrid update` checks GitHub releases and applies the latest matching venue mod.
+- `/thegrid config` opens the configuration window.
 
 ## Notes
 
@@ -34,7 +29,7 @@ Build the release package:
 dotnet build GridNrootUpdate.csproj -c Release
 ```
 
-Upload `bin/Release/dist/GridNrootUpdate-0.2.0.0.zip` to a GitHub release named `plugin-v0.2.0`, then users can add this custom repository URL in Dalamud:
+Upload `bin/Release/dist/GridNrootUpdate-0.4.2.zip` to a GitHub release named `plugin-v0.4.2`, then users can add this custom repository URL in Dalamud:
 
 ```text
 https://raw.githubusercontent.com/CarpeNukem/grid_nroot_update/main/repo.json
