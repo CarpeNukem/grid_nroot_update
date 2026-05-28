@@ -1,15 +1,15 @@
 {
-  "Author": "aecid",
-  "Name": "TheGrid Updater",
-  "Punchline": "Keeps TheGrid venue Penumbra mod assigned to Chromiel.",
-  "Description": "Downloads configured venue mod releases, enables them in TheGrid, and assigns the collection to Chromiel.",
+  "Author": "Carpe Nukem",
+  "Name": "The Grid Cyberdeck",
+  "Punchline": "A cyberdeck companion for The Grid venue.",
+  "Description": "Opens a cyberdeck-style venue app with map, menu, syncshell, Discord, local network presence, and Penumbra update tools for The Grid.",
   "Tags": [
     "penumbra",
     "modding",
     "utility"
   ],
   "InternalName": "GridNrootUpdate",
-  "AssemblyVersion": "0.4.0",
+  "AssemblyVersion": "0.4.1",
   "IconUrl": "https://raw.githubusercontent.com/CarpeNukem/grid_nroot_update/main/grid.png",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,

@@ -16,6 +16,7 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using Dalamud.Utility;
 using Dalamud.Bindings.ImGui;
+using NativeCharacter = FFXIVClientStructs.FFXIV.Client.Game.Character.Character;
 
 namespace GridNrootUpdate;
 
@@ -24,6 +25,8 @@ public sealed class Plugin : IDalamudPlugin
     private const string CommandName = "/thegrid";
     private const byte MaleNonPlayerCharacterCollectionType = 3;
     private const float DefaultMapZoom = 0.44f;
+    private const string LifestreamNavigationTooltip = "Click to navigate. Requires Lifestream plugin to work";
+    private static readonly Vector2 NetworkStatusIconSize = new(18, 18);
     private const string LightlessSyncshellId = "LLS-6AAKEJBAPRB0";
     private const string PlayerSyncSyncshellId = "n_root";
     private static readonly DrinkMenuItem[] DrinkMenu =
@@ -259,7 +262,7 @@ public sealed class Plugin : IDalamudPlugin
         ImGui.TextColored(new Vector4(0.54f, 0.84f, 0.80f, 1.00f), Config.VenueAddress);
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("Needs Lifecycle plugin to work");
+            ImGui.SetTooltip(LifestreamNavigationTooltip);
             if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
                 OpenAddress();
         }
@@ -387,7 +390,7 @@ public sealed class Plugin : IDalamudPlugin
         ImGui.SameLine();
         if (ImGui.Button("Navigate"))
             OpenAddress();
-        DrawHoverTooltip("Needs Lifecycle plugin to work");
+        DrawHoverTooltip(LifestreamNavigationTooltip);
 
         ImGui.Spacing();
 
@@ -447,11 +450,12 @@ public sealed class Plugin : IDalamudPlugin
             }
 
             ImGui.BeginGroup();
-            ImGui.TextUnformatted($"{item.Name}  /  {item.Price}");
+            ImGui.TextUnformatted(item.Name);
             ImGui.SameLine();
             if (ImGui.SmallButton($"Copy##drink_{item.Name}"))
                 CopyToClipboard(item.Name);
             DrawHoverTooltip("Copy to clipboard");
+            ImGui.TextDisabled(item.Price);
             ImGui.TextWrapped(item.Description);
             ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X);
             ImGui.TextDisabled($"Ingredients: {item.Ingredients}");
@@ -485,12 +489,84 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        if (!ImGui.BeginTable("network_players", 4, ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
+            return;
+
+        ImGui.TableSetupColumn("!", ImGuiTableColumnFlags.WidthFixed, 28);
+        ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn("Weapon", ImGuiTableColumnFlags.WidthFixed, 58);
+        ImGui.TableSetupColumn("Minion", ImGuiTableColumnFlags.WidthFixed, 52);
+        ImGui.TableHeadersRow();
+
         foreach (var player in players)
+            DrawNetworkPlayerRow(player);
+
+        ImGui.EndTable();
+    }
+
+    private void DrawNetworkPlayerRow(IPlayerCharacter player)
+    {
+        var tellName = GetPlayerTellName(player);
+        var weaponDrawn = player.StatusFlags.HasFlag(StatusFlags.WeaponOut);
+        var weaponDisplayed = IsWeaponDisplayed(player);
+        var showWeapon = weaponDrawn || weaponDisplayed == true;
+        var minionName = GetMinionName(player);
+        var hasMinion = !string.IsNullOrWhiteSpace(minionName);
+
+        ImGui.TableNextRow();
+        ImGui.TableSetColumnIndex(0);
+        if (showWeapon || hasMinion)
         {
-            var tellName = GetPlayerTellName(player);
-            if (ImGui.Selectable(tellName))
-                PluginService.Targets.Target = player;
+            ImGui.TextColored(new Vector4(1.00f, 0.20f, 0.18f, 1.00f), "<!>");
+            DrawHoverTooltip("Player has weapon displayed/drawn and/or minion present");
         }
+
+        ImGui.TableSetColumnIndex(1);
+        if (ImGui.Selectable(tellName, false, ImGuiSelectableFlags.SpanAllColumns))
+            PluginService.Targets.Target = player;
+
+        ImGui.TableSetColumnIndex(2);
+        if (showWeapon)
+            DrawNetworkStatusIcon("weapon.png", "Weapon", GetWeaponTooltip(weaponDisplayed == true, weaponDrawn));
+
+        ImGui.TableSetColumnIndex(3);
+        if (hasMinion)
+            DrawNetworkStatusIcon("minion.png", "Minion", $"Minion present: {minionName}");
+    }
+
+    private static unsafe bool? IsWeaponDisplayed(IPlayerCharacter player)
+    {
+        if (player.Address == IntPtr.Zero)
+            return null;
+
+        try
+        {
+            var character = (NativeCharacter*)player.Address;
+            return !character->DrawData.IsWeaponHidden;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string GetWeaponTooltip(bool weaponDisplayed, bool weaponDrawn)
+        => (weaponDisplayed, weaponDrawn) switch
+        {
+            (true, true) => "Weapon displayed and drawn",
+            (true, false) => "Weapon displayed",
+            _ => "Weapon drawn",
+        };
+
+    private void DrawNetworkStatusIcon(string imageName, string fallbackText, string tooltip)
+    {
+        var wrap = GetTextureWrap(imageName);
+        if (wrap is not null)
+            ImGui.Image(wrap.Handle, NetworkStatusIconSize);
+        else
+            ImGui.TextUnformatted(fallbackText);
+
+        DrawHoverTooltip(tooltip);
     }
 
     private void DrawSettingsView()
@@ -566,6 +642,9 @@ public sealed class Plugin : IDalamudPlugin
         var world = GetWorldName(player);
         return $"{name}@{world}";
     }
+
+    private static string? GetMinionName(IPlayerCharacter player)
+        => player.CurrentMinion?.ValueNullable?.Singular.ExtractText();
 
     private static string GetWorldName(IPlayerCharacter player)
     {
