@@ -9,7 +9,7 @@
     "utility"
   ],
   "InternalName": "GridNrootUpdate",
-  "AssemblyVersion": "0.4.1",
+  "AssemblyVersion": "0.4.1.0",
   "IconUrl": "https://raw.githubusercontent.com/CarpeNukem/grid_nroot_update/main/grid.png",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,

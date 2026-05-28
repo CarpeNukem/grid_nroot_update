@@ -492,10 +492,10 @@ public sealed class Plugin : IDalamudPlugin
         if (!ImGui.BeginTable("network_players", 4, ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
             return;
 
-        ImGui.TableSetupColumn("!", ImGuiTableColumnFlags.WidthFixed, 28);
+        ImGui.TableSetupColumn("##alert", ImGuiTableColumnFlags.WidthFixed, 28);
         ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("Weapon", ImGuiTableColumnFlags.WidthFixed, 58);
-        ImGui.TableSetupColumn("Minion", ImGuiTableColumnFlags.WidthFixed, 52);
+        ImGui.TableSetupColumn("##weapon", ImGuiTableColumnFlags.WidthFixed, 58);
+        ImGui.TableSetupColumn("##minion", ImGuiTableColumnFlags.WidthFixed, 52);
         ImGui.TableHeadersRow();
 
         foreach (var player in players)
