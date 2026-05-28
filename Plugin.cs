@@ -32,23 +32,23 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly DrinkMenuItem[] DrinkMenu =
     [
         new("Above The Grid", "10 000", "above_the_grid.png", "gin, elderflower cordial, lemon, ChroManticore Ultraviolet",
-            "A cold, luminous rooftop cocktail for those who have risen above the city's noise. Smooth, silver, and electric-blue.",
-            "Sweet, sharp, and dangerously smooth. Neon blackberry and toxic lime burst first, followed by a cold absinthe edge and a dark berry finish."),
+            "A cold, luminous rooftop cocktail for those who have risen above the city’s noise. Smooth, silver, and electric-blue, Above The Grid tastes like neon reflected through glass and rain from the top floor.",
+            "Cool, bright, and elegantly electric. Lemon cuts through soft elderflower first, followed by crisp gin botanicals and a smooth ultraviolet finish with a faint synthetic berry glow."),
         new("Toxic Brat (Rhas' Special)", "15 000", "toxic_brat.png", "vodka, blackberry liqueur, lime, ChroManticore Lime, Ab-Synth rinse",
-            "A dangerously sweet neon cocktail with electric absinthe, crystal vodka, dark blackberry notes, cat-ear garnish, and black sugar rim.",
-            "Sweet, sharp, and dangerously smooth. Neon blackberry and toxic lime hit first, while electric absinthe adds a cold chaotic edge underneath."),
+            "A dangerously sweet neon cocktail glowing in toxic pink and violet. Built with vodka, blackberry, lime, and an Ab-Synth™ rinse, Toxic Brat is playful, sharp, and made for nights that end in chaos.",
+            "Sweet, sharp, and dangerously smooth. Neon blackberry and toxic lime hit first with a candy-bright burst, followed by a cold absinthe edge and a clean vodka finish. Dark berry lingers underneath, sweet, electric, and almost addictive."),
         new("Trust Issues", "10 000", "trust_issues.png", "??? / zero alcohol",
             "Presented with far too much confidence for something this clear. Chilled, elegant, and treated like a house secret.",
             "Clean, crisp, alarmingly honest. Notes of nothing, followed by a refreshing finish of betrayal."),
         new("Chornobyl Vice", "5 000", "chornobyl_vice.png", "Cactus Juice, lychee syrup, pear nectar, lemon, Vatnajokull Sparkling / zero alcohol",
-            "A neon-green rooftop temptation served with a tiny activation vial and radioactive glow.",
-            "Soft, floral, fruity, and lightly sweet, with lychee and pear up front, elderflower underneath, honey for warmth, and lemon for a clean finish."),
+            "A neon-green rooftop temptation served with a tiny activation vial and radioactive glow, Chornobyl Vice looks like a containment breach but drinks smooth, floral, and dangerously gentle.",
+            "Soft, floral, fruity, and lightly sweet. Lychee and pear bloom first, followed by cool cactus freshness, a bright lemon cut, and a crisp sparkling finish that leaves a clean, almost mineral glow."),
         new("9", "20 000", "nine.png", "vodka, gin, white rum, tequila, blue curacao, lime, lemon, syrup, Vatnajokull Sparkling",
             "The Grid's overloaded house anomaly: a glowing, chaotic cocktail built from exactly nine ingredients.",
             "Bright, sharp, and dangerously drinkable. Citrus cuts through the layered spirits, blue curacao adds sweet orange, and soda gives a clean finish."),
         new("Hurricane Havo", "15 000", "hurricane_havo.png", "tequila, lime, salt",
-            "A deceptively simple tequila shot with lime, salt, and a customer-service incident built in.",
-            "Sharp, clean, and immediate. Ordering includes a brief consensual serving ritual."),
+            "A deceptively simple tequila shot with lime, salt, and a customer-service incident built in, Hurricane Havo is less a cocktail and more proof that the smallest storms can still pack a punch.",
+            "Sharp, clean, and immediate. Note: By ordering Hurricane Havo, you consent to a brief, non-lethal physical interaction as part of the serving ritual. The management assures you it is theatrical, consensual, and only emotionally questionable."),
     ];
 
     private readonly CancellationTokenSource lifetime = new();
@@ -492,10 +492,10 @@ public sealed class Plugin : IDalamudPlugin
         if (!ImGui.BeginTable("network_players", 4, ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
             return;
 
-        ImGui.TableSetupColumn("##alert", ImGuiTableColumnFlags.WidthFixed, 28);
+        ImGui.TableSetupColumn("##alert", ImGuiTableColumnFlags.WidthFixed, 24);
         ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("##weapon", ImGuiTableColumnFlags.WidthFixed, 58);
-        ImGui.TableSetupColumn("##minion", ImGuiTableColumnFlags.WidthFixed, 52);
+        ImGui.TableSetupColumn("##weapon", ImGuiTableColumnFlags.WidthFixed, 24);
+        ImGui.TableSetupColumn("##minion", ImGuiTableColumnFlags.WidthFixed, 24);
         ImGui.TableHeadersRow();
 
         foreach (var player in players)
