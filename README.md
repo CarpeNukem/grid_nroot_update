@@ -5,9 +5,9 @@ Dalamud plugin for The Grid venue. It opens a cyberdeck-style app with venue add
 ## Setup
 
 1. Install and enable Penumbra.
-2. Create a new, unassigned persistent Penumbra collection named `TheGrid`.
-3. Load the plugin as a dev plugin or install it from the custom repository.
-4. Use Settings > Update or `/thegrid update` to install/update the venue mod and assign the collection.
+2. Load the plugin as a dev plugin or install it from the custom repository.
+3. Use Settings > Update or `/thegrid update` to install/update the venue mod. The mod is organized under the `TheGrid` folder in Penumbra.
+4. To enable/assign the venue collection, create a new, unassigned persistent Penumbra collection named `TheGrid`, then use Settings > Assign or run Update again.
 
 The release source is locked to `CarpeNukem/grid_nroot_update`. The plugin checks GitHub releases and downloads the configured venue mod asset.
 
@@ -19,7 +19,7 @@ The release source is locked to `CarpeNukem/grid_nroot_update`. The plugin check
 
 ## Notes
 
-The plugin uses Penumbra's public IPC to install mod packages, enable the configured mod in an existing collection, set mod priority, and assign that collection to a loaded object. Current Penumbra API V5 exposes collection lookup and assignment, but not named collection creation, so `TheGrid` must exist before the first update.
+The plugin uses Penumbra's public IPC to install mod packages, organize the mod in Penumbra's mod tree, enable the configured mod in an existing collection, set mod priority, and assign that collection to a loaded object. Current Penumbra API V5 exposes collection lookup and assignment, but not named persistent collection creation, so `TheGrid` must exist before assignment but not before import.
 
 ## Dalamud Repository
 

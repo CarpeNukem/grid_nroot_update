@@ -33,6 +33,9 @@ public sealed class PluginConfig : IPluginConfiguration
         if (string.IsNullOrWhiteSpace(Mappings[0].ModName))
             Mappings[0].ModName = "n_root_the_grid";
 
+        if (string.IsNullOrWhiteSpace(Mappings[0].PenumbraFolderPath))
+            Mappings[0].PenumbraFolderPath = "TheGrid";
+
         return Mappings[0];
     }
 }

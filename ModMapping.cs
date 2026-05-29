@@ -10,6 +10,7 @@ public sealed class ModMapping
     public string AssetPattern { get; set; } = "n_root_the_grid_beta.pmp";
     public string CollectionName { get; set; } = "TheGrid";
     public string NpcName { get; set; } = "Chromiel";
+    public string PenumbraFolderPath { get; set; } = "TheGrid";
     public string ModDirectory { get; set; } = "n_root_the_grid";
     public string ModName { get; set; } = "n_root_the_grid";
     public int Priority { get; set; } = 0;

@@ -735,7 +735,8 @@ public sealed class Plugin : IDalamudPlugin
             CopyToClipboard(mapping.CollectionName);
         DrawHoverTooltip("Copy to clipboard");
         if (collection is null)
-            ImGui.TextWrapped($"Create a new, unassigned persistent Penumbra collection named '{mapping.CollectionName}', then run Update or Assign.");
+            ImGui.TextWrapped($"The mod can be imported without the collection, but assignment requires a persistent Penumbra collection named '{mapping.CollectionName}'.");
+        ImGui.TextDisabled($"Penumbra mod folder: {mapping.PenumbraFolderPath}");
         ImGui.TextDisabled($"NPC/mannequin marker: {mapping.NpcName}");
         ImGui.TextDisabled($"Auto-open looks for configured NPC/mannequin: {mapping.NpcName}");
         ImGui.Spacing();
@@ -745,6 +746,7 @@ public sealed class Plugin : IDalamudPlugin
         DrawSettingsGroupHeader("Updater");
         ImGui.TextUnformatted($"Repository: {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
         ImGui.TextUnformatted($"Penumbra: {(penumbraAvailable ? "online" : "offline")}");
+        ImGui.TextUnformatted($"Imported mod: {GetImportedModStatus(mapping, penumbraAvailable)}");
         ImGui.TextUnformatted($"Images: {textures.Count} loaded");
         ImGui.TextDisabled(textureLoadSource);
         ImGui.TextUnformatted($"Last applied: {DisplayValue(mapping.LastAppliedVersion)}");
@@ -772,6 +774,23 @@ public sealed class Plugin : IDalamudPlugin
 
     private static void DrawSettingsGroupHeader(string label)
         => ImGui.TextColored(new Vector4(0.54f, 0.84f, 0.80f, 1.00f), label);
+
+    private string GetImportedModStatus(ModMapping mapping, bool penumbraAvailable)
+    {
+        if (!penumbraAvailable)
+            return "unknown";
+
+        try
+        {
+            var modDirectory = FindInstalledModDirectory(mapping, penumbra.GetModList());
+            return modDirectory is null ? "missing" : $"imported ({modDirectory})";
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Debug(ex, "Could not check imported Penumbra mod status.");
+            return "unknown";
+        }
+    }
 
     private void DrawInterfaceSettings()
     {
@@ -931,6 +950,7 @@ public sealed class Plugin : IDalamudPlugin
         mappingChanged |= InputText("Asset pattern", mapping.AssetPattern, value => mapping.AssetPattern = value);
         mappingChanged |= InputText("Collection name", mapping.CollectionName, value => mapping.CollectionName = value);
         mappingChanged |= InputText("NPC name", mapping.NpcName, value => mapping.NpcName = value);
+        mappingChanged |= InputText("Penumbra folder path", mapping.PenumbraFolderPath, value => mapping.PenumbraFolderPath = value);
         mappingChanged |= InputText("Penumbra mod directory", mapping.ModDirectory, value => mapping.ModDirectory = value);
         mappingChanged |= InputText("Penumbra mod name", mapping.ModName, value => mapping.ModName = value);
 
@@ -1206,10 +1226,11 @@ public sealed class Plugin : IDalamudPlugin
 
             TrySubscribePenumbraEvents();
 
-            await ReconcileMappingAsync(Config.GetPrimaryMapping(), lifetime.Token).ConfigureAwait(false);
+            var canAssign = await ReconcileMappingAsync(Config.GetPrimaryMapping(), lifetime.Token).ConfigureAwait(false);
 
             Config.Save();
-            await AssignAllAsync(lifetime.Token).ConfigureAwait(false);
+            if (canAssign)
+                await AssignAllAsync(lifetime.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -1225,14 +1246,13 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private async Task ReconcileMappingAsync(ModMapping mapping, CancellationToken cancellationToken)
+    private async Task<bool> ReconcileMappingAsync(ModMapping mapping, CancellationToken cancellationToken)
     {
         var cacheDirectory = Path.Combine(PluginService.PluginInterface.ConfigDirectory.FullName, "cache");
         var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, cancellationToken).ConfigureAwait(false);
         if (string.Equals(latestAsset.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
         {
-            mapping.LastStatus = $"Latest release {latestAsset.Version} already applied.";
-            return;
+            return ReconcileAlreadyAppliedMapping(mapping, latestAsset.Version);
         }
 
         var download = await github.DownloadReleaseAssetAsync(mapping, latestAsset, cacheDirectory, cancellationToken).ConfigureAwait(false);
@@ -1252,21 +1272,15 @@ public sealed class Plugin : IDalamudPlugin
         var addedDirectory = await WaitForModAddedAsync(cancellationToken).ConfigureAwait(false);
         var modsAfterInstall = penumbra.GetModList();
 
-        var collection = FindCollection(mapping.CollectionName)
-            ?? throw new InvalidOperationException($"Collection '{mapping.CollectionName}' does not exist. Create a new, unassigned persistent Penumbra collection named '{mapping.CollectionName}', then use Settings > Update.");
-
         var modDirectory = TryResolveModDirectory(mapping, modsAfterInstall, modsBeforeInstall, addedDirectory);
+        var collection = FindCollection(mapping.CollectionName);
         if (modDirectory is not null)
         {
-            var enableCode = penumbra.TrySetMod(collection.Id, modDirectory, mapping.ModName, true);
-            if (!IsSuccess(enableCode))
-                PluginService.Log.Warning("Could not enable mod {ModDirectory} in {Collection}. Penumbra code {Code}.", modDirectory, mapping.CollectionName, enableCode);
-
-            var priorityCode = penumbra.TrySetModPriority(collection.Id, modDirectory, mapping.ModName, mapping.Priority);
-            if (!IsSuccess(priorityCode))
-                PluginService.Log.Warning("Could not set mod priority for {ModDirectory}. Penumbra code {Code}.", modDirectory, priorityCode);
-
             mapping.ModDirectory = modDirectory;
+            OrganizeModInPenumbra(mapping, modDirectory);
+
+            if (collection is not null)
+                EnableImportedMod(mapping, collection.Value, modDirectory);
         }
         else
         {
@@ -1274,10 +1288,81 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         mapping.LastAppliedVersion = download.Version;
-        mapping.LastStatus = modDirectory is null
-            ? $"Imported latest release {download.Version}; Penumbra did not expose the mod in IPC immediately."
-            : $"Applied latest release {download.Version}.";
+        mapping.LastStatus = BuildReconcileStatus(mapping, download.Version, modDirectory, collection is not null);
         PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
+        return collection is not null;
+    }
+
+    private bool ReconcileAlreadyAppliedMapping(ModMapping mapping, string version)
+    {
+        var mods = penumbra.GetModList();
+        var modDirectory = FindInstalledModDirectory(mapping, mods);
+        var collection = FindCollection(mapping.CollectionName);
+
+        if (modDirectory is not null)
+        {
+            mapping.ModDirectory = modDirectory;
+            OrganizeModInPenumbra(mapping, modDirectory);
+
+            if (collection is not null)
+                EnableImportedMod(mapping, collection.Value, modDirectory);
+        }
+
+        mapping.LastStatus = BuildReconcileStatus(mapping, version, modDirectory, collection is not null, alreadyApplied: true);
+        PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
+        return collection is not null;
+    }
+
+    private void EnableImportedMod(ModMapping mapping, (Guid Id, string Name) collection, string modDirectory)
+    {
+        var enableCode = penumbra.TrySetMod(collection.Id, modDirectory, mapping.ModName, true);
+        if (!IsSuccess(enableCode))
+            PluginService.Log.Warning("Could not enable mod {ModDirectory} in {Collection}. Penumbra code {Code}.", modDirectory, mapping.CollectionName, enableCode);
+
+        var priorityCode = penumbra.TrySetModPriority(collection.Id, modDirectory, mapping.ModName, mapping.Priority);
+        if (!IsSuccess(priorityCode))
+            PluginService.Log.Warning("Could not set mod priority for {ModDirectory}. Penumbra code {Code}.", modDirectory, priorityCode);
+    }
+
+    private void OrganizeModInPenumbra(ModMapping mapping, string modDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(mapping.PenumbraFolderPath))
+            return;
+
+        var folder = mapping.PenumbraFolderPath.Trim().Trim('/', '\\');
+        if (string.IsNullOrWhiteSpace(folder))
+            return;
+
+        try
+        {
+            var targetPath = $"{folder}/{mapping.ModName}";
+            var pathCode = penumbra.SetModPath(modDirectory, mapping.ModName, targetPath);
+            if (!IsSuccess(pathCode))
+                PluginService.Log.Warning("Could not move mod {ModDirectory} to Penumbra path {Path}. Penumbra code {Code}.", modDirectory, targetPath, pathCode);
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Warning(ex, "Could not move mod {ModDirectory} into the configured Penumbra folder.", modDirectory);
+        }
+    }
+
+    private static string BuildReconcileStatus(ModMapping mapping, string version, string? modDirectory, bool collectionFound, bool alreadyApplied = false)
+    {
+        if (modDirectory is null)
+            return alreadyApplied
+                ? $"Latest release {version} already applied, but the imported mod is not visible in Penumbra IPC."
+                : $"Imported latest release {version}; Penumbra did not expose the mod in IPC immediately.";
+
+        var prefix = alreadyApplied
+            ? $"Latest release {version} already imported"
+            : $"Imported latest release {version}";
+        var folderText = string.IsNullOrWhiteSpace(mapping.PenumbraFolderPath)
+            ? "in Penumbra"
+            : $"under {mapping.PenumbraFolderPath}";
+
+        return collectionFound
+            ? $"{prefix} {folderText}; enabled in collection '{mapping.CollectionName}'."
+            : $"{prefix} {folderText}. The mod can be imported without the collection, but assignment requires a persistent Penumbra collection named '{mapping.CollectionName}'.";
     }
 
     private void PrepareForModAdded()
@@ -1395,7 +1480,7 @@ public sealed class Plugin : IDalamudPlugin
         if (collection is null)
         {
             mapping.LastStatus = $"Collection '{mapping.CollectionName}' does not exist.";
-            PluginService.Chat.PrintError($"Collection '{mapping.CollectionName}' does not exist. Create a new, unassigned persistent Penumbra collection named '{mapping.CollectionName}', then use Settings > Assign.", "TheGrid");
+            PluginService.Chat.PrintError($"Collection '{mapping.CollectionName}' does not exist. The mod can be imported without the collection, but assignment requires a persistent Penumbra collection named '{mapping.CollectionName}'.", "TheGrid");
             return;
         }
 
@@ -1448,6 +1533,25 @@ public sealed class Plugin : IDalamudPlugin
             PluginService.Log.Debug(ex, "Could not check Penumbra collection {Collection}.", collectionName);
             return null;
         }
+    }
+
+    private static string? FindInstalledModDirectory(ModMapping mapping, System.Collections.Generic.Dictionary<string, string> mods)
+    {
+        if (mods.ContainsKey(mapping.ModDirectory))
+            return mapping.ModDirectory;
+
+        var duplicateDirectory = mods.Keys.FirstOrDefault(IsManagedDuplicateDirectory);
+        if (!string.IsNullOrEmpty(duplicateDirectory))
+            return duplicateDirectory;
+
+        var byName = mods.FirstOrDefault(kvp =>
+            string.Equals(kvp.Value, mapping.ModName, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(kvp.Value, mapping.Name, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(kvp.Key, mapping.Name, StringComparison.OrdinalIgnoreCase) ||
+            kvp.Value.Contains(mapping.Name, StringComparison.OrdinalIgnoreCase) ||
+            kvp.Key.Contains(mapping.Name, StringComparison.OrdinalIgnoreCase));
+
+        return string.IsNullOrEmpty(byName.Key) ? null : byName.Key;
     }
 
     private static string? TryResolveModDirectory(ModMapping mapping, System.Collections.Generic.Dictionary<string, string> mods, System.Collections.Generic.Dictionary<string, string> modsBeforeInstall, string? addedDirectory)
