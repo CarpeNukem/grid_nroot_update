@@ -57,11 +57,11 @@ internal sealed class GitHubReleaseClient : IDisposable
             ?? throw new InvalidOperationException("GitHub returned an empty releases payload.");
 
         var release = releases
-            .Where(r => !r.Draft)
+            .Where(r => !r.Draft && r.TagName.StartsWith("mod-v", StringComparison.OrdinalIgnoreCase))
             .FirstOrDefault(r => r.Assets.Any(a => Glob.IsMatch(a.Name, mapping.AssetPattern)));
 
         return release
-            ?? throw new InvalidOperationException($"No published GitHub release in {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo} has an asset matching '{mapping.AssetPattern}'.");
+            ?? throw new InvalidOperationException($"No published GitHub release in {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo} has a 'mod-v*' tag with an asset matching '{mapping.AssetPattern}'.");
     }
 
     public void Dispose()
@@ -74,7 +74,17 @@ internal sealed class GitHubReleaseClient : IDisposable
     }
 
     private static string NormalizeVersion(string tagName)
-        => string.IsNullOrWhiteSpace(tagName) ? "latest" : tagName.TrimStart('v', 'V');
+    {
+        if (string.IsNullOrWhiteSpace(tagName))
+            return "latest";
+
+        if (tagName.StartsWith("mod-v", StringComparison.OrdinalIgnoreCase))
+            return tagName[5..];
+        if (tagName.StartsWith("mod-", StringComparison.OrdinalIgnoreCase))
+            return tagName[4..];
+
+        return tagName.TrimStart('v', 'V');
+    }
 
     private sealed class GitHubRelease
     {
