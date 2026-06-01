@@ -58,6 +58,8 @@ internal sealed class CyberdeckWindow
     private long lastBadgeUpdateTick;
 
     public bool IsOpen;
+    public string? PendingUpdateVersion;
+    public long InstallStatusTimestamp;
     public List<(bool? Ok, string Label)> InstallStatusItems { get; } = [];
 
     public CyberdeckWindow(
@@ -101,7 +103,9 @@ internal sealed class CyberdeckWindow
         {
             var deckMin = ImGui.GetWindowPos();
             var deckMax = deckMin + ImGui.GetWindowSize();
-            if (selectedView == DeckView.Home)
+            if (!config.FirstRunCompleted)
+                DrawFirstRunPrompt();
+            else if (selectedView == DeckView.Home)
                 DrawHomeView();
             else
                 DrawAppScreen();
@@ -110,9 +114,41 @@ internal sealed class CyberdeckWindow
         }
 
         ImGui.EndChild();
+        DrawTransientFeedbackOverlay();
         ImGui.SetWindowFontScale(1.0f);
         PopCyberdeckStyle();
         ImGui.End();
+    }
+
+    private void DrawFirstRunPrompt()
+    {
+        ImGui.Spacing();
+        ImGui.TextColored(new Vector4(0.54f, 0.84f, 0.80f, 1.00f), "Welcome to The Grid");
+        DrawNeonSeparator();
+        ImGui.Spacing();
+        ImGui.TextWrapped("How should the plugin manage venue mod updates?");
+        ImGui.Spacing();
+
+        if (ImGui.Button("Automatic"))
+        {
+            config.FullAuto = true;
+            config.FirstRunCompleted = true;
+            config.Save();
+            queueReconcile();
+        }
+        DrawHoverTooltip("Download updates on login, assign on zone changes.");
+
+        ImGui.SameLine();
+        if (ImGui.Button("Manual"))
+        {
+            config.FullAuto = false;
+            config.FirstRunCompleted = true;
+            config.Save();
+        }
+        DrawHoverTooltip("Notified of updates, press buttons yourself.");
+
+        ImGui.Spacing();
+        ImGui.TextDisabled("You can change this later in Settings.");
     }
 
     private void DrawHomeView()
@@ -662,7 +698,7 @@ internal sealed class CyberdeckWindow
             DrawHoverTooltip("Download and import the venue mod");
         }
 
-        DrawStatusCheck(collection is not null, $"Collection \"{mapping.CollectionName}\"");
+        DrawStatusCheck(collection is not null, $"Collection '{mapping.CollectionName}'");
         if (collection is null)
         {
             ImGui.SameLine();
@@ -671,15 +707,72 @@ internal sealed class CyberdeckWindow
             DrawHoverTooltip("Open Penumbra to create the collection");
         }
 
-        ImGui.Spacing();
-        if (InstallStatusItems.Count > 0)
+        if (PendingUpdateVersion is not null)
         {
-            foreach (var (ok, label) in InstallStatusItems)
-                DrawStatusCheck(ok, label);
+            var pulse = 0.72f + MathF.Sin((float)ImGui.GetTime() * 4.0f) * 0.28f;
+            ImGui.TextColored(new Vector4(1.00f, 0.80f, 0.10f, pulse), $"Update available: v{PendingUpdateVersion}");
         }
-        else
+
+        if (penumbraAvailable && modDirectory is not null && collection is not null)
+        {
+            bool modEnabled;
+            try { modEnabled = penumbra.IsModEnabled(collection.Value.Id, modDirectory, mapping.ModName); }
+            catch { modEnabled = false; }
+
+            DrawStatusCheck(modEnabled, $"Mod enabled in '{mapping.CollectionName}'");
+            if (!modEnabled)
+            {
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Enable"))
+                    assignAll();
+                DrawHoverTooltip("Enable the mod in the collection");
+            }
+
+            var npcFound = false;
+            for (var i = 0; i < PluginService.Objects.Length; i++)
+            {
+                var obj = PluginService.Objects[i];
+                if (obj is null || obj.ObjectKind == ObjectKind.Pc)
+                    continue;
+                if (string.Equals(obj.Name.TextValue, mapping.NpcName, StringComparison.OrdinalIgnoreCase))
+                {
+                    npcFound = true;
+                    break;
+                }
+            }
+
+            if (npcFound)
+            {
+                if (config.FullAuto)
+                {
+                    var cachedNpc = InstallStatusItems.FirstOrDefault(s => s.Label.Contains(mapping.NpcName));
+                    DrawStatusCheck(cachedNpc != default ? cachedNpc.Ok : null,
+                        cachedNpc != default ? "Mannequin assigned" : "Mannequin in range");
+                }
+                else
+                {
+                    DrawStatusCheck(null, "Mannequin is in range");
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Assign"))
+                        assignAll();
+                    DrawHoverTooltip("Assign collection to NPC and redraw");
+                }
+            }
+            else
+            {
+                DrawStatusCheck(null, "Mannequin not in range");
+            }
+        }
+        else if (modDirectory is null || collection is null)
         {
             DrawStatusCheck(null, "Install not yet confirmed");
+            if (modDirectory is not null && collection is not null)
+            {
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Install"))
+                    assignAll();
+                DrawHoverTooltip("Enable the mod in the collection and assign to NPC");
+            }
         }
 
         ImGui.Spacing();
@@ -786,6 +879,16 @@ internal sealed class CyberdeckWindow
             config.Save();
         }
         DrawHoverTooltip("Show player count with weapons/minions on the Network tile");
+
+        var fullAuto = config.FullAuto;
+        if (ImGui.Checkbox("Automatic updates", ref fullAuto))
+        {
+            config.FullAuto = fullAuto;
+            config.Save();
+            if (fullAuto)
+                queueReconcile();
+        }
+        DrawHoverTooltip("Automatically download mod updates on login and assign collections on zone changes. When disabled, you'll be notified of new versions but must press Update/Install manually.");
     }
 
     private void SetManualUiScale(float uiScale)
@@ -1023,6 +1126,9 @@ internal sealed class CyberdeckWindow
 
             if (count > 0)
                 badgeCounts[DeckView.Settings] = count;
+
+            if (PendingUpdateVersion is not null)
+                badgeCounts[DeckView.Settings] = badgeCounts.GetValueOrDefault(DeckView.Settings) + 1;
         }
         catch
         {

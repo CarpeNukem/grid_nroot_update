@@ -65,7 +65,29 @@ internal sealed class PenumbraIpc
         => pluginInterface.GetIpcSubscriber<int, Guid?, bool, bool, (int ErrorCode, (Guid Id, string Name)? OldCollection)>("Penumbra.SetCollectionForObject.V5")
             .InvokeFunc(objectIndex, collectionId, true, false);
 
-    public (int ErrorCode, (Guid Id, string Name)? OldCollection) SetCollection(byte collectionType, Guid collectionId)
-        => pluginInterface.GetIpcSubscriber<byte, Guid?, bool, bool, (int ErrorCode, (Guid Id, string Name)? OldCollection)>("Penumbra.SetCollection")
-            .InvokeFunc(collectionType, collectionId, true, false);
+    public (Guid Id, string Name)? GetCollectionForObject(int objectIndex)
+    {
+        var result = pluginInterface.GetIpcSubscriber<int, (bool Valid, bool Individual, (Guid Id, string Name) Collection)>("Penumbra.GetCollectionForObject").InvokeFunc(objectIndex);
+        return result.Valid ? result.Collection : null;
+    }
+
+    public bool IsModEnabled(Guid collectionId, string modDirectory, string modName)
+    {
+        var (errorCode, settings) = pluginInterface
+            .GetIpcSubscriber<Guid, string, string, bool, (int, (bool Enabled, int Priority, Dictionary<string, List<string>> Settings)?)>("Penumbra.GetCurrentModSettings.V5")
+            .InvokeFunc(collectionId, modDirectory, modName, false);
+        return errorCode == 0 && settings?.Enabled == true;
+    }
+
+    public void RedrawObject(nint gameObjectAddress)
+    {
+        try
+        {
+            pluginInterface.GetIpcSubscriber<nint, int>("Penumbra.RedrawObject.V5").InvokeFunc(gameObjectAddress);
+        }
+        catch
+        {
+            pluginInterface.GetIpcSubscriber<nint, int>("Penumbra.RedrawObject").InvokeFunc(gameObjectAddress);
+        }
+    }
 }
