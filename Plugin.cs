@@ -78,7 +78,8 @@ public sealed class Plugin : IDalamudPlugin
         else
             QueueUpdateCheck();
 
-        OpenMainUi();
+        if (!Config.FirstRunCompleted)
+            OpenMainUi();
     }
 
     public PluginConfig Config { get; }

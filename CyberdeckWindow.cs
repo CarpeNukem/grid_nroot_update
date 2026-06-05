@@ -600,12 +600,12 @@ internal sealed class CyberdeckWindow
         ImGui.TableSetupColumn("##minion", ImGuiTableColumnFlags.WidthFixed, 24 * uiScale);
 
         foreach (var player in players)
-            DrawNetworkPlayerRow(player);
+            DrawNetworkPlayerRow(player, IsFriend(player));
 
         ImGui.EndTable();
     }
 
-    private void DrawNetworkPlayerRow(IPlayerCharacter player)
+    private void DrawNetworkPlayerRow(IPlayerCharacter player, bool isFriend)
     {
         var tellName = GetPlayerTellName(player);
         var weaponDrawn = player.StatusFlags.HasFlag(StatusFlags.WeaponOut);
@@ -624,8 +624,18 @@ internal sealed class CyberdeckWindow
         }
 
         ImGui.TableSetColumnIndex(1);
+        if (isFriend)
+        {
+            var glow = 0.80f + MathF.Sin((float)ImGui.GetTime() * 3.0f) * 0.20f;
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.00f, 0.84f, 0.00f, glow));
+        }
         if (ImGui.Selectable(tellName, false, ImGuiSelectableFlags.SpanAllColumns))
             PluginService.Targets.Target = player;
+        if (isFriend)
+        {
+            ImGui.PopStyleColor();
+            DrawHoverTooltip("★ Friend");
+        }
 
         ImGui.TableSetColumnIndex(2);
         if (showWeapon)
@@ -635,6 +645,9 @@ internal sealed class CyberdeckWindow
         if (hasMinion)
             DrawNetworkStatusIcon("minion.png", "Minion", $"Minion present: {minionName}");
     }
+
+    private static bool IsFriend(IPlayerCharacter player)
+        => player.StatusFlags.HasFlag(StatusFlags.Friend);
 
     private static unsafe bool? IsWeaponDisplayed(IPlayerCharacter player)
     {
