@@ -25,6 +25,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ConfigWindow configWindow;
     private readonly object modAddedLock = new();
     private bool reconcileQueued;
+    private bool reconcileForceDownload;
     private bool reconcileRunning;
     private bool autoInstallDone;
     private bool updateCheckRunning;
@@ -257,11 +258,7 @@ public sealed class Plugin : IDalamudPlugin
     private void QueueReconcile(bool forceDownload = false)
     {
         if (forceDownload)
-        {
-            var mapping = Config.GetPrimaryMapping();
-            mapping.LastAppliedVersion = string.Empty;
-            Config.Save();
-        }
+            reconcileForceDownload = true;
 
         reconcileQueued = true;
     }
@@ -368,7 +365,10 @@ public sealed class Plugin : IDalamudPlugin
 
             TrySubscribePenumbraEvents();
 
-            var canAssign = await ReconcileMappingAsync(Config.GetPrimaryMapping(), lifetime.Token).ConfigureAwait(false);
+            var forceDownload = reconcileForceDownload;
+            reconcileForceDownload = false;
+
+            var canAssign = await ReconcileMappingAsync(Config.GetPrimaryMapping(), lifetime.Token, forceDownload).ConfigureAwait(false);
 
             Config.Save();
             if (canAssign)
@@ -389,11 +389,26 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private async Task<bool> ReconcileMappingAsync(ModMapping mapping, CancellationToken cancellationToken)
+    private async Task<bool> ReconcileMappingAsync(ModMapping mapping, CancellationToken cancellationToken, bool forceDownload)
     {
         var cacheDirectory = Path.Combine(PluginService.PluginInterface.ConfigDirectory.FullName, "cache");
         var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, cancellationToken).ConfigureAwait(false);
-        if (string.Equals(latestAsset.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
+
+        if (!forceDownload)
+        {
+            var installedMods = penumbra.GetModList();
+            var installedModDirectory = FindInstalledModDirectory(mapping, installedMods);
+            var alreadyKnownLatest = string.Equals(latestAsset.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase);
+            var missingVersionRecord = string.IsNullOrWhiteSpace(mapping.LastAppliedVersion);
+            if (installedModDirectory is not null && (alreadyKnownLatest || missingVersionRecord))
+            {
+                mapping.ModDirectory = installedModDirectory;
+                mapping.ModName = installedMods[installedModDirectory];
+                return ReconcileAlreadyImportedMapping(mapping, latestAsset.Version, installedModDirectory);
+            }
+        }
+
+        if (!forceDownload && string.Equals(latestAsset.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
         {
             return ReconcileAlreadyAppliedMapping(mapping, latestAsset.Version);
         }
@@ -432,6 +447,20 @@ public sealed class Plugin : IDalamudPlugin
 
         mapping.LastAppliedVersion = download.Version;
         mapping.LastStatus = BuildReconcileStatus(mapping, download.Version, modDirectory, collection is not null);
+        PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
+        return collection is not null;
+    }
+
+    private bool ReconcileAlreadyImportedMapping(ModMapping mapping, string version, string modDirectory)
+    {
+        var collection = FindCollection(mapping.CollectionName);
+        OrganizeModInPenumbra(mapping, modDirectory);
+
+        if (collection is not null)
+            EnableImportedMod(mapping, collection.Value, modDirectory);
+
+        mapping.LastAppliedVersion = version;
+        mapping.LastStatus = BuildReconcileStatus(mapping, version, modDirectory, collection is not null, alreadyApplied: true);
         PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
         return collection is not null;
     }
