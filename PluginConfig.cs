@@ -39,6 +39,11 @@ public sealed class PluginConfig : IPluginConfiguration
         if (string.IsNullOrWhiteSpace(Mappings[0].PenumbraFolderPath))
             Mappings[0].PenumbraFolderPath = "TheGrid";
 
+        // Migrate the old beta-specific asset pattern to "any .pmp".
+        if (string.IsNullOrWhiteSpace(Mappings[0].AssetPattern)
+            || string.Equals(Mappings[0].AssetPattern, ModMapping.LegacyAssetPattern, System.StringComparison.OrdinalIgnoreCase))
+            Mappings[0].AssetPattern = ModMapping.DefaultAssetPattern;
+
         return Mappings[0];
     }
 }

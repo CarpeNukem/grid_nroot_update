@@ -24,16 +24,18 @@ public sealed class Plugin : IDalamudPlugin
     private readonly CyberdeckWindow cyberdeckWindow;
     private readonly ConfigWindow configWindow;
     private readonly object modAddedLock = new();
-    private bool reconcileQueued;
-    private bool reconcileForceDownload;
-    private bool reconcileRunning;
-    private bool autoInstallDone;
-    private bool updateCheckRunning;
-    private bool redrawDoneThisZone;
-    private long lastAutoInstallCheckTick;
+    private volatile bool reconcileQueued;
+    private volatile bool reconcileForceDownload;
+    private volatile bool reconcileRunning;
+    private volatile bool updateCheckRunning;
+    private bool venueUpdateCheckDoneThisZone;
+    private bool startupActionDone;
     private uint lastAutoOpenedTerritory;
     private bool modAddedSubscribed;
+    private CancellationTokenSource? zoneTickCts;
     private TaskCompletionSource<string>? pendingModAdded;
+    private bool? cachedPenumbraAvailable;
+    private long lastPenumbraAvailableCheckTick;
 
     public Plugin(IDalamudPluginInterface pluginInterface)
     {
@@ -48,7 +50,7 @@ public sealed class Plugin : IDalamudPlugin
         configWindow = new ConfigWindow(
             Config,
             () => QueueReconcile(),
-            () => _ = AssignAllAsync(lifetime.Token, forceRedraw: true));
+            () => _ = AssignAllAsync(lifetime.Token));
 
         cyberdeckWindow = new CyberdeckWindow(
             Config,
@@ -57,7 +59,8 @@ public sealed class Plugin : IDalamudPlugin
             textureLoadSource,
             () => QueueReconcile(),
             () => QueueReconcile(forceDownload: true),
-            () => _ = AssignAllAsync(lifetime.Token, forceRedraw: true),
+            () => _ = AssignAllAsync(lifetime.Token),
+            () => CheckForUpdates(),
             () => configWindow.IsOpen = true);
 
         PluginService.Commands.AddHandler(CommandName, new CommandInfo(OnCommand)
@@ -69,15 +72,16 @@ public sealed class Plugin : IDalamudPlugin
         PluginService.ClientState.Login += OnLogin;
         PluginService.ClientState.TerritoryChanged += OnTerritoryChanged;
         PluginService.Framework.Update += OnFrameworkUpdate;
-        TrySubscribePenumbraEvents();
         pluginInterface.UiBuilder.Draw += DrawUi;
         pluginInterface.UiBuilder.OpenMainUi += OpenMainUi;
         pluginInterface.UiBuilder.OpenConfigUi += OpenConfigUi;
 
-        if (Config.FullAuto)
-            QueueReconcile();
-        else
-            QueueUpdateCheck();
+        if (PluginService.ClientState.IsLoggedIn)
+        {
+            QueueStartupAction();
+            QueueVenueUpdateCheck();
+            QueueVenueAutoOpenCheck();
+        }
 
         if (!Config.FirstRunCompleted)
             OpenMainUi();
@@ -98,6 +102,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginService.PluginInterface.UiBuilder.Draw -= DrawUi;
         PluginService.Commands.RemoveHandler(CommandName);
         github.Dispose();
+        zoneTickCts?.Dispose();
         lifetime.Dispose();
     }
 
@@ -155,20 +160,15 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnLogin()
     {
-        autoInstallDone = false;
-        if (Config.FullAuto)
-            QueueReconcile();
-        else
-            QueueUpdateCheck();
+        startupActionDone = false;
+        QueueStartupAction();
         QueueVenueAutoOpenCheck();
     }
 
     private void OnTerritoryChanged(uint _)
     {
-        autoInstallDone = false;
-        redrawDoneThisZone = false;
-        if (Config.FullAuto)
-            QueueAssignment();
+        venueUpdateCheckDoneThisZone = false;
+        QueueVenueUpdateCheck();
         QueueVenueAutoOpenCheck();
     }
 
@@ -179,39 +179,6 @@ public sealed class Plugin : IDalamudPlugin
             reconcileQueued = false;
             reconcileRunning = true;
             Task.Run(ReconcileAsync, lifetime.Token);
-        }
-
-        TryAutoInstallCheck();
-    }
-
-    private void TryAutoInstallCheck()
-    {
-        if (autoInstallDone || reconcileRunning)
-            return;
-
-        var now = Environment.TickCount64;
-        if (now - lastAutoInstallCheckTick < 15000)
-            return;
-        lastAutoInstallCheckTick = now;
-
-        try
-        {
-            if (!penumbra.IsAvailable())
-                return;
-
-            var mapping = Config.GetPrimaryMapping();
-            if (string.IsNullOrWhiteSpace(mapping.LastAppliedVersion))
-                return;
-
-            if (FindCollection(mapping.CollectionName) is null)
-                return;
-
-            autoInstallDone = true;
-            _ = AssignAllAsync(lifetime.Token, forceRedraw: false);
-        }
-        catch (Exception ex)
-        {
-            PluginService.Log.Debug(ex, "Auto-install check failed.");
         }
     }
 
@@ -228,19 +195,23 @@ public sealed class Plugin : IDalamudPlugin
                 var mapping = Config.GetPrimaryMapping();
                 if (string.IsNullOrWhiteSpace(mapping.LastAppliedVersion))
                 {
+                    PluginService.Log.Information("Check for updates skipped: no version applied yet (press Update to install).");
                     cyberdeckWindow.PendingUpdateVersion = null;
                     return;
                 }
 
+                PluginService.Log.Information("Checking for updates (manual mode); installed v{Installed}.", mapping.LastAppliedVersion);
                 var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, lifetime.Token).ConfigureAwait(false);
 
                 if (!string.Equals(latestAsset.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
                 {
+                    PluginService.Log.Information("New update found: v{Version} (installed v{Installed}).", latestAsset.Version, mapping.LastAppliedVersion);
                     cyberdeckWindow.PendingUpdateVersion = latestAsset.Version;
                     PluginService.Chat.Print($"The Grid mod update available: v{latestAsset.Version}. Open Settings and press Update to install.", "TheGrid");
                 }
                 else
                 {
+                    PluginService.Log.Information("No update: already on latest release v{Version}.", latestAsset.Version);
                     cyberdeckWindow.PendingUpdateVersion = null;
                 }
             }
@@ -255,6 +226,80 @@ public sealed class Plugin : IDalamudPlugin
         }, lifetime.Token);
     }
 
+    private void CheckForUpdates()
+    {
+        if (updateCheckRunning)
+            return;
+
+        updateCheckRunning = true;
+        PluginService.Log.Information("Check for updates requested.");
+        PluginService.Chat.Print("Checking for The Grid mod updates...", "TheGrid");
+        Task.Run(async () =>
+        {
+            try
+            {
+                var mapping = Config.GetPrimaryMapping();
+                var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, lifetime.Token).ConfigureAwait(false);
+
+                if (string.IsNullOrWhiteSpace(mapping.LastAppliedVersion))
+                {
+                    PluginService.Log.Information("New update found: v{Version} (nothing applied yet).", latestAsset.Version);
+                    cyberdeckWindow.PendingUpdateVersion = latestAsset.Version;
+                    PluginService.Chat.Print($"Latest release v{latestAsset.Version} is available (not applied yet). Press Update to install.", "TheGrid");
+                }
+                else if (!string.Equals(latestAsset.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
+                {
+                    PluginService.Log.Information("New update found: v{Version} (installed v{Installed}).", latestAsset.Version, mapping.LastAppliedVersion);
+                    cyberdeckWindow.PendingUpdateVersion = latestAsset.Version;
+                    PluginService.Chat.Print($"Update available: v{latestAsset.Version} (installed v{mapping.LastAppliedVersion}). Press Update to install.", "TheGrid");
+                }
+                else
+                {
+                    PluginService.Log.Information("No update: already on latest release v{Version}.", latestAsset.Version);
+                    cyberdeckWindow.PendingUpdateVersion = null;
+                    PluginService.Chat.Print($"You're on the latest release: v{latestAsset.Version}.", "TheGrid");
+                }
+            }
+            catch (Exception ex)
+            {
+                PluginService.Log.Warning(ex, "Check for updates failed.");
+                PluginService.Chat.PrintError($"Check for updates failed: {ex.Message}", "TheGrid");
+            }
+            finally
+            {
+                updateCheckRunning = false;
+            }
+        }, lifetime.Token);
+    }
+
+    private void QueueStartupAction()
+    {
+        // Poll until Penumbra is ready before firing the initial reconcile or update check.
+        for (var attempt = 1; attempt <= 10; attempt++)
+        {
+            PluginService.Framework.RunOnTick(
+                TryStartupAction,
+                delay: TimeSpan.FromSeconds(attempt * 2),
+                cancellationToken: lifetime.Token);
+        }
+    }
+
+    private void TryStartupAction()
+    {
+        if (startupActionDone)
+            return;
+
+        if (!IsPenumbraAvailable())
+            return;
+
+        startupActionDone = true;
+        TrySubscribePenumbraEvents();
+        if (Config.FullAuto)
+            QueueReconcile();
+        else
+            QueueUpdateCheck();
+    }
+
     private void QueueReconcile(bool forceDownload = false)
     {
         if (forceDownload)
@@ -263,8 +308,62 @@ public sealed class Plugin : IDalamudPlugin
         reconcileQueued = true;
     }
 
-    private void QueueAssignment()
-        => PluginService.Framework.RunOnTick(() => _ = AssignAllAsync(lifetime.Token, forceRedraw: false), delay: TimeSpan.FromSeconds(2), cancellationToken: lifetime.Token);
+    private void QueueVenueUpdateCheck()
+    {
+        zoneTickCts?.Cancel();
+        zoneTickCts?.Dispose();
+        zoneTickCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+
+        var cts = zoneTickCts;
+        // The object table populates a few seconds after a territory change, so poll a few times.
+        for (var attempt = 1; attempt <= 4; attempt++)
+        {
+            PluginService.Framework.RunOnTick(
+                TryVenueUpdateCheck,
+                delay: TimeSpan.FromSeconds(attempt * 2),
+                cancellationToken: cts.Token);
+        }
+    }
+
+    private void TryVenueUpdateCheck()
+    {
+        if (venueUpdateCheckDoneThisZone)
+            return;
+
+        var mapping = Config.GetPrimaryMapping();
+        if (!IsTargetNpcPresent(mapping.NpcName))
+            return;
+
+        venueUpdateCheckDoneThisZone = true;
+
+        PluginService.Log.Information(
+            "Mannequin '{Npc}' found in territory {Territory}; running update check ({Mode}).",
+            mapping.NpcName,
+            PluginService.ClientState.TerritoryType,
+            Config.FullAuto ? "automatic mode" : "manual mode");
+
+        if (Config.FullAuto)
+        {
+            QueueReconcile();
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(mapping.LastAppliedVersion))
+                _ = AssignAllAsync(lifetime.Token);
+            QueueUpdateCheck();
+        }
+    }
+
+    private static bool IsTargetNpcPresent(string npcName)
+    {
+        for (var i = 0; i < PluginService.Objects.Length; i++)
+        {
+            if (IsTargetNpc(PluginService.Objects[i], npcName))
+                return true;
+        }
+
+        return false;
+    }
 
     private void QueueVenueAutoOpenCheck()
     {
@@ -357,7 +456,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         try
         {
-            if (!penumbra.IsAvailable())
+            if (!IsPenumbraAvailable())
             {
                 SetAllStatus("Penumbra IPC is not available. Install and enable Penumbra, then run /thegrid update.");
                 return;
@@ -372,7 +471,10 @@ public sealed class Plugin : IDalamudPlugin
 
             Config.Save();
             if (canAssign)
-                await AssignAllAsync(lifetime.Token, forceRedraw: true).ConfigureAwait(false);
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3), lifetime.Token).ConfigureAwait(false);
+                await AssignAllAsync(lifetime.Token).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -392,6 +494,7 @@ public sealed class Plugin : IDalamudPlugin
     private async Task<bool> ReconcileMappingAsync(ModMapping mapping, CancellationToken cancellationToken, bool forceDownload)
     {
         var cacheDirectory = Path.Combine(PluginService.PluginInterface.ConfigDirectory.FullName, "cache");
+        PluginService.Log.Information("Checking for updates; matching asset pattern '{Pattern}'.", mapping.AssetPattern);
         var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, cancellationToken).ConfigureAwait(false);
 
         if (!forceDownload)
@@ -413,6 +516,12 @@ public sealed class Plugin : IDalamudPlugin
             return ReconcileAlreadyAppliedMapping(mapping, latestAsset.Version);
         }
 
+        PluginService.Log.Information(
+            "New update found: v{Version} (installed v{Installed}); {Mode} - downloading '{Asset}'.",
+            latestAsset.Version,
+            string.IsNullOrWhiteSpace(mapping.LastAppliedVersion) ? "none" : mapping.LastAppliedVersion,
+            Config.FullAuto ? "automatic mode" : "manual mode",
+            latestAsset.Name);
         var download = await github.DownloadReleaseAssetAsync(mapping, latestAsset, cacheDirectory, cancellationToken).ConfigureAwait(false);
 
         var previousModDirectory = NormalizeManagedModDirectory(mapping.ModDirectory);
@@ -619,13 +728,13 @@ public sealed class Plugin : IDalamudPlugin
     private static bool IsManagedDuplicateDirectory(string modDirectory)
         => modDirectory.StartsWith("n_root_the_grid (", StringComparison.OrdinalIgnoreCase);
 
-    private async Task AssignAllAsync(CancellationToken cancellationToken, bool forceRedraw = false)
+    private async Task AssignAllAsync(CancellationToken cancellationToken)
     {
         try
         {
             await PluginService.Framework.RunOnFrameworkThread(() =>
             {
-                AssignMapping(Config.GetPrimaryMapping(), forceRedraw);
+                AssignMapping(Config.GetPrimaryMapping());
 
                 Config.Save();
             });
@@ -640,12 +749,12 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private void AssignMapping(ModMapping mapping, bool forceRedraw = false)
+    private void AssignMapping(ModMapping mapping)
     {
         cyberdeckWindow.InstallStatusItems.Clear();
         cyberdeckWindow.InstallStatusTimestamp = Environment.TickCount64;
 
-        if (!penumbra.IsAvailable())
+        if (!IsPenumbraAvailable())
         {
             mapping.LastStatus = "Penumbra IPC is not available.";
             cyberdeckWindow.InstallStatusItems.Add((false, "Penumbra not available"));
@@ -675,36 +784,47 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var assigned = 0;
+        var assignedObjectAddresses = new List<nint>();
         for (var i = 0; i < PluginService.Objects.Length; i++)
         {
             var gameObject = PluginService.Objects[i];
-            if (!IsTargetNpc(gameObject, mapping.NpcName))
+            if (gameObject is null || !IsTargetNpc(gameObject, mapping.NpcName))
                 continue;
 
             var (errorCode, _) = penumbra.SetCollectionForObject(i, collection.Value.Id);
             if (IsSuccess(errorCode))
+            {
                 assigned++;
+                if (gameObject.Address != IntPtr.Zero)
+                    assignedObjectAddresses.Add(gameObject.Address);
+            }
             else
+            {
                 PluginService.Log.Warning("Could not assign collection {Collection} to {Npc} at object index {Index}: {Code}", mapping.CollectionName, mapping.NpcName, i, errorCode);
+            }
         }
 
-        if (assigned > 0 && (forceRedraw || !redrawDoneThisZone))
-        {
-            redrawDoneThisZone = true;
-            try
-            {
-                PluginService.Commands.ProcessCommand($"/penumbra redraw {mapping.NpcName}");
-            }
-            catch (Exception ex)
-            {
-                PluginService.Log.Debug(ex, "Could not redraw NPC {Npc}.", mapping.NpcName);
-            }
-        }
 
         if (assigned > 0)
+        {
+            foreach (var address in assignedObjectAddresses)
+            {
+                try
+                {
+                    penumbra.RedrawObject(address);
+                }
+                catch (Exception ex)
+                {
+                    PluginService.Log.Debug(ex, "Could not redraw assigned NPC {Npc}.", mapping.NpcName);
+                }
+            }
+
             cyberdeckWindow.InstallStatusItems.Add((true, $"Assigned to {assigned} '{mapping.NpcName}' object(s)"));
+        }
         else
+        {
             cyberdeckWindow.InstallStatusItems.Add((null, $"NPC '{mapping.NpcName}' not in range"));
+        }
 
         mapping.LastStatus = string.Join(" ", cyberdeckWindow.InstallStatusItems.Select(s => s.Label + "."));
     }
@@ -771,6 +891,18 @@ public sealed class Plugin : IDalamudPlugin
             return false;
 
         return string.Equals(gameObject.Name.TextValue, npcName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsPenumbraAvailable()
+    {
+        var now = Environment.TickCount64;
+        if (cachedPenumbraAvailable is null || now - lastPenumbraAvailableCheckTick > 5000)
+        {
+            cachedPenumbraAvailable = penumbra.IsAvailable();
+            lastPenumbraAvailableCheckTick = now;
+        }
+
+        return cachedPenumbraAvailable.Value;
     }
 
     private static bool IsSuccess(int penumbraCode)

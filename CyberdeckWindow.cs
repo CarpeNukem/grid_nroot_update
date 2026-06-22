@@ -48,6 +48,7 @@ internal sealed class CyberdeckWindow
     private readonly Action queueReconcile;
     private readonly Action queueReconcileForce;
     private readonly Action assignAll;
+    private readonly Action checkForUpdates;
     private readonly Action openConfigUi;
 
     private DeckView selectedView = DeckView.Home;
@@ -70,6 +71,7 @@ internal sealed class CyberdeckWindow
         Action queueReconcile,
         Action queueReconcileForce,
         Action assignAll,
+        Action checkForUpdates,
         Action openConfigUi)
     {
         this.config = config;
@@ -79,6 +81,7 @@ internal sealed class CyberdeckWindow
         this.queueReconcile = queueReconcile;
         this.queueReconcileForce = queueReconcileForce;
         this.assignAll = assignAll;
+        this.checkForUpdates = checkForUpdates;
         this.openConfigUi = openConfigUi;
     }
 
@@ -779,13 +782,6 @@ internal sealed class CyberdeckWindow
         else if (modDirectory is null || collection is null)
         {
             DrawStatusCheck(null, "Install not yet confirmed");
-            if (modDirectory is not null && collection is not null)
-            {
-                ImGui.SameLine();
-                if (ImGui.SmallButton("Install"))
-                    assignAll();
-                DrawHoverTooltip("Enable the mod in the collection and assign to NPC");
-            }
         }
 
         ImGui.Spacing();
@@ -793,12 +789,20 @@ internal sealed class CyberdeckWindow
         ImGui.Spacing();
 
         DrawSettingsGroupHeader("Actions");
-        if (ImGui.Button("Update"))
-            queueReconcile();
+        if (ImGui.Button("Check for Updates"))
+        {
+            if (config.FullAuto)
+                queueReconcile();
+            else
+                checkForUpdates();
+        }
 
-        ImGui.SameLine();
-        if (ImGui.Button("Install"))
-            assignAll();
+        if (!config.FullAuto)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Update"))
+                queueReconcile();
+        }
 
         ImGui.SameLine();
         if (ImGui.Button("Force Reinstall"))

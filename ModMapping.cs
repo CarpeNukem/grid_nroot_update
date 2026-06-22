@@ -7,7 +7,10 @@ public sealed class ModMapping
 
     public string Name { get; set; } = "TheGrid";
     public string LastAppliedVersion { get; set; } = string.Empty;
-    public string AssetPattern { get; set; } = "n_root_the_grid_beta.pmp";
+    public const string LegacyAssetPattern = "n_root_the_grid_beta.pmp";
+    public const string DefaultAssetPattern = "*.pmp";
+
+    public string AssetPattern { get; set; } = DefaultAssetPattern;
     public string CollectionName { get; set; } = "TheGrid";
     public string NpcName { get; set; } = "Chromiel";
     public string PenumbraFolderPath { get; set; } = "TheGrid";
