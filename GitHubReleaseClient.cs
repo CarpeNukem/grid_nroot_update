@@ -78,12 +78,13 @@ internal sealed class GitHubReleaseClient : IDisposable
         if (string.IsNullOrWhiteSpace(tagName))
             return "latest";
 
-        if (tagName.StartsWith("mod-v", StringComparison.OrdinalIgnoreCase))
-            return tagName[5..];
-        if (tagName.StartsWith("mod-", StringComparison.OrdinalIgnoreCase))
-            return tagName[4..];
+        var normalized = tagName.Trim();
+        if (normalized.StartsWith("mod-v", StringComparison.OrdinalIgnoreCase))
+            return normalized[5..].Trim();
+        if (normalized.StartsWith("mod-", StringComparison.OrdinalIgnoreCase))
+            return normalized[4..].Trim();
 
-        return tagName.TrimStart('v', 'V');
+        return normalized.TrimStart('v', 'V').Trim();
     }
 
     private sealed class GitHubRelease

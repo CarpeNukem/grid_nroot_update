@@ -50,6 +50,7 @@ internal sealed class CyberdeckWindow
     private readonly Action assignAll;
     private readonly Action checkForUpdates;
     private readonly Action openConfigUi;
+    private readonly Func<bool> isPenumbraAvailable;
 
     private DeckView selectedView = DeckView.Home;
     private float mapZoom = DefaultMapZoom;
@@ -72,7 +73,8 @@ internal sealed class CyberdeckWindow
         Action queueReconcileForce,
         Action assignAll,
         Action checkForUpdates,
-        Action openConfigUi)
+        Action openConfigUi,
+        Func<bool> isPenumbraAvailable)
     {
         this.config = config;
         this.penumbra = penumbra;
@@ -83,6 +85,7 @@ internal sealed class CyberdeckWindow
         this.assignAll = assignAll;
         this.checkForUpdates = checkForUpdates;
         this.openConfigUi = openConfigUi;
+        this.isPenumbraAvailable = isPenumbraAvailable;
     }
 
     public void Draw()
@@ -690,7 +693,7 @@ internal sealed class CyberdeckWindow
     private void DrawSettingsView()
     {
         var mapping = config.GetPrimaryMapping();
-        var penumbraAvailable = penumbra.IsAvailable();
+        var penumbraAvailable = isPenumbraAvailable();
         var collection = penumbraAvailable ? FindCollectionSafely(mapping.CollectionName) : null;
         var modDirectory = GetImportedModDirectory(mapping, penumbraAvailable);
 
@@ -1122,7 +1125,7 @@ internal sealed class CyberdeckWindow
         {
             var count = 0;
             var mapping = config.GetPrimaryMapping();
-            var penumbraAvailable = penumbra.IsAvailable();
+            var penumbraAvailable = isPenumbraAvailable();
 
             if (!penumbraAvailable)
                 count++;

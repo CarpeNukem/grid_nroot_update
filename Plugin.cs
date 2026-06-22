@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Dalamud.Interface.Textures;
@@ -40,8 +41,14 @@ public sealed class Plugin : IDalamudPlugin
     public Plugin(IDalamudPluginInterface pluginInterface)
     {
         pluginInterface.Create<PluginService>();
-        Config = pluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
-        Config.GetPrimaryMapping();
+        var loadedConfig = pluginInterface.GetPluginConfig() as PluginConfig;
+        Config = loadedConfig ?? new PluginConfig();
+        var primaryMapping = Config.GetPrimaryMapping();
+        RecoverMissingVersionFromConfigFile(pluginInterface, primaryMapping);
+        PluginService.Log.Information(
+            "Loaded config ({Source}); stored mod version v{Version}.",
+            loadedConfig is null ? "new config" : "saved config",
+            string.IsNullOrWhiteSpace(primaryMapping.LastAppliedVersion) ? "none" : NormalizeVersionForComparison(primaryMapping.LastAppliedVersion));
         Config.Save();
 
         penumbra = new PenumbraIpc(pluginInterface);
@@ -60,8 +67,9 @@ public sealed class Plugin : IDalamudPlugin
             () => QueueReconcile(),
             () => QueueReconcile(forceDownload: true),
             () => _ = AssignAllAsync(lifetime.Token),
-            () => CheckForUpdates(),
-            () => configWindow.IsOpen = true);
+            () => RunUpdateCheck(silent: false),
+            () => configWindow.IsOpen = true,
+            IsPenumbraAvailable);
 
         PluginService.Commands.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -145,7 +153,8 @@ public sealed class Plugin : IDalamudPlugin
         }
         catch (Exception ex)
         {
-            PluginService.Log.Debug(ex, "Could not subscribe to Penumbra ModAdded yet.");
+            PluginService.Log.Warning(ex, "Could not subscribe to Penumbra ModAdded event; mod install detection will rely on IPC list polling.");
+            PluginService.Chat.PrintError("TheGrid: Penumbra event subscription failed — mod installs may not be detected reliably. Try reloading the plugin.", "TheGrid");
         }
     }
 
@@ -182,88 +191,53 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private void QueueUpdateCheck()
+    private void RunUpdateCheck(bool silent)
     {
         if (updateCheckRunning)
             return;
 
         updateCheckRunning = true;
-        Task.Run(async () =>
+        if (!silent)
         {
-            try
-            {
-                var mapping = Config.GetPrimaryMapping();
-                if (string.IsNullOrWhiteSpace(mapping.LastAppliedVersion))
-                {
-                    PluginService.Log.Information("Check for updates skipped: no version applied yet (press Update to install).");
-                    cyberdeckWindow.PendingUpdateVersion = null;
-                    return;
-                }
+            PluginService.Log.Information("Check for updates requested.");
+            PluginService.Chat.Print("Checking for The Grid mod updates...", "TheGrid");
+        }
 
-                PluginService.Log.Information("Checking for updates (manual mode); installed v{Installed}.", mapping.LastAppliedVersion);
-                var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, lifetime.Token).ConfigureAwait(false);
-
-                if (!string.Equals(latestAsset.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
-                {
-                    PluginService.Log.Information("New update found: v{Version} (installed v{Installed}).", latestAsset.Version, mapping.LastAppliedVersion);
-                    cyberdeckWindow.PendingUpdateVersion = latestAsset.Version;
-                    PluginService.Chat.Print($"The Grid mod update available: v{latestAsset.Version}. Open Settings and press Update to install.", "TheGrid");
-                }
-                else
-                {
-                    PluginService.Log.Information("No update: already on latest release v{Version}.", latestAsset.Version);
-                    cyberdeckWindow.PendingUpdateVersion = null;
-                }
-            }
-            catch (Exception ex)
-            {
-                PluginService.Log.Debug(ex, "Manual mode update check failed.");
-            }
-            finally
-            {
-                updateCheckRunning = false;
-            }
-        }, lifetime.Token);
-    }
-
-    private void CheckForUpdates()
-    {
-        if (updateCheckRunning)
-            return;
-
-        updateCheckRunning = true;
-        PluginService.Log.Information("Check for updates requested.");
-        PluginService.Chat.Print("Checking for The Grid mod updates...", "TheGrid");
         Task.Run(async () =>
         {
             try
             {
                 var mapping = Config.GetPrimaryMapping();
                 var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, lifetime.Token).ConfigureAwait(false);
+                var hasVersion = !string.IsNullOrWhiteSpace(mapping.LastAppliedVersion);
+                var upToDate = hasVersion && VersionsEqual(latestAsset.Version, mapping.LastAppliedVersion);
 
-                if (string.IsNullOrWhiteSpace(mapping.LastAppliedVersion))
+                if (upToDate)
                 {
-                    PluginService.Log.Information("New update found: v{Version} (nothing applied yet).", latestAsset.Version);
-                    cyberdeckWindow.PendingUpdateVersion = latestAsset.Version;
-                    PluginService.Chat.Print($"Latest release v{latestAsset.Version} is available (not applied yet). Press Update to install.", "TheGrid");
-                }
-                else if (!string.Equals(latestAsset.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
-                {
-                    PluginService.Log.Information("New update found: v{Version} (installed v{Installed}).", latestAsset.Version, mapping.LastAppliedVersion);
-                    cyberdeckWindow.PendingUpdateVersion = latestAsset.Version;
-                    PluginService.Chat.Print($"Update available: v{latestAsset.Version} (installed v{mapping.LastAppliedVersion}). Press Update to install.", "TheGrid");
+                    PluginService.Log.Information("No update: already on latest v{Version}.", latestAsset.Version);
+                    cyberdeckWindow.PendingUpdateVersion = null;
+                    if (!silent)
+                        PluginService.Chat.Print($"You're on the latest release: v{latestAsset.Version}.", "TheGrid");
                 }
                 else
                 {
-                    PluginService.Log.Information("No update: already on latest release v{Version}.", latestAsset.Version);
-                    cyberdeckWindow.PendingUpdateVersion = null;
-                    PluginService.Chat.Print($"You're on the latest release: v{latestAsset.Version}.", "TheGrid");
+                    PluginService.Log.Information("Update available: v{Latest} (installed: {Installed}).", latestAsset.Version, hasVersion ? mapping.LastAppliedVersion : "none");
+                    cyberdeckWindow.PendingUpdateVersion = latestAsset.Version;
+                    var message = hasVersion
+                        ? $"Update available: v{latestAsset.Version} (installed v{mapping.LastAppliedVersion}). Press Update to install."
+                        : $"The Grid mod v{latestAsset.Version} is available (not installed). Press Update to install.";
+                    PluginService.Chat.Print(message, "TheGrid");
                 }
             }
             catch (Exception ex)
             {
-                PluginService.Log.Warning(ex, "Check for updates failed.");
-                PluginService.Chat.PrintError($"Check for updates failed: {ex.Message}", "TheGrid");
+                if (silent)
+                    PluginService.Log.Debug(ex, "Passive update check failed.");
+                else
+                {
+                    PluginService.Log.Warning(ex, "Check for updates failed.");
+                    PluginService.Chat.PrintError($"Check for updates failed: {ex.Message}", "TheGrid");
+                }
             }
             finally
             {
@@ -297,7 +271,7 @@ public sealed class Plugin : IDalamudPlugin
         if (Config.FullAuto)
             QueueReconcile();
         else
-            QueueUpdateCheck();
+            RunUpdateCheck(silent: true);
     }
 
     private void QueueReconcile(bool forceDownload = false)
@@ -349,8 +323,15 @@ public sealed class Plugin : IDalamudPlugin
         else
         {
             if (!string.IsNullOrWhiteSpace(mapping.LastAppliedVersion))
-                _ = AssignAllAsync(lifetime.Token);
-            QueueUpdateCheck();
+            {
+                var token = lifetime.Token;
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(3), token).ConfigureAwait(false);
+                    await AssignAllAsync(token).ConfigureAwait(false);
+                }, token);
+            }
+            RunUpdateCheck(silent: true);
         }
     }
 
@@ -501,25 +482,35 @@ public sealed class Plugin : IDalamudPlugin
         {
             var installedMods = penumbra.GetModList();
             var installedModDirectory = FindInstalledModDirectory(mapping, installedMods);
-            var alreadyKnownLatest = string.Equals(latestAsset.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase);
+            var alreadyKnownLatest = VersionsEqual(latestAsset.Version, mapping.LastAppliedVersion);
             var missingVersionRecord = string.IsNullOrWhiteSpace(mapping.LastAppliedVersion);
-            if (installedModDirectory is not null && (alreadyKnownLatest || missingVersionRecord))
+            PluginService.Log.Information(
+                "Update decision: latest v{Latest}, stored v{Installed}, installed mod {InstalledModDirectory}, force download {ForceDownload}.",
+                NormalizeVersionForComparison(latestAsset.Version),
+                string.IsNullOrWhiteSpace(mapping.LastAppliedVersion) ? "none" : NormalizeVersionForComparison(mapping.LastAppliedVersion),
+                installedModDirectory ?? "not found",
+                forceDownload);
+            if (installedModDirectory is not null && alreadyKnownLatest)
             {
                 mapping.ModDirectory = installedModDirectory;
                 mapping.ModName = installedMods[installedModDirectory];
                 return ReconcileAlreadyImportedMapping(mapping, latestAsset.Version, installedModDirectory);
             }
+
+            if (installedModDirectory is not null && missingVersionRecord)
+                PluginService.Log.Information("Stored version is missing; installed Penumbra mod {ModDirectory} exists but its release version is unknown, refreshing from GitHub.", installedModDirectory);
         }
 
-        if (!forceDownload && string.Equals(latestAsset.Version, mapping.LastAppliedVersion, StringComparison.OrdinalIgnoreCase))
+        if (!forceDownload && VersionsEqual(latestAsset.Version, mapping.LastAppliedVersion))
         {
             return ReconcileAlreadyAppliedMapping(mapping, latestAsset.Version);
         }
 
         PluginService.Log.Information(
-            "New update found: v{Version} (installed v{Installed}); {Mode} - downloading '{Asset}'.",
-            latestAsset.Version,
-            string.IsNullOrWhiteSpace(mapping.LastAppliedVersion) ? "none" : mapping.LastAppliedVersion,
+            "{Reason}: v{Version} (stored v{Installed}); {Mode} - downloading '{Asset}'.",
+            forceDownload ? "Forced reinstall requested" : "New update found",
+            NormalizeVersionForComparison(latestAsset.Version),
+            string.IsNullOrWhiteSpace(mapping.LastAppliedVersion) ? "none" : NormalizeVersionForComparison(mapping.LastAppliedVersion),
             Config.FullAuto ? "automatic mode" : "manual mode",
             latestAsset.Name);
         var download = await github.DownloadReleaseAssetAsync(mapping, latestAsset, cacheDirectory, cancellationToken).ConfigureAwait(false);
@@ -548,13 +539,15 @@ public sealed class Plugin : IDalamudPlugin
 
             if (collection is not null)
                 EnableImportedMod(mapping, collection.Value, modDirectory);
+
+            CleanupCacheDirectory(cacheDirectory, download.Path);
         }
         else
         {
             PluginService.Log.Warning("Penumbra accepted package {Package}, but the imported mod was not visible in the IPC mod list immediately after import.", Path.GetFileName(download.Path));
         }
 
-        mapping.LastAppliedVersion = download.Version;
+        mapping.LastAppliedVersion = NormalizeVersionForComparison(download.Version);
         mapping.LastStatus = BuildReconcileStatus(mapping, download.Version, modDirectory, collection is not null);
         PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
         return collection is not null;
@@ -568,9 +561,10 @@ public sealed class Plugin : IDalamudPlugin
         if (collection is not null)
             EnableImportedMod(mapping, collection.Value, modDirectory);
 
-        mapping.LastAppliedVersion = version;
+        mapping.LastAppliedVersion = NormalizeVersionForComparison(version);
         mapping.LastStatus = BuildReconcileStatus(mapping, version, modDirectory, collection is not null, alreadyApplied: true);
-        PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
+        if (!Config.FullAuto)
+            PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
         return collection is not null;
     }
 
@@ -589,8 +583,10 @@ public sealed class Plugin : IDalamudPlugin
                 EnableImportedMod(mapping, collection.Value, modDirectory);
         }
 
+        mapping.LastAppliedVersion = NormalizeVersionForComparison(version);
         mapping.LastStatus = BuildReconcileStatus(mapping, version, modDirectory, collection is not null, alreadyApplied: true);
-        PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
+        if (!Config.FullAuto)
+            PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
         return collection is not null;
     }
 
@@ -784,7 +780,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var assigned = 0;
-        var assignedObjectAddresses = new List<nint>();
+        var assignedObjectIndices = new List<int>();
         for (var i = 0; i < PluginService.Objects.Length; i++)
         {
             var gameObject = PluginService.Objects[i];
@@ -795,8 +791,7 @@ public sealed class Plugin : IDalamudPlugin
             if (IsSuccess(errorCode))
             {
                 assigned++;
-                if (gameObject.Address != IntPtr.Zero)
-                    assignedObjectAddresses.Add(gameObject.Address);
+                assignedObjectIndices.Add(i);
             }
             else
             {
@@ -807,15 +802,15 @@ public sealed class Plugin : IDalamudPlugin
 
         if (assigned > 0)
         {
-            foreach (var address in assignedObjectAddresses)
+            foreach (var objectIndex in assignedObjectIndices)
             {
                 try
                 {
-                    penumbra.RedrawObject(address);
+                    penumbra.RedrawObject(objectIndex);
                 }
                 catch (Exception ex)
                 {
-                    PluginService.Log.Debug(ex, "Could not redraw assigned NPC {Npc}.", mapping.NpcName);
+                    PluginService.Log.Warning(ex, "Could not redraw assigned NPC {Npc} at object index {Index}.", mapping.NpcName, objectIndex);
                 }
             }
 
@@ -905,8 +900,103 @@ public sealed class Plugin : IDalamudPlugin
         return cachedPenumbraAvailable.Value;
     }
 
+    private static void CleanupCacheDirectory(string cacheDirectory, string keepFilePath)
+    {
+        try
+        {
+            if (!Directory.Exists(cacheDirectory))
+                return;
+
+            foreach (var file in Directory.EnumerateFiles(cacheDirectory, "*.pmp"))
+            {
+                if (!string.Equals(file, keepFilePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    PluginService.Log.Debug("Removing stale cached file: {File}", Path.GetFileName(file));
+                    File.Delete(file);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Debug(ex, "Cache cleanup failed (non-fatal).");
+        }
+    }
+
     private static bool IsSuccess(int penumbraCode)
         => penumbraCode is 0 or 1;
+
+    private static bool VersionsEqual(string? left, string? right)
+        => string.Equals(NormalizeVersionForComparison(left), NormalizeVersionForComparison(right), StringComparison.OrdinalIgnoreCase);
+
+    private static void RecoverMissingVersionFromConfigFile(IDalamudPluginInterface pluginInterface, ModMapping mapping)
+    {
+        if (!string.IsNullOrWhiteSpace(mapping.LastAppliedVersion))
+            return;
+
+        var storedVersion = TryReadStoredVersionFromConfigFile(pluginInterface);
+        if (string.IsNullOrWhiteSpace(storedVersion))
+            return;
+
+        mapping.LastAppliedVersion = NormalizeVersionForComparison(storedVersion);
+        PluginService.Log.Information(
+            "Recovered stored mod version v{Version} from raw config file {ConfigFile}.",
+            mapping.LastAppliedVersion,
+            pluginInterface.ConfigFile.FullName);
+    }
+
+    private static string? TryReadStoredVersionFromConfigFile(IDalamudPluginInterface pluginInterface)
+    {
+        try
+        {
+            var configFile = pluginInterface.ConfigFile;
+            if (!File.Exists(configFile.FullName))
+                return null;
+
+            using var document = JsonDocument.Parse(File.ReadAllText(configFile.FullName));
+            if (TryReadFirstMappingVersion(document.RootElement, out var mappingVersion))
+                return mappingVersion;
+
+            return document.RootElement.TryGetProperty(nameof(ModMapping.LastAppliedVersion), out var topLevelVersion)
+                ? topLevelVersion.GetString()
+                : null;
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Debug(ex, "Could not read raw config file for stored mod version recovery.");
+            return null;
+        }
+    }
+
+    private static bool TryReadFirstMappingVersion(JsonElement root, out string? version)
+    {
+        version = null;
+        if (!root.TryGetProperty(nameof(PluginConfig.Mappings), out var mappings) || mappings.ValueKind != JsonValueKind.Array)
+            return false;
+
+        foreach (var mapping in mappings.EnumerateArray())
+        {
+            if (!mapping.TryGetProperty(nameof(ModMapping.LastAppliedVersion), out var versionElement))
+                continue;
+
+            version = versionElement.GetString();
+            return !string.IsNullOrWhiteSpace(version);
+        }
+
+        return false;
+    }
+
+    private static string NormalizeVersionForComparison(string? version)
+    {
+        var normalized = version?.Trim() ?? string.Empty;
+        if (normalized.StartsWith("mod-v", StringComparison.OrdinalIgnoreCase))
+            return normalized[5..].Trim();
+        if (normalized.StartsWith("mod-", StringComparison.OrdinalIgnoreCase))
+            return normalized[4..].Trim();
+        if (normalized.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+            return normalized[1..].Trim();
+
+        return normalized;
+    }
 
     private void SetAllStatus(string status)
     {

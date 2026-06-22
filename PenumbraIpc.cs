@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Dalamud.Plugin;
 
 namespace GridNrootUpdate;
@@ -79,15 +80,38 @@ internal sealed class PenumbraIpc
         return errorCode == 0 && settings?.Enabled == true;
     }
 
-    public void RedrawObject(nint gameObjectAddress)
+    public void RedrawObject(int objectIndex)
     {
+        var redrawType = GetRedrawType();
         try
         {
-            pluginInterface.GetIpcSubscriber<nint, int>("Penumbra.RedrawObject.V5").InvokeFunc(gameObjectAddress);
+            pluginInterface.GetIpcSubscriber<int, object, object>("Penumbra.RedrawObject.V5").InvokeAction(objectIndex, redrawType);
+            return;
         }
         catch
         {
-            pluginInterface.GetIpcSubscriber<nint, int>("Penumbra.RedrawObject").InvokeFunc(gameObjectAddress);
         }
+
+        try
+        {
+            pluginInterface.GetIpcSubscriber<int, int, object>("Penumbra.RedrawObject.V5").InvokeAction(objectIndex, RedrawTypeRedraw);
+            return;
+        }
+        catch
+        {
+        }
+
+        pluginInterface.GetIpcSubscriber<int, object, object>("Penumbra.RedrawObjectByIndex").InvokeAction(objectIndex, redrawType);
     }
+
+    private static object GetRedrawType()
+    {
+        var redrawType = AppDomain.CurrentDomain.GetAssemblies()
+            .Select(assembly => assembly.GetType("Penumbra.Api.Enums.RedrawType", throwOnError: false))
+            .FirstOrDefault(type => type?.IsEnum == true);
+
+        return redrawType is null ? RedrawTypeRedraw : Enum.ToObject(redrawType, RedrawTypeRedraw);
+    }
+
+    private const int RedrawTypeRedraw = 0;
 }
