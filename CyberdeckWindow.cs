@@ -36,9 +36,9 @@ internal sealed class CyberdeckWindow
         new("9", "20 000", "nine.png", "vodka, gin, white rum, tequila, blue curacao, lime, lemon, syrup, Vatnajokull Sparkling",
             "The Grid's overloaded house anomaly: a glowing, chaotic cocktail built from exactly nine ingredients.",
             "Bright, sharp, and dangerously drinkable. Citrus cuts through the layered spirits, blue curacao adds sweet orange, and soda gives a clean finish."),
-        new("Hurricane Havo", "15 000", "hurricane_havo.png", "tequila, lime, salt",
-            "A deceptively simple tequila shot with lime, salt, and a customer-service incident built in, Hurricane Havo is less a cocktail and more proof that the smallest storms can still pack a punch.",
-            "Sharp, clean, and immediate. Note: By ordering Hurricane Havo, you consent to a brief, non-lethal physical interaction as part of the serving ritual. The management assures you it is theatrical, consensual, and only emotionally questionable."),
+        new("Frostbite", "15 000", "frostbite.png", "ceruleum-infused vodka, blue curacao, synth-mint, synth-lime; reboot chaser: orange, ginger, cinnamon",
+            "A neon-blue, ceruleum-infused cryo shot with a sharp mint-citrus bite. The unstable infusion activates on impact, triggering a brief system freeze before the reboot chaser brings you back online.",
+            "Sharp, cold, and electric. Sweet blue citrus hits first, then peppermint bite and a metallic ceruleum tingle. The reboot chaser follows warm with orange, ginger, and cinnamon heat. Note: By ordering Frostbite, you consent to a brief, non-lethal physical interaction as part of the serving ritual. The management assures you it is theatrical, consensual, and only emotionally questionable."),
     ];
 
     private readonly PluginConfig config;
@@ -50,6 +50,7 @@ internal sealed class CyberdeckWindow
     private readonly Action assignAll;
     private readonly Action checkForUpdates;
     private readonly Action openConfigUi;
+    private readonly Action<bool> autoOpenChanged;
     private readonly Func<bool> isPenumbraAvailable;
 
     private DeckView selectedView = DeckView.Home;
@@ -74,6 +75,7 @@ internal sealed class CyberdeckWindow
         Action assignAll,
         Action checkForUpdates,
         Action openConfigUi,
+        Action<bool> autoOpenChanged,
         Func<bool> isPenumbraAvailable)
     {
         this.config = config;
@@ -85,6 +87,7 @@ internal sealed class CyberdeckWindow
         this.assignAll = assignAll;
         this.checkForUpdates = checkForUpdates;
         this.openConfigUi = openConfigUi;
+        this.autoOpenChanged = autoOpenChanged;
         this.isPenumbraAvailable = isPenumbraAvailable;
     }
 
@@ -579,7 +582,7 @@ internal sealed class CyberdeckWindow
     {
         var players = PluginService.Objects
             .OfType<IPlayerCharacter>()
-            .Where(player => player.ObjectKind == ObjectKind.Pc && !string.IsNullOrWhiteSpace(player.Name.TextValue))
+            .Where(IsNetworkPlayer)
             .GroupBy(GetPlayerTellName, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .OrderBy(GetPlayerTellName, StringComparer.OrdinalIgnoreCase)
@@ -614,19 +617,15 @@ internal sealed class CyberdeckWindow
     private void DrawNetworkPlayerRow(IPlayerCharacter player, bool isFriend)
     {
         var tellName = GetPlayerTellName(player);
-        var weaponDrawn = player.StatusFlags.HasFlag(StatusFlags.WeaponOut);
-        var weaponDisplayed = IsWeaponDisplayed(player);
-        var showWeapon = weaponDrawn || weaponDisplayed == true;
-        var minionName = GetMinionName(player);
-        var hasMinion = !string.IsNullOrWhiteSpace(minionName);
+        var status = GetNetworkPlayerStatus(player);
 
         ImGui.TableNextRow();
         ImGui.TableSetColumnIndex(0);
-        if (showWeapon || hasMinion)
+        if (status.HasAlert)
         {
             var pulse = 0.72f + MathF.Sin((float)ImGui.GetTime() * 6.0f) * 0.28f;
             ImGui.TextColored(new Vector4(1.00f, 0.16f, 0.14f, pulse), "<!>");
-            DrawHoverTooltip("Player has weapon displayed/drawn and/or minion present");
+            DrawHoverTooltip("Player has weapon/offhand drawn and/or visible minion present");
         }
 
         ImGui.TableSetColumnIndex(1);
@@ -644,16 +643,56 @@ internal sealed class CyberdeckWindow
         }
 
         ImGui.TableSetColumnIndex(2);
-        if (showWeapon)
-            DrawNetworkStatusIcon("weapon.png", "Weapon", GetWeaponTooltip(weaponDisplayed == true, weaponDrawn));
+        if (status.HasWeapon)
+            DrawNetworkStatusIcon("weapon.png", "Weapon", GetWeaponTooltip(status));
 
         ImGui.TableSetColumnIndex(3);
-        if (hasMinion)
-            DrawNetworkStatusIcon("minion.png", "Minion", $"Minion present: {minionName}");
+        if (!string.IsNullOrWhiteSpace(status.MinionName))
+            DrawNetworkStatusIcon("minion.png", "Minion", $"Visible minion present: {status.MinionName}");
     }
 
     private static bool IsFriend(IPlayerCharacter player)
         => player.StatusFlags.HasFlag(StatusFlags.Friend);
+
+    private static bool IsNetworkPlayer(IPlayerCharacter player)
+        => player.ObjectKind == ObjectKind.Pc && !string.IsNullOrWhiteSpace(player.Name.TextValue);
+
+    private static bool IsVenueMannequinInRange(ModMapping mapping)
+    {
+        var mannequinFallbackCandidates = 0;
+        for (var i = 0; i < PluginService.Objects.Length; i++)
+        {
+            var obj = PluginService.Objects[i];
+            if (obj is null || PluginService.Objects.LocalPlayer?.GameObjectId == obj.GameObjectId)
+                continue;
+
+            if (NamesMatch(obj.Name.TextValue, mapping.NpcName))
+                return true;
+
+            if (NamesMatch(obj.Name.TextValue, "Mannequin"))
+                mannequinFallbackCandidates++;
+        }
+
+        return mannequinFallbackCandidates == 1;
+    }
+
+    private static bool NamesMatch(string objectName, string targetName)
+    {
+        var normalizedObject = objectName.Trim();
+        var normalizedTarget = targetName.Trim();
+        return normalizedObject.Length > 0 &&
+               normalizedTarget.Length > 0 &&
+               (string.Equals(normalizedObject, normalizedTarget, StringComparison.OrdinalIgnoreCase) ||
+                normalizedObject.Contains(normalizedTarget, StringComparison.OrdinalIgnoreCase) ||
+                normalizedTarget.Contains(normalizedObject, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static NetworkPlayerStatus GetNetworkPlayerStatus(IPlayerCharacter player)
+        => new(
+            IsWeaponDisplayed(player),
+            player.StatusFlags.HasFlag(StatusFlags.WeaponOut),
+            player.StatusFlags.HasFlag(StatusFlags.OffhandOut),
+            GetVisibleMinionName(player));
 
     private static unsafe bool? IsWeaponDisplayed(IPlayerCharacter player)
     {
@@ -671,13 +710,27 @@ internal sealed class CyberdeckWindow
         }
     }
 
-    private static string GetWeaponTooltip(bool weaponDisplayed, bool weaponDrawn)
-        => (weaponDisplayed, weaponDrawn) switch
+    private static string GetWeaponTooltip(NetworkPlayerStatus status)
+    {
+        if (status.WeaponDisplayed == true)
         {
-            (true, true) => "Weapon displayed and drawn",
-            (true, false) => "Weapon displayed",
+            if (status.WeaponOut && status.OffhandOut)
+                return "Weapon displayed; weapon and offhand drawn";
+            if (status.WeaponOut)
+                return "Weapon displayed and drawn";
+            if (status.OffhandOut)
+                return "Weapon displayed; offhand drawn";
+
+            return "Weapon displayed";
+        }
+
+        return (status.WeaponOut, status.OffhandOut) switch
+        {
+            (true, true) => "Weapon and offhand drawn",
+            (false, true) => "Offhand drawn",
             _ => "Weapon drawn",
         };
+    }
 
     private void DrawNetworkStatusIcon(string imageName, string fallbackText, string tooltip)
     {
@@ -717,7 +770,10 @@ internal sealed class CyberdeckWindow
             DrawHoverTooltip("Download and import the venue mod");
         }
 
-        DrawStatusCheck(collection is not null, $"Collection '{mapping.CollectionName}'");
+        var collectionLabel = collection is not null
+            ? $"Collection '{collection.Value.Name}'"
+            : $"Collection matching '{mapping.CollectionName}'";
+        DrawStatusCheck(collection is not null, collectionLabel);
         if (collection is null)
         {
             ImGui.SameLine();
@@ -738,7 +794,7 @@ internal sealed class CyberdeckWindow
             try { modEnabled = penumbra.IsModEnabled(collection.Value.Id, modDirectory, mapping.ModName); }
             catch { modEnabled = false; }
 
-            DrawStatusCheck(modEnabled, $"Mod enabled in '{mapping.CollectionName}'");
+            DrawStatusCheck(modEnabled, $"Mod enabled in '{collection.Value.Name}'");
             if (!modEnabled)
             {
                 ImGui.SameLine();
@@ -747,18 +803,7 @@ internal sealed class CyberdeckWindow
                 DrawHoverTooltip("Enable the mod in the collection");
             }
 
-            var npcFound = false;
-            for (var i = 0; i < PluginService.Objects.Length; i++)
-            {
-                var obj = PluginService.Objects[i];
-                if (obj is null || obj.ObjectKind == ObjectKind.Pc)
-                    continue;
-                if (string.Equals(obj.Name.TextValue, mapping.NpcName, StringComparison.OrdinalIgnoreCase))
-                {
-                    npcFound = true;
-                    break;
-                }
-            }
+            var npcFound = IsVenueMannequinInRange(mapping);
 
             if (npcFound)
             {
@@ -900,6 +945,14 @@ internal sealed class CyberdeckWindow
         }
         DrawHoverTooltip("Show player count with weapons/minions on the Network tile");
 
+        var autoOpenOnEntrance = config.AutoOpenOnVenueAddress;
+        if (ImGui.Checkbox("Open Cyberdeck on club entrance", ref autoOpenOnEntrance))
+        {
+            config.AutoOpenOnVenueAddress = autoOpenOnEntrance;
+            config.Save();
+            autoOpenChanged(autoOpenOnEntrance);
+        }
+
         var fullAuto = config.FullAuto;
         if (ImGui.Checkbox("Automatic updates", ref fullAuto))
         {
@@ -1005,8 +1058,13 @@ internal sealed class CyberdeckWindow
         return $"{name}@{world}";
     }
 
-    private static string? GetMinionName(IPlayerCharacter player)
-        => player.CurrentMinion?.ValueNullable?.Singular.ExtractText();
+    private static string? GetVisibleMinionName(IPlayerCharacter player)
+    {
+        if (player.CurrentMount is not null)
+            return null;
+
+        return player.CurrentMinion?.ValueNullable?.Singular.ExtractText();
+    }
 
     private static string GetWorldName(IPlayerCharacter player)
     {
@@ -1097,10 +1155,7 @@ internal sealed class CyberdeckWindow
     {
         try
         {
-            return penumbra.GetCollectionsByIdentifier(collectionName)
-                .FirstOrDefault(c => string.Equals(c.Name, collectionName, StringComparison.OrdinalIgnoreCase)) is var collection && collection.Id != Guid.Empty
-                    ? collection
-                    : null;
+            return penumbra.FindCollectionByName(collectionName);
         }
         catch (Exception ex)
         {
@@ -1161,11 +1216,7 @@ internal sealed class CyberdeckWindow
             {
                 var flagged = PluginService.Objects
                     .OfType<IPlayerCharacter>()
-                    .Count(player =>
-                        player.ObjectKind == ObjectKind.Pc &&
-                        (player.StatusFlags.HasFlag(StatusFlags.WeaponOut) ||
-                         IsWeaponDisplayed(player) == true ||
-                         !string.IsNullOrWhiteSpace(GetMinionName(player))));
+                    .Count(player => IsNetworkPlayer(player) && GetNetworkPlayerStatus(player).HasAlert);
 
                 if (flagged > 0)
                     badgeCounts[DeckView.Network] = flagged;
@@ -1207,6 +1258,12 @@ internal sealed class CyberdeckWindow
         Menu,
         Network,
         Settings,
+    }
+
+    private readonly record struct NetworkPlayerStatus(bool? WeaponDisplayed, bool WeaponOut, bool OffhandOut, string? MinionName)
+    {
+        public bool HasWeapon => WeaponDisplayed == true || WeaponOut || OffhandOut;
+        public bool HasAlert => HasWeapon || !string.IsNullOrWhiteSpace(MinionName);
     }
 
     private sealed record DrinkMenuItem(string Name, string Price, string ImageName, string Ingredients, string Description, string Taste);

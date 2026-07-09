@@ -8,14 +8,16 @@ internal sealed class ConfigWindow
     private readonly PluginConfig config;
     private readonly Action queueReconcile;
     private readonly Action assignAll;
+    private readonly Action<bool> autoOpenChanged;
 
     public bool IsOpen;
 
-    public ConfigWindow(PluginConfig config, Action queueReconcile, Action assignAll)
+    public ConfigWindow(PluginConfig config, Action queueReconcile, Action assignAll, Action<bool> autoOpenChanged)
     {
         this.config = config;
         this.queueReconcile = queueReconcile;
         this.assignAll = assignAll;
+        this.autoOpenChanged = autoOpenChanged;
     }
 
     public void Draw()
@@ -35,7 +37,11 @@ internal sealed class ConfigWindow
 
         changed |= InputText("Venue address", config.VenueAddress, value => config.VenueAddress = value);
         changed |= InputText("Discord URL", config.DiscordUrl, value => config.DiscordUrl = value);
-        changed |= InputBool("Auto-open when venue mannequin is detected", config.AutoOpenOnVenueAddress, value => config.AutoOpenOnVenueAddress = value);
+        changed |= InputBool("Open Cyberdeck on club entrance", config.AutoOpenOnVenueAddress, value =>
+        {
+            config.AutoOpenOnVenueAddress = value;
+            autoOpenChanged(value);
+        });
         ImGui.Separator();
 
         ImGui.TextUnformatted($"Repository: {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo}");
@@ -68,7 +74,7 @@ internal sealed class ConfigWindow
         if (ImGui.Button("Install Now"))
             assignAll();
 
-        ImGui.TextWrapped("TheGrid must already exist in Penumbra. Current public Penumbra IPC can assign existing collections but does not expose named collection creation.");
+        ImGui.TextWrapped("A matching Penumbra collection must already exist. Names like TheGrid, The Grid, and 'the grid' are accepted.");
 
         ImGui.End();
     }

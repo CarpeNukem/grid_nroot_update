@@ -53,8 +53,50 @@ internal sealed class PenumbraIpc
     public Dictionary<string, string> GetModList()
         => pluginInterface.GetIpcSubscriber<Dictionary<string, string>>("Penumbra.GetModList").InvokeFunc();
 
+    public List<(Guid Id, string Name)> GetCollections()
+    {
+        try
+        {
+            return pluginInterface.GetIpcSubscriber<List<(Guid Id, string Name)>>("Penumbra.GetCollections.V5").InvokeFunc();
+        }
+        catch (Exception v5Exception)
+        {
+            PluginService.Log.Debug(v5Exception, "Penumbra.GetCollections.V5 is not available.");
+        }
+
+        try
+        {
+            return pluginInterface.GetIpcSubscriber<List<(Guid Id, string Name)>>("Penumbra.GetCollections").InvokeFunc();
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Penumbra.GetCollections is not available.");
+            return [];
+        }
+    }
+
     public List<(Guid Id, string Name)> GetCollectionsByIdentifier(string name)
         => pluginInterface.GetIpcSubscriber<string, List<(Guid Id, string Name)>>("Penumbra.GetCollectionsByIdentifier").InvokeFunc(name);
+
+    public (Guid Id, string Name)? FindCollectionByName(string collectionName)
+    {
+        var matches = new List<(Guid Id, string Name)>();
+
+        foreach (var identifier in CollectionNameMatcher.GetSearchVariants(collectionName))
+        {
+            foreach (var collection in GetCollectionsByIdentifierSafely(identifier))
+                AddUniqueCollection(matches, collection);
+        }
+
+        var identifierMatch = PickCollectionMatch(matches, collectionName);
+        if (identifierMatch is not null)
+            return identifierMatch;
+
+        foreach (var collection in GetCollections())
+            AddUniqueCollection(matches, collection);
+
+        return PickCollectionMatch(matches, collectionName);
+    }
 
     public int TrySetMod(Guid collectionId, string modDirectory, string modName, bool enabled)
         => pluginInterface.GetIpcSubscriber<Guid, string, string, bool, int>("Penumbra.TrySetMod.V5").InvokeFunc(collectionId, modDirectory, modName, enabled);
@@ -66,10 +108,16 @@ internal sealed class PenumbraIpc
         => pluginInterface.GetIpcSubscriber<int, Guid?, bool, bool, (int ErrorCode, (Guid Id, string Name)? OldCollection)>("Penumbra.SetCollectionForObject.V5")
             .InvokeFunc(objectIndex, collectionId, true, false);
 
-    public (Guid Id, string Name)? GetCollectionForObject(int objectIndex)
+    public (bool Valid, bool Individual, (Guid Id, string Name) Collection) GetCollectionForObject(int objectIndex)
     {
-        var result = pluginInterface.GetIpcSubscriber<int, (bool Valid, bool Individual, (Guid Id, string Name) Collection)>("Penumbra.GetCollectionForObject").InvokeFunc(objectIndex);
-        return result.Valid ? result.Collection : null;
+        try
+        {
+            return pluginInterface.GetIpcSubscriber<int, (bool Valid, bool Individual, (Guid Id, string Name) Collection)>("Penumbra.GetCollectionForObject.V5").InvokeFunc(objectIndex);
+        }
+        catch
+        {
+            return pluginInterface.GetIpcSubscriber<int, (bool Valid, bool Individual, (Guid Id, string Name) Collection)>("Penumbra.GetCollectionForObject").InvokeFunc(objectIndex);
+        }
     }
 
     public bool IsModEnabled(Guid collectionId, string modDirectory, string modName)
@@ -111,6 +159,47 @@ internal sealed class PenumbraIpc
             .FirstOrDefault(type => type?.IsEnum == true);
 
         return redrawType is null ? RedrawTypeRedraw : Enum.ToObject(redrawType, RedrawTypeRedraw);
+    }
+
+    private List<(Guid Id, string Name)> GetCollectionsByIdentifierSafely(string name)
+    {
+        try
+        {
+            return GetCollectionsByIdentifier(name);
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Could not query Penumbra collection identifier {Identifier}.", name);
+            return [];
+        }
+    }
+
+    private static (Guid Id, string Name)? PickCollectionMatch(List<(Guid Id, string Name)> collections, string collectionName)
+    {
+        var exact = collections.FirstOrDefault(collection =>
+            string.Equals(collection.Name, collectionName, StringComparison.OrdinalIgnoreCase));
+        if (exact.Id != Guid.Empty)
+            return exact;
+
+        var looseMatches = collections
+            .Where(collection => collection.Id != Guid.Empty && CollectionNameMatcher.IsMatch(collection.Name, collectionName))
+            .ToList();
+
+        if (looseMatches.Count > 1)
+            PluginService.Log.Warning("Multiple Penumbra collections loosely match '{CollectionName}': {Matches}", collectionName, string.Join(", ", looseMatches.Select(collection => collection.Name)));
+
+        if (looseMatches.Count > 0)
+            return looseMatches[0];
+
+        return collections.Count == 1 ? collections[0] : null;
+    }
+
+    private static void AddUniqueCollection(List<(Guid Id, string Name)> collections, (Guid Id, string Name) collection)
+    {
+        if (collection.Id == Guid.Empty || collections.Any(existing => existing.Id == collection.Id))
+            return;
+
+        collections.Add(collection);
     }
 
     private const int RedrawTypeRedraw = 0;

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Dalamud.Interface.Textures;
@@ -12,12 +13,37 @@ using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.Command;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using Dalamud.Utility;
+using NativeHousingManager = FFXIVClientStructs.FFXIV.Client.Game.HousingManager;
 
 namespace GridNrootUpdate;
 
 public sealed class Plugin : IDalamudPlugin
 {
-    private const string CommandName = "/thegrid";
+    private const string PrimaryCommandName = "/grid";
+    private static readonly string[] CommandNames = [PrimaryCommandName, "/thegrid", "/cyberdeck"];
+    private static readonly string[] DataCenterNames =
+    [
+        "aether",
+        "chaos",
+        "crystal",
+        "dynamis",
+        "elemental",
+        "gaia",
+        "light",
+        "mana",
+        "materia",
+        "meteor",
+        "primal",
+    ];
+    private static readonly (string Canonical, string[] Aliases)[] HousingDistrictAliases =
+    [
+        ("Mist", ["mist", "the mist"]),
+        ("The Lavender Beds", ["lavender beds", "the lavender beds", "lavender"]),
+        ("The Goblet", ["goblet", "the goblet"]),
+        ("Shirogane", ["shirogane"]),
+        ("Empyreum", ["empyreum"]),
+    ];
 
     private readonly CancellationTokenSource lifetime = new();
     private readonly GitHubReleaseClient github = new();
@@ -57,7 +83,8 @@ public sealed class Plugin : IDalamudPlugin
         configWindow = new ConfigWindow(
             Config,
             () => QueueReconcile(),
-            () => _ = AssignAllAsync(lifetime.Token));
+            () => _ = AssignAllAsync(lifetime.Token),
+            OnAutoOpenSettingChanged);
 
         cyberdeckWindow = new CyberdeckWindow(
             Config,
@@ -69,13 +96,17 @@ public sealed class Plugin : IDalamudPlugin
             () => _ = AssignAllAsync(lifetime.Token),
             () => RunUpdateCheck(silent: false),
             () => configWindow.IsOpen = true,
+            OnAutoOpenSettingChanged,
             IsPenumbraAvailable);
 
-        PluginService.Commands.AddHandler(CommandName, new CommandInfo(OnCommand)
+        foreach (var commandName in CommandNames)
         {
-            HelpMessage = "Open The Grid cyberdeck app and manage venue sync/update tools.",
-            ShowInHelp = true,
-        });
+            PluginService.Commands.AddHandler(commandName, new CommandInfo(OnCommand)
+            {
+                HelpMessage = "Open The Grid Cyberdeck. Aliases: /thegrid, /cyberdeck. Subcommands: update, config.",
+                ShowInHelp = commandName == PrimaryCommandName,
+            });
+        }
 
         PluginService.ClientState.Login += OnLogin;
         PluginService.ClientState.TerritoryChanged += OnTerritoryChanged;
@@ -108,7 +139,8 @@ public sealed class Plugin : IDalamudPlugin
         PluginService.PluginInterface.UiBuilder.OpenConfigUi -= OpenConfigUi;
         PluginService.PluginInterface.UiBuilder.OpenMainUi -= OpenMainUi;
         PluginService.PluginInterface.UiBuilder.Draw -= DrawUi;
-        PluginService.Commands.RemoveHandler(CommandName);
+        foreach (var commandName in CommandNames)
+            PluginService.Commands.RemoveHandler(commandName);
         github.Dispose();
         zoneTickCts?.Dispose();
         lifetime.Dispose();
@@ -133,7 +165,7 @@ public sealed class Plugin : IDalamudPlugin
                 OpenConfigUi();
                 break;
             default:
-                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /thegrid update, or /thegrid config.", "TheGrid");
+                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /grid, or /cyberdeck with optional update/config.", "TheGrid");
                 break;
         }
     }
@@ -170,15 +202,27 @@ public sealed class Plugin : IDalamudPlugin
     private void OnLogin()
     {
         startupActionDone = false;
+        lastAutoOpenedTerritory = 0;
         QueueStartupAction();
+        QueueVenueUpdateCheck();
         QueueVenueAutoOpenCheck();
     }
 
     private void OnTerritoryChanged(uint _)
     {
         venueUpdateCheckDoneThisZone = false;
+        lastAutoOpenedTerritory = 0;
         QueueVenueUpdateCheck();
         QueueVenueAutoOpenCheck();
+    }
+
+    private void OnAutoOpenSettingChanged(bool enabled)
+    {
+        if (!enabled)
+            return;
+
+        lastAutoOpenedTerritory = 0;
+        QueueVenueAutoOpenCheck(immediate: true);
     }
 
     private void OnFrameworkUpdate(IFramework framework)
@@ -289,8 +333,8 @@ public sealed class Plugin : IDalamudPlugin
         zoneTickCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
 
         var cts = zoneTickCts;
-        // The object table populates a few seconds after a territory change, so poll a few times.
-        for (var attempt = 1; attempt <= 4; attempt++)
+        // The object table populates after a territory change, and housing mannequins can lag behind the zone load.
+        for (var attempt = 1; attempt <= 12; attempt++)
         {
             PluginService.Framework.RunOnTick(
                 TryVenueUpdateCheck,
@@ -309,6 +353,8 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         venueUpdateCheckDoneThisZone = true;
+        if (IsKnownWrongVenueAddress(out var mismatchReason))
+            PluginService.Log.Debug("Venue address check reported a mismatch after finding mannequin '{Npc}'; continuing with mannequin assignment: {Reason}", mapping.NpcName, mismatchReason);
 
         PluginService.Log.Information(
             "Mannequin '{Npc}' found in territory {Territory}; running update check ({Mode}).",
@@ -322,36 +368,33 @@ public sealed class Plugin : IDalamudPlugin
         }
         else
         {
-            if (!string.IsNullOrWhiteSpace(mapping.LastAppliedVersion))
+            var token = lifetime.Token;
+            _ = Task.Run(async () =>
             {
-                var token = lifetime.Token;
-                _ = Task.Run(async () =>
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(3), token).ConfigureAwait(false);
-                    await AssignAllAsync(token).ConfigureAwait(false);
-                }, token);
-            }
+                await Task.Delay(TimeSpan.FromSeconds(3), token).ConfigureAwait(false);
+                await AssignAllAsync(token).ConfigureAwait(false);
+            }, token);
             RunUpdateCheck(silent: true);
         }
     }
 
     private static bool IsTargetNpcPresent(string npcName)
-    {
-        for (var i = 0; i < PluginService.Objects.Length; i++)
-        {
-            if (IsTargetNpc(PluginService.Objects[i], npcName))
-                return true;
-        }
+        => FindTargetNpcObjects(npcName, out _).Count > 0;
 
-        return false;
-    }
-
-    private void QueueVenueAutoOpenCheck()
+    private void QueueVenueAutoOpenCheck(bool immediate = false)
     {
         if (!Config.AutoOpenOnVenueAddress)
             return;
 
-        for (var attempt = 1; attempt <= 4; attempt++)
+        if (immediate)
+        {
+            PluginService.Framework.RunOnTick(
+                TryAutoOpenForVenueObject,
+                delay: TimeSpan.Zero,
+                cancellationToken: lifetime.Token);
+        }
+
+        for (var attempt = 1; attempt <= 12; attempt++)
         {
             PluginService.Framework.RunOnTick(() =>
             {
@@ -367,11 +410,8 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         var mapping = Config.GetPrimaryMapping();
-        for (var i = 0; i < PluginService.Objects.Length; i++)
+        foreach (var _ in FindTargetNpcObjects(mapping.NpcName, out _))
         {
-            if (!IsTargetNpc(PluginService.Objects[i], mapping.NpcName))
-                continue;
-
             lastAutoOpenedTerritory = territory;
             OpenMainUi();
             return;
@@ -439,7 +479,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             if (!IsPenumbraAvailable())
             {
-                SetAllStatus("Penumbra IPC is not available. Install and enable Penumbra, then run /thegrid update.");
+                SetAllStatus("Penumbra IPC is not available. Install and enable Penumbra, then run /grid update.");
                 return;
             }
 
@@ -548,7 +588,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         mapping.LastAppliedVersion = NormalizeVersionForComparison(download.Version);
-        mapping.LastStatus = BuildReconcileStatus(mapping, download.Version, modDirectory, collection is not null);
+        mapping.LastStatus = BuildReconcileStatus(mapping, download.Version, modDirectory, collection);
         PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
         return collection is not null;
     }
@@ -562,7 +602,7 @@ public sealed class Plugin : IDalamudPlugin
             EnableImportedMod(mapping, collection.Value, modDirectory);
 
         mapping.LastAppliedVersion = NormalizeVersionForComparison(version);
-        mapping.LastStatus = BuildReconcileStatus(mapping, version, modDirectory, collection is not null, alreadyApplied: true);
+        mapping.LastStatus = BuildReconcileStatus(mapping, version, modDirectory, collection, alreadyApplied: true);
         if (!Config.FullAuto)
             PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
         return collection is not null;
@@ -584,7 +624,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         mapping.LastAppliedVersion = NormalizeVersionForComparison(version);
-        mapping.LastStatus = BuildReconcileStatus(mapping, version, modDirectory, collection is not null, alreadyApplied: true);
+        mapping.LastStatus = BuildReconcileStatus(mapping, version, modDirectory, collection, alreadyApplied: true);
         if (!Config.FullAuto)
             PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
         return collection is not null;
@@ -594,7 +634,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         var enableCode = penumbra.TrySetMod(collection.Id, modDirectory, mapping.ModName, true);
         if (!IsSuccess(enableCode))
-            PluginService.Log.Warning("Could not enable mod {ModDirectory} in {Collection}. Penumbra code {Code}.", modDirectory, mapping.CollectionName, enableCode);
+            PluginService.Log.Warning("Could not enable mod {ModDirectory} in {Collection}. Penumbra code {Code}.", modDirectory, collection.Name, enableCode);
 
         var priorityCode = penumbra.TrySetModPriority(collection.Id, modDirectory, mapping.ModName, mapping.Priority);
         if (!IsSuccess(priorityCode))
@@ -623,7 +663,7 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private static string BuildReconcileStatus(ModMapping mapping, string version, string? modDirectory, bool collectionFound, bool alreadyApplied = false)
+    private static string BuildReconcileStatus(ModMapping mapping, string version, string? modDirectory, (Guid Id, string Name)? collection, bool alreadyApplied = false)
     {
         if (modDirectory is null)
             return alreadyApplied
@@ -637,9 +677,9 @@ public sealed class Plugin : IDalamudPlugin
             ? "in Penumbra"
             : $"under {mapping.PenumbraFolderPath}";
 
-        return collectionFound
-            ? $"{prefix} {folderText}; enabled in collection '{mapping.CollectionName}'."
-            : $"{prefix} {folderText}. The mod can be imported without the collection, but assignment requires a persistent Penumbra collection named '{mapping.CollectionName}'.";
+        return collection is not null
+            ? $"{prefix} {folderText}; enabled in collection '{collection.Value.Name}'."
+            : $"{prefix} {folderText}. The mod can be imported without the collection, but assignment requires a persistent Penumbra collection matching '{mapping.CollectionName}'.";
     }
 
     private void PrepareForModAdded()
@@ -760,9 +800,9 @@ public sealed class Plugin : IDalamudPlugin
         var collection = FindCollection(mapping.CollectionName);
         if (collection is null)
         {
-            mapping.LastStatus = $"Collection '{mapping.CollectionName}' does not exist.";
-            cyberdeckWindow.InstallStatusItems.Add((false, $"Collection '{mapping.CollectionName}' not found"));
-            PluginService.Chat.PrintError($"Collection '{mapping.CollectionName}' does not exist. Create a persistent Penumbra collection named '{mapping.CollectionName}', then press Install.", "TheGrid");
+            mapping.LastStatus = $"Collection matching '{mapping.CollectionName}' does not exist.";
+            cyberdeckWindow.InstallStatusItems.Add((false, $"Collection matching '{mapping.CollectionName}' not found"));
+            PluginService.Chat.PrintError($"No Penumbra collection matching '{mapping.CollectionName}' exists. Names like TheGrid, The Grid, and 'the grid' are accepted.", "TheGrid");
             return;
         }
 
@@ -772,30 +812,47 @@ public sealed class Plugin : IDalamudPlugin
             mapping.ModDirectory = modDirectory;
             OrganizeModInPenumbra(mapping, modDirectory);
             EnableImportedMod(mapping, collection.Value, modDirectory);
-            cyberdeckWindow.InstallStatusItems.Add((true, $"Mod enabled in '{mapping.CollectionName}'"));
+            cyberdeckWindow.InstallStatusItems.Add((true, $"Mod enabled in '{collection.Value.Name}'"));
         }
         else
         {
             cyberdeckWindow.InstallStatusItems.Add((false, "Mod not found in Penumbra"));
         }
 
+        var targetCount = 0;
         var assigned = 0;
+        var alreadyAssigned = 0;
+        var failedAssignments = 0;
         var assignedObjectIndices = new List<int>();
-        for (var i = 0; i < PluginService.Objects.Length; i++)
-        {
-            var gameObject = PluginService.Objects[i];
-            if (gameObject is null || !IsTargetNpc(gameObject, mapping.NpcName))
-                continue;
+        var targetObjects = FindTargetNpcObjects(mapping.NpcName, out var mannequinFallbackCandidates);
+        if (targetObjects.Count > 0 && IsKnownWrongVenueAddress(out var mismatchReason))
+            PluginService.Log.Debug("Venue address check reported a mismatch while assigning mannequin '{Npc}'; continuing with mannequin assignment: {Reason}", mapping.NpcName, mismatchReason);
 
-            var (errorCode, _) = penumbra.SetCollectionForObject(i, collection.Value.Id);
-            if (IsSuccess(errorCode))
+        foreach (var targetObject in targetObjects)
+        {
+            var objectIndex = targetObject.ObjectIndex;
+            targetCount++;
+            var currentCollection = TryGetCollectionForObject(objectIndex);
+            if (currentCollection.HasValue && currentCollection.Value.Individual && currentCollection.Value.Id == collection.Value.Id)
+            {
+                alreadyAssigned++;
+                continue;
+            }
+
+            var (errorCode, _) = penumbra.SetCollectionForObject(objectIndex, collection.Value.Id);
+            if (errorCode == PenumbraApiSuccess)
             {
                 assigned++;
-                assignedObjectIndices.Add(i);
+                assignedObjectIndices.Add(objectIndex);
+            }
+            else if (errorCode == PenumbraApiNothingChanged)
+            {
+                alreadyAssigned++;
             }
             else
             {
-                PluginService.Log.Warning("Could not assign collection {Collection} to {Npc} at object index {Index}: {Code}", mapping.CollectionName, mapping.NpcName, i, errorCode);
+                failedAssignments++;
+                PluginService.Log.Warning("Could not assign collection {Collection} to {Npc} at object index {Index}: {Code}", collection.Value.Name, mapping.NpcName, objectIndex, errorCode);
             }
         }
 
@@ -816,19 +873,26 @@ public sealed class Plugin : IDalamudPlugin
 
             cyberdeckWindow.InstallStatusItems.Add((true, $"Assigned to {assigned} '{mapping.NpcName}' object(s)"));
         }
-        else
+
+        if (alreadyAssigned > 0)
+            cyberdeckWindow.InstallStatusItems.Add((true, $"Already individually assigned to {alreadyAssigned} '{mapping.NpcName}' object(s); no redraw needed"));
+
+        if (failedAssignments > 0)
+            cyberdeckWindow.InstallStatusItems.Add((false, $"Could not assign {failedAssignments} '{mapping.NpcName}' object(s)"));
+
+        if (targetCount == 0)
         {
-            cyberdeckWindow.InstallStatusItems.Add((null, $"NPC '{mapping.NpcName}' not in range"));
+            if (mannequinFallbackCandidates > 1)
+                cyberdeckWindow.InstallStatusItems.Add((false, $"Found {mannequinFallbackCandidates} mannequins but could not identify '{mapping.NpcName}'"));
+            else
+                cyberdeckWindow.InstallStatusItems.Add((null, $"Mannequin '{mapping.NpcName}' not in range"));
         }
 
         mapping.LastStatus = string.Join(" ", cyberdeckWindow.InstallStatusItems.Select(s => s.Label + "."));
     }
 
     private (Guid Id, string Name)? FindCollection(string collectionName)
-        => penumbra.GetCollectionsByIdentifier(collectionName)
-            .FirstOrDefault(c => string.Equals(c.Name, collectionName, StringComparison.OrdinalIgnoreCase)) is var collection && collection.Id != Guid.Empty
-                ? collection
-                : null;
+        => penumbra.FindCollectionByName(collectionName);
 
     internal static string? FindInstalledModDirectory(ModMapping mapping, Dictionary<string, string> mods)
     {
@@ -877,15 +941,258 @@ public sealed class Plugin : IDalamudPlugin
         return null;
     }
 
-    private static bool IsTargetNpc(IGameObject? gameObject, string npcName)
+    private static IReadOnlyList<TargetObjectMatch> FindTargetNpcObjects(string npcName, out int mannequinFallbackCandidates)
+    {
+        mannequinFallbackCandidates = 0;
+        var namedMatches = new List<TargetObjectMatch>();
+        var mannequinMatches = new List<TargetObjectMatch>();
+
+        for (var i = 0; i < PluginService.Objects.Length; i++)
+        {
+            var gameObject = PluginService.Objects[i];
+            if (gameObject is null || !IsAssignableObject(gameObject))
+                continue;
+
+            var objectIndex = gameObject.ObjectIndex;
+            if (IsTargetNpc(gameObject, npcName))
+            {
+                namedMatches.Add(new TargetObjectMatch(objectIndex, gameObject.Name.TextValue, gameObject.ObjectKind.ToString(), true));
+                continue;
+            }
+
+            if (IsMannequinObject(gameObject))
+                mannequinMatches.Add(new TargetObjectMatch(objectIndex, gameObject.Name.TextValue, gameObject.ObjectKind.ToString(), false));
+        }
+
+        if (namedMatches.Count > 0)
+            return namedMatches;
+
+        mannequinFallbackCandidates = mannequinMatches.Count;
+        return mannequinMatches.Count == 1 ? mannequinMatches : [];
+    }
+
+    private static bool IsAssignableObject(IGameObject? gameObject)
     {
         if (gameObject is null)
             return false;
 
-        if (gameObject.ObjectKind is ObjectKind.Pc)
+        if (PluginService.Objects.LocalPlayer?.GameObjectId == gameObject.GameObjectId)
             return false;
 
-        return string.Equals(gameObject.Name.TextValue, npcName, StringComparison.OrdinalIgnoreCase);
+        return true;
+    }
+
+    private static bool IsTargetNpc(IGameObject gameObject, string npcName)
+    {
+        if (!IsAssignableObject(gameObject))
+            return false;
+
+        return NamesMatch(gameObject.Name.TextValue, npcName);
+    }
+
+    private static bool IsMannequinObject(IGameObject gameObject)
+        => NamesMatch(gameObject.Name.TextValue, "Mannequin");
+
+    private static bool NamesMatch(string objectName, string targetName)
+    {
+        var normalizedObject = NormalizeObjectName(objectName);
+        var normalizedTarget = NormalizeObjectName(targetName);
+        return normalizedObject.Length > 0 &&
+               normalizedTarget.Length > 0 &&
+               (string.Equals(normalizedObject, normalizedTarget, StringComparison.OrdinalIgnoreCase) ||
+                normalizedObject.Contains(normalizedTarget, StringComparison.OrdinalIgnoreCase) ||
+                normalizedTarget.Contains(normalizedObject, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string NormalizeObjectName(string name)
+        => Regex.Replace(name.Trim(), @"\s+", " ");
+
+    private (Guid Id, string Name, bool Individual)? TryGetCollectionForObject(int objectIndex)
+    {
+        try
+        {
+            var result = penumbra.GetCollectionForObject(objectIndex);
+            return result.Valid
+                ? (result.Collection.Id, result.Collection.Name, result.Individual)
+                : null;
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Debug(ex, "Could not read current Penumbra collection for object index {Index}.", objectIndex);
+            return null;
+        }
+    }
+
+    private bool IsKnownWrongVenueAddress(out string reason)
+    {
+        reason = string.Empty;
+        if (!TryParseVenueAddress(Config.VenueAddress, out var expected))
+            return false;
+
+        var currentMaybe = TryGetCurrentHousingAddress();
+        if (currentMaybe is null)
+            return false;
+
+        var current = currentMaybe.Value;
+        var mismatches = new List<string>();
+        if (!string.IsNullOrWhiteSpace(expected.WorldName)
+            && !string.IsNullOrWhiteSpace(current.WorldName)
+            && !string.Equals(expected.WorldName, current.WorldName, StringComparison.OrdinalIgnoreCase))
+            mismatches.Add($"world {current.WorldName} != {expected.WorldName}");
+
+        if (!string.IsNullOrWhiteSpace(expected.DistrictName)
+            && !string.IsNullOrWhiteSpace(current.DistrictName)
+            && !string.Equals(expected.DistrictName, current.DistrictName, StringComparison.OrdinalIgnoreCase))
+            mismatches.Add($"district {current.DistrictName} != {expected.DistrictName}");
+
+        if (expected.Ward is not null && current.Ward is not null && expected.Ward != current.Ward)
+            mismatches.Add($"ward {current.Ward} != {expected.Ward}");
+
+        if (expected.Plot is not null && current.Plot is not null && expected.Plot != current.Plot)
+            mismatches.Add($"plot {current.Plot} != {expected.Plot}");
+
+        if (mismatches.Count == 0)
+            return false;
+
+        reason = string.Join(", ", mismatches);
+        return true;
+    }
+
+    private static bool TryParseVenueAddress(string address, out VenueAddressParts parts)
+    {
+        parts = default;
+        if (string.IsNullOrWhiteSpace(address))
+            return false;
+
+        var district = TryGetHousingDistrict(address, out var districtIndex);
+        var worldName = TryGetWorldName(address, districtIndex);
+        var ward = TryGetAddressNumber(address, "W", "Ward");
+        var plot = TryGetAddressNumber(address, "P", "Plot");
+
+        if (district is null && worldName is null && ward is null && plot is null)
+            return false;
+
+        parts = new VenueAddressParts(worldName, district, ward, plot);
+        return true;
+    }
+
+    private static string? TryGetHousingDistrict(string address, out int districtIndex)
+    {
+        foreach (var (canonical, aliases) in HousingDistrictAliases)
+        {
+            foreach (var alias in aliases.OrderByDescending(a => a.Length))
+            {
+                var match = Regex.Match(address, $@"\b{Regex.Escape(alias)}\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                if (!match.Success)
+                    continue;
+
+                districtIndex = match.Index;
+                return canonical;
+            }
+        }
+
+        districtIndex = -1;
+        return null;
+    }
+
+    private static string? NormalizeHousingDistrictName(string? districtName)
+    {
+        if (string.IsNullOrWhiteSpace(districtName))
+            return null;
+
+        var trimmed = districtName.Trim();
+        foreach (var (canonical, aliases) in HousingDistrictAliases)
+        {
+            if (string.Equals(trimmed, canonical, StringComparison.OrdinalIgnoreCase) ||
+                aliases.Any(alias => string.Equals(trimmed, alias, StringComparison.OrdinalIgnoreCase)))
+                return canonical;
+        }
+
+        return trimmed;
+    }
+
+    private static string? TryGetWorldName(string address, int districtIndex)
+    {
+        if (districtIndex <= 0)
+            return null;
+
+        var precedingTokens = address[..districtIndex]
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (precedingTokens.Length == 0)
+            return null;
+
+        var candidate = precedingTokens[^1];
+        return DataCenterNames.Contains(candidate, StringComparer.OrdinalIgnoreCase) ||
+               string.Equals(candidate, "the", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : candidate;
+    }
+
+    private static int? TryGetAddressNumber(string address, string shortPrefix, string longPrefix)
+    {
+        var match = Regex.Match(address, $@"\b(?:{Regex.Escape(shortPrefix)}|{Regex.Escape(longPrefix)})\s*(\d+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success && int.TryParse(match.Groups[1].Value, out var value) ? value : null;
+    }
+
+    private static unsafe CurrentHousingAddress? TryGetCurrentHousingAddress()
+    {
+        try
+        {
+            var housing = NativeHousingManager.Instance();
+            if (housing is null)
+                return null;
+
+            var houseId = housing->GetCurrentHouseId();
+            if (houseId.Id == 0 && housing->IsInside())
+                houseId = housing->GetCurrentIndoorHouseId();
+
+            int? ward = houseId.Id != 0 ? houseId.WardIndex + 1 : null;
+            int? plot = houseId.Id != 0 && !houseId.IsApartment ? houseId.PlotIndex + 1 : null;
+
+            if (ward is null)
+            {
+                var currentWard = housing->GetCurrentWard();
+                if (currentWard >= 0)
+                    ward = currentWard + 1;
+            }
+
+            if (plot is null)
+            {
+                var currentPlot = housing->GetCurrentPlot();
+                if (currentPlot >= 0)
+                    plot = currentPlot + 1;
+            }
+
+            if (ward is null && plot is null)
+                return null;
+
+            var districtName = TryGetCurrentHousingDistrict();
+            var worldName = PluginService.Objects.LocalPlayer?.CurrentWorld.ValueNullable?.Name.ExtractText();
+            return new CurrentHousingAddress(worldName, districtName, ward, plot);
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Debug(ex, "Could not read current housing address.");
+            return null;
+        }
+    }
+
+    private static string? TryGetCurrentHousingDistrict()
+    {
+        var territoryTypeId = (uint)NativeHousingManager.GetOriginalHouseTerritoryTypeId();
+        if (territoryTypeId == 0)
+            territoryTypeId = PluginService.ClientState.TerritoryType;
+
+        if (territoryTypeId == 0)
+            return null;
+
+        var territory = PluginService.Data.GetExcelSheet<Lumina.Excel.Sheets.TerritoryType>()?.GetRowOrDefault(territoryTypeId);
+        var placeName = territory?.PlaceName.ValueNullable;
+        if (placeName is null)
+            return null;
+
+        return NormalizeHousingDistrictName(placeName.Value.NameNoArticle.ExtractText()) ??
+               NormalizeHousingDistrictName(placeName.Value.Name.ExtractText());
     }
 
     private bool IsPenumbraAvailable()
@@ -924,6 +1231,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private static bool IsSuccess(int penumbraCode)
         => penumbraCode is 0 or 1;
+
+    private const int PenumbraApiSuccess = 0;
+    private const int PenumbraApiNothingChanged = 1;
 
     private static bool VersionsEqual(string? left, string? right)
         => string.Equals(NormalizeVersionForComparison(left), NormalizeVersionForComparison(right), StringComparison.OrdinalIgnoreCase);
@@ -1005,4 +1315,10 @@ public sealed class Plugin : IDalamudPlugin
         Config.Save();
         PluginService.Chat.PrintError(status, "TheGrid");
     }
+
+    private readonly record struct VenueAddressParts(string? WorldName, string? DistrictName, int? Ward, int? Plot);
+
+    private readonly record struct CurrentHousingAddress(string? WorldName, string? DistrictName, int? Ward, int? Plot);
+
+    private readonly record struct TargetObjectMatch(int ObjectIndex, string Name, string ObjectKind, bool MatchedByName);
 }
