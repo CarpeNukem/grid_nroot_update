@@ -14,6 +14,11 @@ public sealed class PluginConfig : IPluginConfiguration
     public bool FullAuto { get; set; } = false;
     public bool FirstRunCompleted { get; set; } = false;
     public float UiScale { get; set; } = 0;
+    public int IntrusionDifficulty { get; set; } = 1;
+    public int IntrusionBestCasualScore { get; set; }
+    public int IntrusionBestStandardScore { get; set; }
+    public int IntrusionBestBlackIceScore { get; set; }
+    public int IntrusionSuccessfulBreaches { get; set; }
 
     public List<ModMapping> Mappings { get; set; } =
     [

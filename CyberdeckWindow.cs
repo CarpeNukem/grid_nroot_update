@@ -19,6 +19,9 @@ internal sealed class CyberdeckWindow
     private static readonly float[] ManualUiScales = [1.0f, 1.25f, 1.5f, 1.75f, 2.0f];
     private const string LightlessSyncshellId = "LLS-6AAKEJBAPRB0";
     private const string PlayerSyncSyncshellId = "n_root";
+    private const int IntrusionPayloadScoreThreshold = 12_000;
+    private const string IntrusionEncryptedPayload = "=B2MnKXchJ3U1YSs9BA=";
+    private const string IntrusionPayloadHint = "0x64 masks the path. Raise yourself above the GRID, then look backward.";
     private static readonly string[] AmbientTerminalMessages =
     [
         "PROBING RELAY_06...",
@@ -82,6 +85,11 @@ internal sealed class CyberdeckWindow
     private long hoverGlitchLastSeenAt;
     private long hoverGlitchUntil;
     private long nextHoverGlitchAt;
+    private IntrusionGame? intrusionGame;
+    private bool intrusionResultRecorded;
+    private bool showIntrusionPayload;
+    private bool intrusionWindowOpen;
+    private bool focusIntrusionWindow;
 
     public bool IsOpen;
     public long InstallStatusTimestamp;
@@ -121,9 +129,14 @@ internal sealed class CyberdeckWindow
 
     public void Draw()
     {
-        if (!IsOpen)
-            return;
+        if (IsOpen)
+            DrawCyberdeckWindow();
+        if (intrusionWindowOpen)
+            DrawIntrusionWindow();
+    }
 
+    private void DrawCyberdeckWindow()
+    {
         var uiScale = GetUiScale();
         using var theme = CyberdeckTheme.Push(uiScale);
         ImGui.SetNextWindowSize(GetInitialWindowSize(uiScale), ImGuiCond.FirstUseEver);
@@ -169,6 +182,40 @@ internal sealed class CyberdeckWindow
         DrawTransientFeedbackOverlay();
         ImGui.SetWindowFontScale(1.0f);
         ImGui.End();
+    }
+
+    private void DrawIntrusionWindow()
+    {
+        var uiScale = GetUiScale();
+        using var theme = CyberdeckTheme.Push(uiScale);
+        ImGui.SetNextWindowSize(new Vector2(620, 700) * uiScale, ImGuiCond.FirstUseEver);
+        var (minimumSize, maximumSize) = CyberdeckTheme.ResolveWindowConstraints(
+            uiScale,
+            new Vector2(430, 520),
+            new Vector2(900, 1000));
+        ImGui.SetNextWindowSizeConstraints(minimumSize, maximumSize);
+        if (focusIntrusionWindow)
+        {
+            ImGui.SetNextWindowFocus();
+            focusIntrusionWindow = false;
+        }
+
+        if (!ImGui.Begin("BLACK ICE // INTRUSION###grid_intrusion", ref intrusionWindowOpen, ImGuiWindowFlags.NoScrollbar))
+        {
+            ImGui.End();
+            if (!intrusionWindowOpen)
+                showIntrusionPayload = false;
+            return;
+        }
+
+        ImGui.SetWindowFontScale(uiScale);
+        if (ImGui.BeginChild("intrusion_body", Vector2.Zero, true))
+            DrawIntrusionView();
+        ImGui.EndChild();
+        ImGui.SetWindowFontScale(1f);
+        ImGui.End();
+        if (!intrusionWindowOpen)
+            showIntrusionPayload = false;
     }
 
     private static bool ShouldShowUpdateStatusRail(UpdateUiSnapshot status)
@@ -643,7 +690,12 @@ internal sealed class CyberdeckWindow
         if (badgeCounts.TryGetValue(DeckView.Network, out var networkBadge) && networkBadge > 0)
             DrawTileBadge(networkPos, buttonSize, networkBadge, badgeColors.GetValueOrDefault(DeckView.Network, CyberdeckTheme.Palette.Error));
 
-        DrawDisabledImageNavButton("Services", "services.png", buttonSize);
+        if (DrawDisabledImageNavButton("Services", "services.png", buttonSize))
+        {
+            intrusionWindowOpen = true;
+            focusIntrusionWindow = true;
+            SetTransientFeedback("UNAUTHORIZED PORT OPEN");
+        }
         if (useTwoColumns)
             ImGui.SameLine();
         var settingsPos = ImGui.GetCursorScreenPos();
@@ -801,19 +853,39 @@ internal sealed class CyberdeckWindow
         return new string(characters);
     }
 
-    private void DrawDisabledImageNavButton(string label, string imageName, Vector2 size)
+    private bool DrawDisabledImageNavButton(string label, string imageName, Vector2 size)
     {
         ImGui.BeginGroup();
         var wrap = GetTextureWrap(imageName);
         var start = ImGui.GetCursorScreenPos();
         var drawList = ImGui.GetWindowDrawList();
+        var uiScale = GetUiScale();
+        const string offlineLabel = "OFFLINE";
+        var offlineSize = ImGui.CalcTextSize(offlineLabel);
+        var offlinePadding = new Vector2(6, 3) * uiScale;
+        var offlineMax = start + new Vector2(size.X - (8 * uiScale), (8 * uiScale) + offlineSize.Y + (offlinePadding.Y * 2));
+        var offlineMin = offlineMax - offlineSize - (offlinePadding * 2);
+        var offlineTextPosition = offlineMin + offlinePadding;
 
-        ImGui.BeginDisabled();
-        ImGui.Button($"##tile_{label}", size);
-        ImGui.EndDisabled();
+        // Submit the small secret target before the decorative tile. A disabled full-size
+        // button here would otherwise retain ImGui's hover ID and block the overlapping glyph.
+        var secondFPosition = offlineTextPosition + new Vector2(ImGui.CalcTextSize("OF").X, 0);
+        var glyphPadding = new Vector2(5, 5) * uiScale;
+        ImGui.SetCursorScreenPos(secondFPosition - glyphPadding);
+        var secretActivated = ImGui.InvisibleButton(
+            "##services_offline_second_f",
+            ImGui.CalcTextSize("F") + (glyphPadding * 2));
+        ImGui.SetCursorScreenPos(start);
+        ImGui.Dummy(size);
+
+        drawList.AddRectFilled(
+            start,
+            start + size,
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Panel, 0.76f)),
+            5 * uiScale);
+        DrawTileGlow(start, size, hovered: false, glitching: false, uiScale: uiScale);
 
         var textWidth = ImGui.CalcTextSize(label).X;
-        var uiScale = GetUiScale();
         var textPos = new Vector2(start.X + MathF.Max(0, (size.X - textWidth) / 2), start.Y + size.Y - (25 * uiScale));
         var disabledColor = ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.TextMuted, 0.60f));
 
@@ -827,15 +899,11 @@ internal sealed class CyberdeckWindow
         drawList.AddText(textPos, disabledColor, label);
         DrawGlitchOverlay(start, size, textPos, label, uiScale, config.ReduceMotion);
 
-        const string offlineLabel = "OFFLINE";
-        var offlineSize = ImGui.CalcTextSize(offlineLabel);
-        var offlinePadding = new Vector2(6, 3) * uiScale;
-        var offlineMax = start + new Vector2(size.X - (8 * uiScale), (8 * uiScale) + offlineSize.Y + (offlinePadding.Y * 2));
-        var offlineMin = offlineMax - offlineSize - (offlinePadding * 2);
         drawList.AddRectFilled(offlineMin, offlineMax, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Error, 0.14f)), 3 * uiScale);
         drawList.AddRect(offlineMin, offlineMax, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Error, 0.66f)), 3 * uiScale);
-        drawList.AddText(offlineMin + offlinePadding, ImGui.GetColorU32(CyberdeckTheme.Palette.Error), offlineLabel);
+        drawList.AddText(offlineTextPosition, ImGui.GetColorU32(CyberdeckTheme.Palette.Error), offlineLabel);
         ImGui.EndGroup();
+        return secretActivated;
     }
 
     private static void DrawGlitchedImage(ImTextureID textureHandle, Vector2 iconPos, Vector2 iconSize, uint baseColor, float uiScale, bool reduceMotion)
@@ -1191,6 +1259,479 @@ internal sealed class CyberdeckWindow
 
         DrawHoverTooltip(tooltip);
     }
+
+    private void DrawIntrusionView()
+    {
+        var now = Environment.TickCount64;
+        if (intrusionGame is not null)
+        {
+            intrusionGame.Tick(now);
+            RecordIntrusionResultIfNeeded(intrusionGame);
+        }
+
+        if (showIntrusionPayload)
+        {
+            DrawIntrusionPayload();
+            return;
+        }
+
+        if (intrusionGame is null)
+        {
+            DrawIntrusionLanding();
+            return;
+        }
+
+        DrawIntrusionGame(intrusionGame, now);
+    }
+
+    private void DrawIntrusionLanding()
+    {
+        ImGui.TextColored(CyberdeckTheme.Palette.Magenta, "BLACK ICE // INTRUSION");
+        DrawMutedWrapped("Unauthorized local simulation. Build target sequences by alternating between the selected column and row.");
+        DrawNeonSeparator();
+        ImGui.Spacing();
+
+        DrawSettingsGroupHeader("THREAT LEVEL");
+        var selectedDifficulty = Math.Clamp(config.IntrusionDifficulty, 0, 2);
+        var stack = ImGui.GetContentRegionAvail().X < (330 * GetUiScale());
+        DrawIntrusionDifficultyChoice("CASUAL", (int)IntrusionDifficulty.Casual, ref selectedDifficulty);
+        if (!stack) ImGui.SameLine();
+        DrawIntrusionDifficultyChoice("STANDARD", (int)IntrusionDifficulty.Standard, ref selectedDifficulty);
+        if (!stack) ImGui.SameLine();
+        DrawIntrusionDifficultyChoice("BLACK ICE", (int)IntrusionDifficulty.BlackIce, ref selectedDifficulty);
+        if (selectedDifficulty != config.IntrusionDifficulty)
+        {
+            config.IntrusionDifficulty = selectedDifficulty;
+            config.Save();
+        }
+
+        var difficulty = (IntrusionDifficulty)selectedDifficulty;
+        DrawMutedWrapped(GetIntrusionDifficultyDescription(difficulty));
+        if (difficulty != IntrusionDifficulty.BlackIce)
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "Encrypted payload authentication requires BLACK ICE.");
+
+        ImGui.Spacing();
+        DrawSettingsGroupHeader("LOCAL RECORD");
+        ImGui.TextDisabled($"BEST // {GetIntrusionBestScore(difficulty):00000}");
+        ImGui.TextDisabled($"SUCCESSFUL BREACHES // {config.IntrusionSuccessfulBreaches}");
+        ImGui.TextDisabled($"PAYLOAD THRESHOLD // {IntrusionPayloadScoreThreshold:00000}");
+        ImGui.Spacing();
+
+        using (CyberdeckTheme.PushAccentButton())
+        {
+            if (ImGui.Button("INITIATE INTRUSION", new Vector2(ImGui.GetContentRegionAvail().X, 38 * GetUiScale())))
+                StartIntrusion(difficulty);
+        }
+
+        ImGui.Spacing();
+        DrawMutedWrapped(difficulty == IntrusionDifficulty.BlackIce
+            ? "BLACK ICE locks the matrix for a 2-second link countdown, then starts the trace automatically. A clean route is required."
+            : "The trace timer begins only after the first token is selected.");
+    }
+
+    private static void DrawIntrusionDifficultyChoice(string label, int value, ref int selected)
+    {
+        if (ImGui.RadioButton(label, selected == value))
+            selected = value;
+    }
+
+    private void DrawIntrusionGame(IntrusionGame game, long now)
+    {
+        var (statusLabel, statusColor) = GetIntrusionStatus(game);
+        CyberdeckWidgets.DrawStatusChip(statusLabel, statusColor, CyberdeckTheme.Palette.Text, GetUiScale());
+        if (ImGui.GetContentRegionAvail().X < (310 * GetUiScale()))
+        {
+            ImGui.TextDisabled($"SCORE // {game.GetCurrentScore(now):00000}");
+            ImGui.TextDisabled($"THREAT // {GetIntrusionDifficultyName(game.Difficulty)}");
+        }
+        else
+        {
+            ImGui.TextDisabled($"SCORE // {game.GetCurrentScore(now):00000}    THREAT // {GetIntrusionDifficultyName(game.Difficulty)}");
+        }
+
+        if (!game.IsTerminal)
+        {
+            if (game.Phase == IntrusionPhase.Countdown)
+            {
+                ImGui.TextColored(
+                    CyberdeckTheme.Palette.Magenta,
+                    $"TRACE ARMING // {game.GetCountdownRemainingSeconds(now):00}");
+            }
+            else
+            {
+                ImGui.TextColored(CyberdeckTheme.Palette.Cyan, game.GetSelectionHint());
+            }
+            if (game.TimeLimitSeconds is { })
+            {
+                CyberdeckWidgets.DrawLabeledProgress(
+                    "TRACE WINDOW",
+                    game.GetRemainingFraction(now),
+                    config.ReduceMotion,
+                    CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Border, 0.45f),
+                    game.GetRemainingSeconds(now) <= 8 ? CyberdeckTheme.Palette.Error : CyberdeckTheme.Palette.Amber,
+                    CyberdeckTheme.Palette.Text,
+                    CyberdeckTheme.Palette.TextMuted,
+                    $"{game.GetRemainingSeconds(now):00}s",
+                    height: 7 * GetUiScale());
+            }
+            else
+            {
+                ImGui.TextDisabled("TRACE WINDOW // DISABLED");
+            }
+        }
+
+        ImGui.Spacing();
+        DrawSettingsGroupHeader("BUFFER");
+        DrawIntrusionBuffer(game);
+        ImGui.Spacing();
+
+        var objectiveColumnWidth = 190 * GetUiScale();
+        if (ImGui.BeginTable(
+                "intrusion_workspace",
+                2,
+                ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.BordersInnerV,
+                new Vector2(ImGui.GetContentRegionAvail().X, 0)))
+        {
+            ImGui.TableSetupColumn("OBJECTIVES", ImGuiTableColumnFlags.WidthFixed, objectiveColumnWidth);
+            ImGui.TableSetupColumn("CODE MATRIX", ImGuiTableColumnFlags.WidthStretch);
+            ImGui.TableNextRow();
+
+            ImGui.TableSetColumnIndex(0);
+            DrawSettingsGroupHeader("OBJECTIVES");
+            foreach (var objective in game.Objectives)
+            {
+                DrawIntrusionObjective(game, objective);
+                ImGui.Spacing();
+            }
+
+            ImGui.TableSetColumnIndex(1);
+            DrawSettingsGroupHeader("CODE MATRIX");
+            DrawIntrusionMatrix(game, now);
+            ImGui.EndTable();
+        }
+
+        ImGui.Spacing();
+        if (game.IsTerminal)
+        {
+            DrawIntrusionResult(game);
+        }
+        else if (ImGui.Button("ABORT SESSION"))
+        {
+            intrusionGame = null;
+            intrusionResultRecorded = false;
+        }
+    }
+
+    private void DrawIntrusionBuffer(IntrusionGame game)
+    {
+        var uiScale = GetUiScale();
+        var spacing = 3 * uiScale;
+        var available = ImGui.GetContentRegionAvail().X;
+        var slotWidth = Math.Clamp(
+            (available - (spacing * (game.BufferCapacity - 1))) / game.BufferCapacity,
+            20 * uiScale,
+            46 * uiScale);
+        var slotHeight = 27 * uiScale;
+        var stripWidth = (slotWidth * game.BufferCapacity) + (spacing * (game.BufferCapacity - 1));
+        var origin = ImGui.GetCursorScreenPos() + new Vector2(MathF.Max(0, (available - stripWidth) / 2), 0);
+        var drawList = ImGui.GetWindowDrawList();
+
+        for (var index = 0; index < game.BufferCapacity; index++)
+        {
+            var min = origin + new Vector2(index * (slotWidth + spacing), 0);
+            var max = min + new Vector2(slotWidth, slotHeight);
+            var occupied = index < game.Buffer.Count;
+            var color = occupied
+                ? index == game.Buffer.Count - 1 ? CyberdeckTheme.Palette.Magenta : CyberdeckTheme.Palette.Cyan
+                : CyberdeckTheme.Palette.Border;
+            drawList.AddRectFilled(min, max, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.PanelRaised, occupied ? 0.88f : 0.42f)), 2 * uiScale);
+            drawList.AddRect(min, max, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(color, occupied ? 0.92f : 0.45f)), 2 * uiScale);
+
+            var text = occupied ? game.Buffer[index] : "--";
+            var textSize = ImGui.CalcTextSize(text);
+            drawList.AddText(
+                min + new Vector2((slotWidth - textSize.X) / 2, (slotHeight - textSize.Y) / 2),
+                ImGui.GetColorU32(occupied ? CyberdeckTheme.Palette.Text : CyberdeckTheme.Palette.TextMuted),
+                text);
+        }
+
+        ImGui.Dummy(new Vector2(available, slotHeight));
+    }
+
+    private void DrawIntrusionObjective(IntrusionGame game, IntrusionObjective objective)
+    {
+        var complete = game.IsObjectiveComplete(objective);
+        var matched = game.GetObjectivePrefixLength(objective);
+        var isEntryVector = string.Equals(objective.Label, "ENTRY VECTOR", StringComparison.Ordinal);
+        var color = complete
+            ? CyberdeckTheme.Palette.Success
+            : matched > 0
+                ? CyberdeckTheme.Palette.Amber
+                : isEntryVector
+                    ? CyberdeckTheme.Palette.Cyan
+                : CyberdeckTheme.Palette.TextMuted;
+        var marker = complete ? "<OK>" : isEntryVector ? "<IN>" : "<..>";
+        ImGui.TextColored(color, $"{marker} {objective.Label}");
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (18 * GetUiScale()));
+
+        for (var index = 0; index < objective.Sequence.Count; index++)
+        {
+            if (index > 0)
+                ImGui.SameLine();
+            var tokenColor = complete || index < matched || (isEntryVector && game.Buffer.Count == 0 && index == 0)
+                ? color
+                : CyberdeckTheme.Palette.TextMuted;
+            ImGui.TextColored(tokenColor, objective.Sequence[index]);
+        }
+    }
+
+    private void DrawIntrusionMatrix(IntrusionGame game, long now)
+    {
+        var uiScale = GetUiScale();
+        var spacing = MathF.Max(2, 4 * uiScale);
+        var available = ImGui.GetContentRegionAvail().X;
+        var cellSize = Math.Clamp(
+            (available - (spacing * (game.GridSize - 1))) / game.GridSize,
+            22 * uiScale,
+            56 * uiScale);
+        var gridWidth = (cellSize * game.GridSize) + (spacing * (game.GridSize - 1));
+        var rowStart = ImGui.GetCursorPosX() + MathF.Max(0, (available - gridWidth) / 2);
+        var gridOrigin = ImGui.GetCursorScreenPos() + new Vector2(MathF.Max(0, (available - gridWidth) / 2), 0);
+        var drawList = ImGui.GetWindowDrawList();
+
+        if (game.Difficulty == IntrusionDifficulty.BlackIce && !game.IsTerminal && game.Phase != IntrusionPhase.Countdown)
+        {
+            var framePadding = 2 * uiScale;
+            Vector2 frameMin;
+            Vector2 frameMax;
+            if (game.Selections.Count == 0 || game.Selections.Count % 2 == 0)
+            {
+                var row = game.Selections.Count == 0 ? 0 : game.Selections[^1].Row;
+                frameMin = gridOrigin + new Vector2(-framePadding, row * (cellSize + spacing) - framePadding);
+                frameMax = frameMin + new Vector2(gridWidth + (framePadding * 2), cellSize + (framePadding * 2));
+            }
+            else
+            {
+                var column = game.Selections[^1].Column;
+                frameMin = gridOrigin + new Vector2(column * (cellSize + spacing) - framePadding, -framePadding);
+                frameMax = frameMin + new Vector2(cellSize + (framePadding * 2), gridWidth + (framePadding * 2));
+            }
+
+            drawList.AddRect(
+                frameMin,
+                frameMax,
+                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.78f)),
+                2 * uiScale,
+                ImDrawFlags.None,
+                MathF.Max(1, 1.5f * uiScale));
+        }
+
+        for (var row = 0; row < game.GridSize; row++)
+        {
+            ImGui.SetCursorPosX(rowStart);
+            for (var column = 0; column < game.GridSize; column++)
+            {
+                if (column > 0)
+                    ImGui.SameLine(0, spacing);
+
+                var selected = game.IsCellSelected(row, column);
+                var legal = game.CanSelect(row, column);
+                var legalAlpha = config.ReduceMotion
+                    ? 0.25f
+                    : 0.24f + (MathF.Sin((float)ImGui.GetTime() * 3.4f + row + (column * 0.7f)) * 0.07f);
+                var buttonColor = selected
+                    ? CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Magenta, 0.48f)
+                    : game.Difficulty == IntrusionDifficulty.BlackIce
+                        ? CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.PanelRaised, 0.72f)
+                    : legal
+                        ? CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, legalAlpha)
+                        : CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.PanelRaised, 0.72f);
+                var hoverColor = legal
+                    ? CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.52f)
+                    : buttonColor;
+                ImGui.PushStyleColor(ImGuiCol.Button, buttonColor);
+                ImGui.PushStyleColor(ImGuiCol.ButtonHovered, hoverColor);
+                ImGui.PushStyleColor(ImGuiCol.ButtonActive, CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Magenta, 0.64f));
+                ImGui.BeginDisabled(!legal);
+                var clicked = ImGui.Button($"{game.GetToken(row, column)}##intrusion_{row}_{column}", new Vector2(cellSize, cellSize));
+                ImGui.EndDisabled();
+                ImGui.PopStyleColor(3);
+
+                if (clicked)
+                    game.Select(row, column, now);
+            }
+        }
+    }
+
+    private void DrawIntrusionResult(IntrusionGame game)
+    {
+        DrawNeonSeparator();
+        var success = game.Phase == IntrusionPhase.Success;
+        ImGui.TextColored(
+            success ? CyberdeckTheme.Palette.Success : CyberdeckTheme.Palette.Error,
+            success ? "BREACH COMPLETE" : game.Phase == IntrusionPhase.TimedOut ? "ICE TRACE COMPLETE" : "BUFFER LOCKED");
+        ImGui.TextUnformatted($"FINAL SCORE // {game.FinalScore:00000}");
+
+        if (game.Difficulty != IntrusionDifficulty.BlackIce)
+        {
+            DrawMutedWrapped("Only BLACK ICE sessions can authenticate the encrypted payload.");
+        }
+        else
+        {
+            var remaining = Math.Max(0, IntrusionPayloadScoreThreshold - game.FinalScore);
+            ImGui.TextColored(
+                game.UsedOptimalBuffer && remaining == 0 ? CyberdeckTheme.Palette.Success : CyberdeckTheme.Palette.Amber,
+                !game.UsedOptimalBuffer
+                    ? "ROOT PAYLOAD // CLEAN ROUTE REQUIRED"
+                    : remaining == 0
+                        ? "ROOT PAYLOAD // AUTHENTICATED"
+                        : $"ROOT PAYLOAD // {remaining:00000} POINTS SHORT");
+        }
+
+        ImGui.Spacing();
+        var stackActions = ImGui.GetContentRegionAvail().X < (360 * GetUiScale());
+        using (CyberdeckTheme.PushAccentButton())
+        {
+            if (ImGui.Button("NEW INTRUSION"))
+                StartIntrusion(game.Difficulty);
+        }
+        if (!stackActions)
+            ImGui.SameLine();
+        if (ImGui.Button("RETURN TO TERMINAL"))
+        {
+            intrusionGame = null;
+            intrusionResultRecorded = false;
+        }
+    }
+
+    private void DrawIntrusionPayload()
+    {
+        CyberdeckWidgets.DrawStatusChip(
+            "ROOT ACCESS // GRANTED",
+            CyberdeckTheme.Palette.Success,
+            CyberdeckTheme.Palette.Text,
+            GetUiScale());
+        ImGui.Spacing();
+        DrawSettingsGroupHeader("ENCRYPTED PAYLOAD RECOVERED");
+        ImGui.TextColored(CyberdeckTheme.Palette.Cyan, IntrusionEncryptedPayload);
+        if (ImGui.Button("COPY PAYLOAD"))
+            CopyToClipboard(IntrusionEncryptedPayload, "PAYLOAD COPIED");
+
+        ImGui.Spacing();
+        DrawSettingsGroupHeader("CLUE");
+        ImGui.TextWrapped(IntrusionPayloadHint);
+        if (ImGui.Button("COPY CLUE"))
+            CopyToClipboard(IntrusionPayloadHint, "CLUE COPIED");
+
+        ImGui.Spacing();
+        DrawMutedWrapped("Decode the recovered payload and report the password directly to venue staff.");
+        ImGui.Spacing();
+        var stackActions = ImGui.GetContentRegionAvail().X < (390 * GetUiScale());
+        using (CyberdeckTheme.PushAccentButton())
+        {
+            if (ImGui.Button("RUN ANOTHER INTRUSION"))
+            {
+                showIntrusionPayload = false;
+                StartIntrusion((IntrusionDifficulty)Math.Clamp(config.IntrusionDifficulty, 0, 2));
+            }
+        }
+        if (!stackActions)
+            ImGui.SameLine();
+        if (ImGui.Button("RETURN TO TERMINAL"))
+        {
+            showIntrusionPayload = false;
+            intrusionGame = null;
+        }
+    }
+
+    private void StartIntrusion(IntrusionDifficulty difficulty)
+    {
+        try
+        {
+            intrusionGame = IntrusionGame.Create(difficulty, Environment.TickCount64);
+            intrusionResultRecorded = false;
+            showIntrusionPayload = false;
+            config.IntrusionDifficulty = (int)difficulty;
+            config.Save();
+            SetTransientFeedback("INTRUSION MATRIX GENERATED");
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Error(ex, "Could not generate the hidden intrusion puzzle.");
+            SetTransientFeedback("MATRIX GENERATION FAILED");
+        }
+    }
+
+    private void RecordIntrusionResultIfNeeded(IntrusionGame game)
+    {
+        if (!game.IsTerminal || intrusionResultRecorded)
+            return;
+
+        intrusionResultRecorded = true;
+        if (game.Phase == IntrusionPhase.Success)
+            config.IntrusionSuccessfulBreaches++;
+
+        switch (game.Difficulty)
+        {
+            case IntrusionDifficulty.Casual:
+                config.IntrusionBestCasualScore = Math.Max(config.IntrusionBestCasualScore, game.FinalScore);
+                break;
+            case IntrusionDifficulty.Standard:
+                config.IntrusionBestStandardScore = Math.Max(config.IntrusionBestStandardScore, game.FinalScore);
+                break;
+            case IntrusionDifficulty.BlackIce:
+                config.IntrusionBestBlackIceScore = Math.Max(config.IntrusionBestBlackIceScore, game.FinalScore);
+                break;
+        }
+
+        var qualifiesForPayload = game.Phase == IntrusionPhase.Success &&
+                                  game.AllObjectivesCompleted &&
+                                  game.Difficulty == IntrusionDifficulty.BlackIce &&
+                                  game.UsedOptimalBuffer &&
+                                  game.FinalScore >= IntrusionPayloadScoreThreshold;
+        if (qualifiesForPayload)
+        {
+            showIntrusionPayload = true;
+            SetTransientFeedback("ENCRYPTED PAYLOAD RECOVERED");
+        }
+
+        config.Save();
+    }
+
+    private int GetIntrusionBestScore(IntrusionDifficulty difficulty)
+        => difficulty switch
+        {
+            IntrusionDifficulty.Casual => config.IntrusionBestCasualScore,
+            IntrusionDifficulty.BlackIce => config.IntrusionBestBlackIceScore,
+            _ => config.IntrusionBestStandardScore,
+        };
+
+    private static string GetIntrusionDifficultyName(IntrusionDifficulty difficulty)
+        => difficulty switch
+        {
+            IntrusionDifficulty.Casual => "CASUAL",
+            IntrusionDifficulty.BlackIce => "BLACK ICE",
+            _ => "STANDARD",
+        };
+
+    private static string GetIntrusionDifficultyDescription(IntrusionDifficulty difficulty)
+        => difficulty switch
+        {
+            IntrusionDifficulty.Casual => "5x5 matrix // 8-slot buffer // trace timer disabled",
+            IntrusionDifficulty.BlackIce => "7x7 matrix // 8-slot buffer // 4 overlapping daemons // 22-second trace",
+            _ => "6x6 matrix // 8-slot buffer // 3/4/4 daemons // 45-second trace",
+        };
+
+    private static (string Label, Vector4 Color) GetIntrusionStatus(IntrusionGame game)
+        => game.Phase switch
+        {
+            IntrusionPhase.Ready => ("AWAITING FIRST TOKEN", CyberdeckTheme.Palette.Cyan),
+            IntrusionPhase.Countdown => ("NEURAL LINK // ARMING", CyberdeckTheme.Palette.Magenta),
+            IntrusionPhase.Playing => ("TRACE ACTIVE", CyberdeckTheme.Palette.Amber),
+            IntrusionPhase.Success => ("ROOT ACCESS // GRANTED", CyberdeckTheme.Palette.Success),
+            IntrusionPhase.TimedOut => ("ICE TRACE COMPLETE", CyberdeckTheme.Palette.Error),
+            _ => ("BUFFER LOCKED", CyberdeckTheme.Palette.Error),
+        };
 
     private void DrawSettingsView()
     {
