@@ -29,18 +29,72 @@ internal sealed class GitHubReleaseClient : IDisposable
         return new ReleaseAssetInfo(NormalizeVersion(release.TagName), asset.Name, asset.BrowserDownloadUrl);
     }
 
-    public async Task<DownloadedAsset> DownloadReleaseAssetAsync(ModMapping mapping, ReleaseAssetInfo asset, string cacheDirectory, CancellationToken cancellationToken)
+    public async Task<DownloadedAsset> DownloadReleaseAssetAsync(
+        ModMapping mapping,
+        ReleaseAssetInfo asset,
+        string cacheDirectory,
+        Action<DownloadProgress>? progress,
+        CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(cacheDirectory);
         var targetPath = Path.Combine(cacheDirectory, $"{SanitizeFileName(mapping.Name)}-{asset.Version}-{asset.Name}");
+        var partialPath = $"{targetPath}.{Guid.NewGuid():N}.partial";
 
-        using var assetResponse = await httpClient.GetAsync(asset.DownloadUrl, cancellationToken).ConfigureAwait(false);
-        assetResponse.EnsureSuccessStatusCode();
-        await using var source = await assetResponse.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        await using var target = File.Create(targetPath);
-        await source.CopyToAsync(target, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var assetResponse = await httpClient.GetAsync(
+                asset.DownloadUrl,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken).ConfigureAwait(false);
+            assetResponse.EnsureSuccessStatusCode();
 
-        return new DownloadedAsset(targetPath, asset.Version);
+            var totalBytes = assetResponse.Content.Headers.ContentLength;
+            var bytesDownloaded = 0L;
+            progress?.Invoke(new DownloadProgress(bytesDownloaded, totalBytes));
+
+            await using var source = await assetResponse.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            await using (var target = new FileStream(
+                             partialPath,
+                             FileMode.CreateNew,
+                             FileAccess.Write,
+                             FileShare.None,
+                             bufferSize: 81920,
+                             useAsync: true))
+            {
+                var buffer = new byte[81920];
+                while (true)
+                {
+                    var bytesRead = await source.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+                    if (bytesRead == 0)
+                        break;
+
+                    await target.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
+                    bytesDownloaded += bytesRead;
+                    progress?.Invoke(new DownloadProgress(bytesDownloaded, totalBytes));
+                }
+
+                await target.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (totalBytes is { } expectedBytes && bytesDownloaded != expectedBytes)
+                throw new IOException($"Downloaded {bytesDownloaded} bytes for '{asset.Name}', expected {expectedBytes}.");
+
+            File.Move(partialPath, targetPath, overwrite: true);
+            return new DownloadedAsset(targetPath, asset.Version);
+        }
+        catch
+        {
+            try
+            {
+                if (File.Exists(partialPath))
+                    File.Delete(partialPath);
+            }
+            catch
+            {
+                // Preserve the original download failure if cleanup is also blocked.
+            }
+            throw;
+        }
     }
 
     private async Task<GitHubRelease> GetLatestUsableReleaseAsync(ModMapping mapping, CancellationToken cancellationToken)
@@ -111,3 +165,4 @@ internal sealed class GitHubReleaseClient : IDisposable
 
 internal readonly record struct DownloadedAsset(string Path, string Version);
 internal readonly record struct ReleaseAssetInfo(string Version, string Name, string DownloadUrl);
+internal readonly record struct DownloadProgress(long BytesDownloaded, long? TotalBytes);

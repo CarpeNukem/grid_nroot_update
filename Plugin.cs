@@ -47,14 +47,17 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly CancellationTokenSource lifetime = new();
     private readonly GitHubReleaseClient github = new();
+    private readonly SemaphoreSlim operationGate = new(1, 1);
+    private readonly UpdateUiStateStore updateUiState = new();
     private readonly PenumbraIpc penumbra;
     private readonly CyberdeckWindow cyberdeckWindow;
-    private readonly ConfigWindow configWindow;
     private readonly object modAddedLock = new();
-    private volatile bool reconcileQueued;
-    private volatile bool reconcileForceDownload;
-    private volatile bool reconcileRunning;
-    private volatile bool updateCheckRunning;
+    private readonly object reconcileQueueLock = new();
+    private bool reconcileQueued;
+    private bool reconcileForceDownload;
+    private bool reconcileRunning;
+    private int updateCheckPending;
+    private int assignmentPending;
     private bool venueUpdateCheckDoneThisZone;
     private bool startupActionDone;
     private uint lastAutoOpenedTerritory;
@@ -63,6 +66,7 @@ public sealed class Plugin : IDalamudPlugin
     private TaskCompletionSource<string>? pendingModAdded;
     private bool? cachedPenumbraAvailable;
     private long lastPenumbraAvailableCheckTick;
+    private volatile bool disposed;
 
     public Plugin(IDalamudPluginInterface pluginInterface)
     {
@@ -76,15 +80,10 @@ public sealed class Plugin : IDalamudPlugin
             loadedConfig is null ? "new config" : "saved config",
             string.IsNullOrWhiteSpace(primaryMapping.LastAppliedVersion) ? "none" : NormalizeVersionForComparison(primaryMapping.LastAppliedVersion));
         Config.Save();
+        updateUiState.Initialize(primaryMapping.LastAppliedVersion);
 
         penumbra = new PenumbraIpc(pluginInterface);
         var (textures, textureLoadSource) = LoadTextures();
-
-        configWindow = new ConfigWindow(
-            Config,
-            () => QueueReconcile(),
-            () => _ = AssignAllAsync(lifetime.Token),
-            OnAutoOpenSettingChanged);
 
         cyberdeckWindow = new CyberdeckWindow(
             Config,
@@ -95,9 +94,9 @@ public sealed class Plugin : IDalamudPlugin
             () => QueueReconcile(forceDownload: true),
             () => _ = AssignAllAsync(lifetime.Token),
             () => RunUpdateCheck(silent: false),
-            () => configWindow.IsOpen = true,
             OnAutoOpenSettingChanged,
-            IsPenumbraAvailable);
+            IsPenumbraAvailable,
+            () => UpdateStatus);
 
         foreach (var commandName in CommandNames)
         {
@@ -128,8 +127,15 @@ public sealed class Plugin : IDalamudPlugin
 
     public PluginConfig Config { get; }
 
+    /// <summary>Returns the latest immutable updater snapshot and is safe to sample from the UI thread.</summary>
+    public UpdateUiSnapshot UpdateStatus => updateUiState.Snapshot;
+
     public void Dispose()
     {
+        if (disposed)
+            return;
+
+        disposed = true;
         lifetime.Cancel();
         PluginService.Framework.Update -= OnFrameworkUpdate;
         PluginService.ClientState.TerritoryChanged -= OnTerritoryChanged;
@@ -191,18 +197,17 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private void OpenConfigUi()
-        => configWindow.IsOpen = true;
+        => cyberdeckWindow.OpenSettings();
 
     private void DrawUi()
-    {
-        cyberdeckWindow.Draw();
-        configWindow.Draw();
-    }
+        => cyberdeckWindow.Draw();
 
     private void OnLogin()
     {
         startupActionDone = false;
         lastAutoOpenedTerritory = 0;
+        cyberdeckWindow.InstallStatusItems.Clear();
+        cyberdeckWindow.InstallStatusTimestamp = 0;
         QueueStartupAction();
         QueueVenueUpdateCheck();
         QueueVenueAutoOpenCheck();
@@ -212,6 +217,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         venueUpdateCheckDoneThisZone = false;
         lastAutoOpenedTerritory = 0;
+        cyberdeckWindow.InstallStatusItems.Clear();
+        cyberdeckWindow.InstallStatusTimestamp = 0;
         QueueVenueUpdateCheck();
         QueueVenueAutoOpenCheck();
     }
@@ -227,54 +234,110 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
-        if (reconcileQueued && !reconcileRunning)
+        if (disposed)
+            return;
+
+        var startReconcile = false;
+        var forceDownload = false;
+        lock (reconcileQueueLock)
         {
-            reconcileQueued = false;
-            reconcileRunning = true;
-            Task.Run(ReconcileAsync, lifetime.Token);
+            if (reconcileQueued && !reconcileRunning)
+            {
+                reconcileQueued = false;
+                reconcileRunning = true;
+                forceDownload = reconcileForceDownload;
+                reconcileForceDownload = false;
+                startReconcile = true;
+            }
         }
+
+        if (startReconcile)
+            _ = Task.Run(() => ReconcileAsync(forceDownload));
     }
 
     private void RunUpdateCheck(bool silent)
     {
-        if (updateCheckRunning)
+        if (disposed)
             return;
 
-        updateCheckRunning = true;
+        if (Interlocked.CompareExchange(ref updateCheckPending, 1, 0) != 0)
+            return;
+
+        updateUiState.Queue(
+            UpdateOperationKind.UpdateCheck,
+            "CHECK QUEUED",
+            "Waiting for the updater channel.");
         if (!silent)
         {
             PluginService.Log.Information("Check for updates requested.");
             PluginService.Chat.Print("Checking for The Grid mod updates...", "TheGrid");
         }
 
-        Task.Run(async () =>
+        _ = Task.Run(async () =>
         {
+            var enteredGate = false;
             try
             {
+                await operationGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
+                enteredGate = true;
+                updateUiState.Begin(
+                    UpdateOperationKind.UpdateCheck,
+                    UpdateOperationPhase.Checking,
+                    "CHECKING RELEASES",
+                    "Querying the latest published GitHub release.");
+
                 var mapping = Config.GetPrimaryMapping();
                 var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, lifetime.Token).ConfigureAwait(false);
                 var hasVersion = !string.IsNullOrWhiteSpace(mapping.LastAppliedVersion);
-                var upToDate = hasVersion && VersionsEqual(latestAsset.Version, mapping.LastAppliedVersion);
+                var installedModDirectory = FindInstalledModDirectory(mapping, penumbra.GetModList());
+                var hasManagedMod = installedModDirectory is not null;
+                var upToDate = hasVersion && hasManagedMod && VersionsEqual(latestAsset.Version, mapping.LastAppliedVersion);
 
                 if (upToDate)
                 {
                     PluginService.Log.Information("No update: already on latest v{Version}.", latestAsset.Version);
-                    cyberdeckWindow.PendingUpdateVersion = null;
+                    updateUiState.SetRelease(
+                        UpdateReleaseAvailability.UpToDate,
+                        latestAsset.Version,
+                        hasManagedMod ? mapping.LastAppliedVersion : null);
+                    updateUiState.Complete(
+                        "UP TO DATE",
+                        $"Installed release v{latestAsset.Version} is current.");
                     if (!silent)
                         PluginService.Chat.Print($"You're on the latest release: v{latestAsset.Version}.", "TheGrid");
                 }
                 else
                 {
-                    PluginService.Log.Information("Update available: v{Latest} (installed: {Installed}).", latestAsset.Version, hasVersion ? mapping.LastAppliedVersion : "none");
-                    cyberdeckWindow.PendingUpdateVersion = latestAsset.Version;
-                    var message = hasVersion
+                    PluginService.Log.Information(
+                        "Update available: v{Latest} (stored: {Stored}, managed mod: {ManagedMod}).",
+                        latestAsset.Version,
+                        hasVersion ? mapping.LastAppliedVersion : "none",
+                        installedModDirectory ?? "not found");
+                    updateUiState.SetRelease(
+                        UpdateReleaseAvailability.UpdateAvailable,
+                        latestAsset.Version,
+                        hasManagedMod ? mapping.LastAppliedVersion : null);
+                    var message = hasVersion && hasManagedMod
                         ? $"Update available: v{latestAsset.Version} (installed v{mapping.LastAppliedVersion}). Press Update to install."
-                        : $"The Grid mod v{latestAsset.Version} is available (not installed). Press Update to install.";
+                        : hasVersion
+                            ? $"The Grid mod v{latestAsset.Version} is available; the managed Penumbra mod is missing. Press Update to restore it."
+                            : $"The Grid mod v{latestAsset.Version} is available (not installed). Press Update to install.";
+                    updateUiState.Complete("UPDATE AVAILABLE", message);
                     PluginService.Chat.Print(message, "TheGrid");
                 }
             }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception) when (disposed)
+            {
+            }
             catch (Exception ex)
             {
+                updateUiState.Fail(
+                    "CHECK FAILED",
+                    ex,
+                    "The release check failed. The last known availability has been retained.");
                 if (silent)
                     PluginService.Log.Debug(ex, "Passive update check failed.");
                 else
@@ -285,9 +348,11 @@ public sealed class Plugin : IDalamudPlugin
             }
             finally
             {
-                updateCheckRunning = false;
+                if (enteredGate)
+                    operationGate.Release();
+                Volatile.Write(ref updateCheckPending, 0);
             }
-        }, lifetime.Token);
+        });
     }
 
     private void QueueStartupAction()
@@ -320,10 +385,29 @@ public sealed class Plugin : IDalamudPlugin
 
     private void QueueReconcile(bool forceDownload = false)
     {
-        if (forceDownload)
-            reconcileForceDownload = true;
+        if (disposed)
+            return;
 
-        reconcileQueued = true;
+        var publishQueued = false;
+        lock (reconcileQueueLock)
+        {
+            if (forceDownload)
+                reconcileForceDownload = true;
+
+            if (!reconcileQueued)
+            {
+                reconcileQueued = true;
+                publishQueued = !reconcileRunning;
+            }
+        }
+
+        if (publishQueued)
+        {
+            updateUiState.Queue(
+                forceDownload ? UpdateOperationKind.Repair : UpdateOperationKind.Reconcile,
+                forceDownload ? "REINSTALL QUEUED" : "UPDATE QUEUED",
+                "Waiting for the updater channel.");
+        }
     }
 
     private void QueueVenueUpdateCheck()
@@ -473,42 +557,98 @@ public sealed class Plugin : IDalamudPlugin
     private static string EscapeChatCommandArgument(string value)
         => value.Replace("\"", string.Empty, StringComparison.Ordinal);
 
-    private async Task ReconcileAsync()
+    private async Task ReconcileAsync(bool forceDownload)
     {
+        var enteredGate = false;
         try
         {
+            await operationGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
+            enteredGate = true;
+            updateUiState.Begin(
+                forceDownload ? UpdateOperationKind.Repair : UpdateOperationKind.Reconcile,
+                UpdateOperationPhase.Checking,
+                "CHECKING RELEASES",
+                "Validating Penumbra and querying the latest release.");
+
             if (!IsPenumbraAvailable())
             {
-                SetAllStatus("Penumbra IPC is not available. Install and enable Penumbra, then run /grid update.");
+                const string unavailableMessage = "Penumbra IPC is not available. Install and enable Penumbra, then run /grid update.";
+                await PluginService.Framework.RunOnFrameworkThread(() => SetAllStatus(unavailableMessage));
+                updateUiState.Fail("PENUMBRA OFFLINE", unavailableMessage);
                 return;
             }
 
             TrySubscribePenumbraEvents();
 
-            var forceDownload = reconcileForceDownload;
-            reconcileForceDownload = false;
+            var mapping = Config.GetPrimaryMapping();
+            var canAssign = await ReconcileMappingAsync(mapping, lifetime.Token, forceDownload).ConfigureAwait(false);
 
-            var canAssign = await ReconcileMappingAsync(Config.GetPrimaryMapping(), lifetime.Token, forceDownload).ConfigureAwait(false);
+            await PluginService.Framework.RunOnFrameworkThread(Config.Save);
+            updateUiState.SetRelease(
+                UpdateReleaseAvailability.UpToDate,
+                mapping.LastAppliedVersion,
+                mapping.LastAppliedVersion);
 
-            Config.Save();
-            if (canAssign)
+            if (!canAssign)
             {
-                await Task.Delay(TimeSpan.FromSeconds(3), lifetime.Token).ConfigureAwait(false);
-                await AssignAllAsync(lifetime.Token).ConfigureAwait(false);
+                updateUiState.SetOperation(UpdateOperationKind.Assignment);
+                updateUiState.NeedsAttention(
+                    "SYNC COMPLETE // ACTION REQUIRED",
+                    mapping.LastStatus);
+                return;
             }
+
+            updateUiState.Transition(
+                UpdateOperationPhase.Assigning,
+                "ASSIGNING COLLECTION",
+                $"Waiting for Penumbra to settle before assigning '{mapping.CollectionName}'.");
+            await Task.Delay(TimeSpan.FromSeconds(3), lifetime.Token).ConfigureAwait(false);
+            AssignmentResult assignmentResult;
+            try
+            {
+                assignmentResult = await AssignAllCoreAsync(lifetime.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ReportAssignmentFailure(ex);
+                updateUiState.SetOperation(UpdateOperationKind.Assignment);
+                updateUiState.Fail(
+                    "ASSIGNMENT FAILED",
+                    ex,
+                    "The release is installed, but collection assignment did not complete.");
+                return;
+            }
+
+            if (TryPublishAssignmentIssue(assignmentResult, afterSync: true))
+                return;
+
+            updateUiState.Complete(
+                forceDownload ? "REINSTALL COMPLETE" : "SYNC COMPLETE",
+                assignmentResult.Detail);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception) when (disposed)
         {
         }
         catch (Exception ex)
         {
+            updateUiState.Fail(
+                "UPDATE FAILED",
+                ex,
+                updateUiState.Snapshot.ReleaseAvailability == UpdateReleaseAvailability.UpdateAvailable
+                    ? "Installation failed. The available release remains ready to retry."
+                    : null);
             PluginService.Log.Error(ex, "TheGrid reconciliation failed.");
             PluginService.Chat.PrintError($"Update failed: {ex.Message}", "TheGrid");
         }
         finally
         {
-            reconcileRunning = false;
-            cyberdeckWindow.PendingUpdateVersion = null;
+            if (enteredGate)
+                operationGate.Release();
+            lock (reconcileQueueLock)
+                reconcileRunning = false;
         }
     }
 
@@ -517,11 +657,21 @@ public sealed class Plugin : IDalamudPlugin
         var cacheDirectory = Path.Combine(PluginService.PluginInterface.ConfigDirectory.FullName, "cache");
         PluginService.Log.Information("Checking for updates; matching asset pattern '{Pattern}'.", mapping.AssetPattern);
         var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, cancellationToken).ConfigureAwait(false);
+        var installedMods = penumbra.GetModList();
+        var installedModDirectory = FindInstalledModDirectory(mapping, installedMods);
+        var hasInstalledVersion = !string.IsNullOrWhiteSpace(mapping.LastAppliedVersion);
+        var releaseIsApplied = hasInstalledVersion &&
+                               installedModDirectory is not null &&
+                               VersionsEqual(latestAsset.Version, mapping.LastAppliedVersion);
+        updateUiState.SetRelease(
+            releaseIsApplied
+                ? UpdateReleaseAvailability.UpToDate
+                : UpdateReleaseAvailability.UpdateAvailable,
+            latestAsset.Version,
+            installedModDirectory is not null ? mapping.LastAppliedVersion : null);
 
         if (!forceDownload)
         {
-            var installedMods = penumbra.GetModList();
-            var installedModDirectory = FindInstalledModDirectory(mapping, installedMods);
             var alreadyKnownLatest = VersionsEqual(latestAsset.Version, mapping.LastAppliedVersion);
             var missingVersionRecord = string.IsNullOrWhiteSpace(mapping.LastAppliedVersion);
             PluginService.Log.Information(
@@ -532,6 +682,10 @@ public sealed class Plugin : IDalamudPlugin
                 forceDownload);
             if (installedModDirectory is not null && alreadyKnownLatest)
             {
+                updateUiState.Transition(
+                    UpdateOperationPhase.Configuring,
+                    "CONFIGURING PENUMBRA",
+                    $"Release v{latestAsset.Version} is already imported; validating its collection settings.");
                 mapping.ModDirectory = installedModDirectory;
                 mapping.ModName = installedMods[installedModDirectory];
                 return ReconcileAlreadyImportedMapping(mapping, latestAsset.Version, installedModDirectory);
@@ -541,11 +695,6 @@ public sealed class Plugin : IDalamudPlugin
                 PluginService.Log.Information("Stored version is missing; installed Penumbra mod {ModDirectory} exists but its release version is unknown, refreshing from GitHub.", installedModDirectory);
         }
 
-        if (!forceDownload && VersionsEqual(latestAsset.Version, mapping.LastAppliedVersion))
-        {
-            return ReconcileAlreadyAppliedMapping(mapping, latestAsset.Version);
-        }
-
         PluginService.Log.Information(
             "{Reason}: v{Version} (stored v{Installed}); {Mode} - downloading '{Asset}'.",
             forceDownload ? "Forced reinstall requested" : "New update found",
@@ -553,117 +702,166 @@ public sealed class Plugin : IDalamudPlugin
             string.IsNullOrWhiteSpace(mapping.LastAppliedVersion) ? "none" : NormalizeVersionForComparison(mapping.LastAppliedVersion),
             Config.FullAuto ? "automatic mode" : "manual mode",
             latestAsset.Name);
-        var download = await github.DownloadReleaseAssetAsync(mapping, latestAsset, cacheDirectory, cancellationToken).ConfigureAwait(false);
+        updateUiState.Transition(
+            UpdateOperationPhase.Downloading,
+            "PREPARING DOWNLOAD",
+            $"{latestAsset.Name} // release v{latestAsset.Version}");
+        var download = await github.DownloadReleaseAssetAsync(
+            mapping,
+            latestAsset,
+            cacheDirectory,
+            progress => updateUiState.ReportDownloadProgress(
+                progress.BytesDownloaded,
+                progress.TotalBytes,
+                $"{latestAsset.Name} // release v{latestAsset.Version}"),
+            cancellationToken).ConfigureAwait(false);
 
-        var previousModDirectory = NormalizeManagedModDirectory(mapping.ModDirectory);
-        mapping.ModDirectory = previousModDirectory;
-        var previousModName = mapping.ModName;
-        var modsBeforeInstall = penumbra.GetModList();
-        DeleteExistingManagedModBeforeInstall(previousModDirectory, previousModName, modsBeforeInstall);
-        modsBeforeInstall = penumbra.GetModList();
+        cancellationToken.ThrowIfCancellationRequested();
+        updateUiState.Transition(
+            UpdateOperationPhase.Importing,
+            "IMPORTING PACKAGE",
+            $"Sending {Path.GetFileName(download.Path)} to Penumbra.");
 
-        PrepareForModAdded();
-        var installCode = penumbra.InstallMod(download.Path);
-        if (!IsSuccess(installCode))
-            throw new InvalidOperationException($"Penumbra rejected package '{Path.GetFileName(download.Path)}' with code {installCode}.");
-
-        var addedDirectory = await WaitForModAddedAsync(cancellationToken).ConfigureAwait(false);
-        var modsAfterInstall = penumbra.GetModList();
-
-        var modDirectory = TryResolveModDirectory(mapping, modsAfterInstall, modsBeforeInstall, addedDirectory);
-        var collection = FindCollection(mapping.CollectionName);
-        if (modDirectory is not null)
+        var destructiveInstallStarted = false;
+        try
         {
+            var previousModDirectory = NormalizeManagedModDirectory(mapping.ModDirectory);
+            mapping.ModDirectory = previousModDirectory;
+            var previousModName = mapping.ModName;
+            var modsBeforeInstall = penumbra.GetModList();
+            cancellationToken.ThrowIfCancellationRequested();
+            destructiveInstallStarted = true;
+            DeleteExistingManagedModBeforeInstall(previousModDirectory, previousModName, modsBeforeInstall);
+            modsBeforeInstall = penumbra.GetModList();
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var modAddedWaiter = PrepareForModAdded();
+            string? addedDirectory;
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var installCode = penumbra.InstallMod(download.Path);
+                if (!IsSuccess(installCode))
+                    throw new InvalidOperationException($"Penumbra rejected package '{Path.GetFileName(download.Path)}' with code {installCode}.");
+
+                updateUiState.Transition(
+                    UpdateOperationPhase.WaitingForPenumbra,
+                    "WAITING FOR PENUMBRA",
+                    "The package was accepted; waiting for the imported mod to appear in IPC.");
+                addedDirectory = await WaitForModAddedAsync(modAddedWaiter, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                ClearPendingModAdded(modAddedWaiter);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            updateUiState.Transition(
+                UpdateOperationPhase.Configuring,
+                "CONFIGURING PENUMBRA",
+                "Resolving the imported mod and applying folder, collection, and priority settings.");
+            var modsAfterInstall = penumbra.GetModList();
+
+            var modDirectory = TryResolveModDirectory(mapping, modsAfterInstall, modsBeforeInstall, addedDirectory);
+            var collection = FindCollection(mapping.CollectionName);
+            if (modDirectory is null)
+                throw new InvalidOperationException($"Penumbra accepted '{Path.GetFileName(download.Path)}', but the imported mod did not appear in IPC within 30 seconds.");
+
             mapping.ModDirectory = modDirectory;
-            OrganizeModInPenumbra(mapping, modDirectory);
-
-            if (collection is not null)
-                EnableImportedMod(mapping, collection.Value, modDirectory);
-
+            var folderConfigured = OrganizeModInPenumbra(mapping, modDirectory);
+            var collectionConfigured = collection is null || EnableImportedMod(mapping, collection.Value, modDirectory);
             CleanupCacheDirectory(cacheDirectory, download.Path);
-        }
-        else
-        {
-            PluginService.Log.Warning("Penumbra accepted package {Package}, but the imported mod was not visible in the IPC mod list immediately after import.", Path.GetFileName(download.Path));
-        }
 
-        mapping.LastAppliedVersion = NormalizeVersionForComparison(download.Version);
-        mapping.LastStatus = BuildReconcileStatus(mapping, download.Version, modDirectory, collection);
-        PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
-        return collection is not null;
+            mapping.LastAppliedVersion = NormalizeVersionForComparison(download.Version);
+            mapping.LastStatus = BuildReconcileStatus(mapping, download.Version, modDirectory, collection, folderConfigured);
+            if (!folderConfigured)
+                mapping.LastStatus += $" Penumbra did not confirm placement under '{mapping.PenumbraFolderPath}'.";
+            if (!collectionConfigured)
+                mapping.LastStatus += " Penumbra did not confirm the collection enable/priority settings.";
+            PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
+            return collection is not null && collectionConfigured && folderConfigured;
+        }
+        catch
+        {
+            if (destructiveInstallStarted)
+                CorrectReleaseHealthAfterInstallFailure(mapping, latestAsset.Version);
+            throw;
+        }
     }
 
     private bool ReconcileAlreadyImportedMapping(ModMapping mapping, string version, string modDirectory)
     {
         var collection = FindCollection(mapping.CollectionName);
-        OrganizeModInPenumbra(mapping, modDirectory);
+        var folderConfigured = OrganizeModInPenumbra(mapping, modDirectory);
 
-        if (collection is not null)
-            EnableImportedMod(mapping, collection.Value, modDirectory);
-
-        mapping.LastAppliedVersion = NormalizeVersionForComparison(version);
-        mapping.LastStatus = BuildReconcileStatus(mapping, version, modDirectory, collection, alreadyApplied: true);
-        if (!Config.FullAuto)
-            PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
-        return collection is not null;
-    }
-
-    private bool ReconcileAlreadyAppliedMapping(ModMapping mapping, string version)
-    {
-        var mods = penumbra.GetModList();
-        var modDirectory = FindInstalledModDirectory(mapping, mods);
-        var collection = FindCollection(mapping.CollectionName);
-
-        if (modDirectory is not null)
-        {
-            mapping.ModDirectory = modDirectory;
-            OrganizeModInPenumbra(mapping, modDirectory);
-
-            if (collection is not null)
-                EnableImportedMod(mapping, collection.Value, modDirectory);
-        }
+        var collectionConfigured = collection is null || EnableImportedMod(mapping, collection.Value, modDirectory);
 
         mapping.LastAppliedVersion = NormalizeVersionForComparison(version);
-        mapping.LastStatus = BuildReconcileStatus(mapping, version, modDirectory, collection, alreadyApplied: true);
+        mapping.LastStatus = BuildReconcileStatus(mapping, version, modDirectory, collection, folderConfigured, alreadyApplied: true);
+        if (!folderConfigured)
+            mapping.LastStatus += $" Penumbra did not confirm placement under '{mapping.PenumbraFolderPath}'.";
+        if (!collectionConfigured)
+            mapping.LastStatus += " Penumbra did not confirm the collection enable/priority settings.";
         if (!Config.FullAuto)
             PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
-        return collection is not null;
+        return collection is not null && collectionConfigured && folderConfigured;
     }
 
-    private void EnableImportedMod(ModMapping mapping, (Guid Id, string Name) collection, string modDirectory)
+    private bool EnableImportedMod(ModMapping mapping, (Guid Id, string Name) collection, string modDirectory)
     {
+        var succeeded = true;
         var enableCode = penumbra.TrySetMod(collection.Id, modDirectory, mapping.ModName, true);
         if (!IsSuccess(enableCode))
+        {
+            succeeded = false;
             PluginService.Log.Warning("Could not enable mod {ModDirectory} in {Collection}. Penumbra code {Code}.", modDirectory, collection.Name, enableCode);
+        }
 
         var priorityCode = penumbra.TrySetModPriority(collection.Id, modDirectory, mapping.ModName, mapping.Priority);
         if (!IsSuccess(priorityCode))
+        {
+            succeeded = false;
             PluginService.Log.Warning("Could not set mod priority for {ModDirectory}. Penumbra code {Code}.", modDirectory, priorityCode);
+        }
+
+        return succeeded;
     }
 
-    private void OrganizeModInPenumbra(ModMapping mapping, string modDirectory)
+    private bool OrganizeModInPenumbra(ModMapping mapping, string modDirectory)
     {
         if (string.IsNullOrWhiteSpace(mapping.PenumbraFolderPath))
-            return;
+            return true;
 
         var folder = mapping.PenumbraFolderPath.Trim().Trim('/', '\\');
         if (string.IsNullOrWhiteSpace(folder))
-            return;
+            return true;
 
         try
         {
             var targetPath = $"{folder}/{mapping.ModName}";
             var pathCode = penumbra.SetModPath(modDirectory, mapping.ModName, targetPath);
             if (!IsSuccess(pathCode))
+            {
                 PluginService.Log.Warning("Could not move mod {ModDirectory} to Penumbra path {Path}. Penumbra code {Code}.", modDirectory, targetPath, pathCode);
+                return false;
+            }
+
+            return true;
         }
         catch (Exception ex)
         {
             PluginService.Log.Warning(ex, "Could not move mod {ModDirectory} into the configured Penumbra folder.", modDirectory);
+            return false;
         }
     }
 
-    private static string BuildReconcileStatus(ModMapping mapping, string version, string? modDirectory, (Guid Id, string Name)? collection, bool alreadyApplied = false)
+    private static string BuildReconcileStatus(
+        ModMapping mapping,
+        string version,
+        string? modDirectory,
+        (Guid Id, string Name)? collection,
+        bool folderConfigured,
+        bool alreadyApplied = false)
     {
         if (modDirectory is null)
             return alreadyApplied
@@ -673,48 +871,55 @@ public sealed class Plugin : IDalamudPlugin
         var prefix = alreadyApplied
             ? $"Latest release {version} already imported"
             : $"Imported latest release {version}";
-        var folderText = string.IsNullOrWhiteSpace(mapping.PenumbraFolderPath)
+        var requestedFolder = mapping.PenumbraFolderPath.Trim().Trim('/', '\\');
+        var folderText = string.IsNullOrWhiteSpace(requestedFolder)
             ? "in Penumbra"
-            : $"under {mapping.PenumbraFolderPath}";
+            : folderConfigured
+                ? $"under {requestedFolder}"
+                : "in Penumbra";
 
         return collection is not null
             ? $"{prefix} {folderText}; enabled in collection '{collection.Value.Name}'."
             : $"{prefix} {folderText}. The mod can be imported without the collection, but assignment requires a persistent Penumbra collection matching '{mapping.CollectionName}'.";
     }
 
-    private void PrepareForModAdded()
+    private TaskCompletionSource<string> PrepareForModAdded()
     {
         lock (modAddedLock)
         {
-            pendingModAdded = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var waiter = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            pendingModAdded = waiter;
+            return waiter;
         }
     }
 
-    private async Task<string?> WaitForModAddedAsync(CancellationToken cancellationToken)
+    private async Task<string?> WaitForModAddedAsync(
+        TaskCompletionSource<string> waiter,
+        CancellationToken cancellationToken)
     {
-        TaskCompletionSource<string>? waiter;
-        lock (modAddedLock)
-        {
-            waiter = pendingModAdded;
-        }
-
-        if (waiter is null)
-            return null;
-
         try
         {
             var completed = await Task.WhenAny(waiter.Task, Task.Delay(TimeSpan.FromSeconds(30), cancellationToken)).ConfigureAwait(false);
-            return completed == waiter.Task
-                ? await waiter.Task.ConfigureAwait(false)
-                : null;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (completed != waiter.Task)
+                return null;
+
+            var result = await waiter.Task.ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
         }
         finally
         {
-            lock (modAddedLock)
-            {
-                if (ReferenceEquals(pendingModAdded, waiter))
-                    pendingModAdded = null;
-            }
+            ClearPendingModAdded(waiter);
+        }
+    }
+
+    private void ClearPendingModAdded(TaskCompletionSource<string> waiter)
+    {
+        lock (modAddedLock)
+        {
+            if (ReferenceEquals(pendingModAdded, waiter))
+                pendingModAdded = null;
         }
     }
 
@@ -758,6 +963,38 @@ public sealed class Plugin : IDalamudPlugin
         PluginService.Log.Warning("Could not delete old managed Penumbra mod {ModDirectory} before update. Penumbra code {Code}.", modDirectory, deleteCode);
     }
 
+    private void CorrectReleaseHealthAfterInstallFailure(ModMapping mapping, string latestVersion)
+    {
+        try
+        {
+            var installedModDirectory = FindInstalledModDirectory(mapping, penumbra.GetModList());
+            if (installedModDirectory is null)
+            {
+                updateUiState.SetRelease(
+                    UpdateReleaseAvailability.UpdateAvailable,
+                    latestVersion,
+                    installedVersion: null);
+                PluginService.Log.Warning(
+                    "The managed Penumbra mod is no longer present after the failed install; updater health was corrected to not installed.");
+                return;
+            }
+
+            var storedVersion = string.IsNullOrWhiteSpace(mapping.LastAppliedVersion)
+                ? null
+                : mapping.LastAppliedVersion;
+            updateUiState.SetRelease(
+                storedVersion is not null && VersionsEqual(latestVersion, storedVersion)
+                    ? UpdateReleaseAvailability.UpToDate
+                    : UpdateReleaseAvailability.UpdateAvailable,
+                latestVersion,
+                storedVersion);
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Warning(ex, "Could not re-query Penumbra after the failed destructive install.");
+        }
+    }
+
     private static string NormalizeManagedModDirectory(string modDirectory)
         => IsManagedDuplicateDirectory(modDirectory) ? "n_root_the_grid" : modDirectory;
 
@@ -766,57 +1003,157 @@ public sealed class Plugin : IDalamudPlugin
 
     private async Task AssignAllAsync(CancellationToken cancellationToken)
     {
+        if (disposed)
+            return;
+
+        if (Interlocked.CompareExchange(ref assignmentPending, 1, 0) != 0)
+            return;
+
+        updateUiState.Queue(
+            UpdateOperationKind.Assignment,
+            "ASSIGNMENT QUEUED",
+            "Waiting for the updater channel.");
+
+        var enteredGate = false;
         try
         {
-            await PluginService.Framework.RunOnFrameworkThread(() =>
-            {
-                AssignMapping(Config.GetPrimaryMapping());
-
-                Config.Save();
-            });
+            await operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            enteredGate = true;
+            var mapping = Config.GetPrimaryMapping();
+            updateUiState.Begin(
+                UpdateOperationKind.Assignment,
+                UpdateOperationPhase.Assigning,
+                "ASSIGNING COLLECTION",
+                $"Applying '{mapping.CollectionName}' to nearby '{mapping.NpcName}' objects.");
+            var assignmentResult = await AssignAllCoreAsync(cancellationToken).ConfigureAwait(false);
+            if (!TryPublishAssignmentIssue(assignmentResult, afterSync: false))
+                updateUiState.Complete("ASSIGNMENT COMPLETE", assignmentResult.Detail);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+        catch (Exception) when (disposed)
+        {
+        }
         catch (Exception ex)
         {
-            PluginService.Log.Error(ex, "TheGrid assignment failed.");
-            PluginService.Chat.PrintError($"Assignment failed: {ex.Message}", "TheGrid");
+            ReportAssignmentFailure(ex);
+            updateUiState.Fail("ASSIGNMENT FAILED", ex);
+        }
+        finally
+        {
+            if (enteredGate)
+                operationGate.Release();
+            Volatile.Write(ref assignmentPending, 0);
         }
     }
 
-    private void AssignMapping(ModMapping mapping)
+    private async Task<AssignmentResult> AssignAllCoreAsync(CancellationToken cancellationToken)
     {
-        cyberdeckWindow.InstallStatusItems.Clear();
+        cancellationToken.ThrowIfCancellationRequested();
+        AssignmentResult? assignmentResult = null;
+        await PluginService.Framework.RunOnFrameworkThread(() =>
+        {
+            assignmentResult = AssignMapping(Config.GetPrimaryMapping());
+            Config.Save();
+        });
+        cancellationToken.ThrowIfCancellationRequested();
+        return assignmentResult
+               ?? throw new InvalidOperationException("The assignment did not return a result from the framework thread.");
+    }
+
+    private bool TryPublishAssignmentIssue(AssignmentResult result, bool afterSync)
+    {
+        if (afterSync && (result.HasFailures || result.NeedsAttention || result.HasPending))
+            updateUiState.SetOperation(UpdateOperationKind.Assignment);
+
+        if (result.HasFailures)
+        {
+            updateUiState.Fail(
+                afterSync ? "SYNC COMPLETE // ASSIGNMENT FAILED" : "ASSIGNMENT FAILED",
+                result.Detail,
+                afterSync
+                    ? $"The release is installed, but assignment needs repair. {result.Detail}"
+                    : result.Detail);
+            return true;
+        }
+
+        if (result.NeedsAttention)
+        {
+            updateUiState.NeedsAttention(
+                afterSync ? "SYNC COMPLETE // ACTION REQUIRED" : "ASSIGNMENT NEEDS ATTENTION",
+                result.Detail);
+            return true;
+        }
+
+        if (result.HasPending)
+        {
+            if (afterSync && Config.FullAuto)
+            {
+                updateUiState.Complete(
+                    "SYNC COMPLETE // ASSIGNMENT DEFERRED",
+                    $"{result.Detail} Automatic mode will try again when the venue is detected.");
+            }
+            else
+            {
+                updateUiState.NeedsAttention(
+                    afterSync ? "SYNC COMPLETE // ASSIGNMENT PENDING" : "ASSIGNMENT PENDING",
+                    result.Detail);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void ReportAssignmentFailure(Exception ex)
+    {
+        PluginService.Log.Error(ex, "TheGrid assignment failed.");
+        PluginService.Chat.PrintError($"Assignment failed: {ex.Message}", "TheGrid");
+    }
+
+    private AssignmentResult AssignMapping(ModMapping mapping)
+    {
+        var statusItems = new List<(bool? Ok, string Label)>();
+        var needsAttention = false;
         cyberdeckWindow.InstallStatusTimestamp = Environment.TickCount64;
 
         if (!IsPenumbraAvailable())
         {
             mapping.LastStatus = "Penumbra IPC is not available.";
-            cyberdeckWindow.InstallStatusItems.Add((false, "Penumbra not available"));
-            return;
+            statusItems.Add((false, "Penumbra not available"));
+            return PublishAssignmentResult(statusItems, mapping);
         }
 
         var collection = FindCollection(mapping.CollectionName);
         if (collection is null)
         {
             mapping.LastStatus = $"Collection matching '{mapping.CollectionName}' does not exist.";
-            cyberdeckWindow.InstallStatusItems.Add((false, $"Collection matching '{mapping.CollectionName}' not found"));
+            statusItems.Add((false, $"Collection matching '{mapping.CollectionName}' not found"));
             PluginService.Chat.PrintError($"No Penumbra collection matching '{mapping.CollectionName}' exists. Names like TheGrid, The Grid, and 'the grid' are accepted.", "TheGrid");
-            return;
+            return PublishAssignmentResult(statusItems, mapping);
         }
 
         var modDirectory = FindInstalledModDirectory(mapping, penumbra.GetModList());
         if (modDirectory is not null)
         {
             mapping.ModDirectory = modDirectory;
-            OrganizeModInPenumbra(mapping, modDirectory);
-            EnableImportedMod(mapping, collection.Value, modDirectory);
-            cyberdeckWindow.InstallStatusItems.Add((true, $"Mod enabled in '{collection.Value.Name}'"));
+            var organized = OrganizeModInPenumbra(mapping, modDirectory);
+            if (!organized)
+            {
+                needsAttention = true;
+                statusItems.Add((null, $"Could not place mod under '{mapping.PenumbraFolderPath}'"));
+            }
+            var configured = EnableImportedMod(mapping, collection.Value, modDirectory);
+            statusItems.Add((
+                configured,
+                configured
+                    ? $"Mod enabled in '{collection.Value.Name}'"
+                    : $"Could not confirm mod enable/priority in '{collection.Value.Name}'"));
         }
         else
         {
-            cyberdeckWindow.InstallStatusItems.Add((false, "Mod not found in Penumbra"));
+            statusItems.Add((false, "Mod not found in Penumbra"));
         }
 
         var targetCount = 0;
@@ -871,24 +1208,39 @@ public sealed class Plugin : IDalamudPlugin
                 }
             }
 
-            cyberdeckWindow.InstallStatusItems.Add((true, $"Assigned to {assigned} '{mapping.NpcName}' object(s)"));
+            statusItems.Add((true, $"Assigned to {assigned} '{mapping.NpcName}' object(s)"));
         }
 
         if (alreadyAssigned > 0)
-            cyberdeckWindow.InstallStatusItems.Add((true, $"Already individually assigned to {alreadyAssigned} '{mapping.NpcName}' object(s); no redraw needed"));
+            statusItems.Add((true, $"Already individually assigned to {alreadyAssigned} '{mapping.NpcName}' object(s); no redraw needed"));
 
         if (failedAssignments > 0)
-            cyberdeckWindow.InstallStatusItems.Add((false, $"Could not assign {failedAssignments} '{mapping.NpcName}' object(s)"));
+            statusItems.Add((false, $"Could not assign {failedAssignments} '{mapping.NpcName}' object(s)"));
 
         if (targetCount == 0)
         {
             if (mannequinFallbackCandidates > 1)
-                cyberdeckWindow.InstallStatusItems.Add((false, $"Found {mannequinFallbackCandidates} mannequins but could not identify '{mapping.NpcName}'"));
+                statusItems.Add((false, $"Found {mannequinFallbackCandidates} mannequins but could not identify '{mapping.NpcName}'"));
             else
-                cyberdeckWindow.InstallStatusItems.Add((null, $"Mannequin '{mapping.NpcName}' not in range"));
+                statusItems.Add((null, $"Mannequin '{mapping.NpcName}' not in range"));
         }
 
-        mapping.LastStatus = string.Join(" ", cyberdeckWindow.InstallStatusItems.Select(s => s.Label + "."));
+        return PublishAssignmentResult(statusItems, mapping, needsAttention);
+    }
+
+    private AssignmentResult PublishAssignmentResult(
+        List<(bool? Ok, string Label)> statusItems,
+        ModMapping mapping,
+        bool needsAttention = false)
+    {
+        mapping.LastStatus = string.Join(" ", statusItems.Select(item => item.Label + "."));
+        cyberdeckWindow.InstallStatusItems.Clear();
+        cyberdeckWindow.InstallStatusItems.AddRange(statusItems);
+        return new AssignmentResult(
+            statusItems.Any(item => item.Ok == false),
+            statusItems.Any(item => item.Ok is null),
+            needsAttention,
+            mapping.LastStatus);
     }
 
     private (Guid Id, string Name)? FindCollection(string collectionName)
@@ -1321,4 +1673,6 @@ public sealed class Plugin : IDalamudPlugin
     private readonly record struct CurrentHousingAddress(string? WorldName, string? DistrictName, int? Ward, int? Plot);
 
     private readonly record struct TargetObjectMatch(int ObjectIndex, string Name, string ObjectKind, bool MatchedByName);
+
+    private readonly record struct AssignmentResult(bool HasFailures, bool HasPending, bool NeedsAttention, string Detail);
 }

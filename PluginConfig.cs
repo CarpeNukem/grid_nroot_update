@@ -10,6 +10,7 @@ public sealed class PluginConfig : IPluginConfiguration
     public string DiscordUrl { get; set; } = "https://discord.gg/kxZMbP3C5B";
     public bool AutoOpenOnVenueAddress { get; set; } = true;
     public bool NetworkAlertBadge { get; set; } = true;
+    public bool ReduceMotion { get; set; } = false;
     public bool FullAuto { get; set; } = false;
     public bool FirstRunCompleted { get; set; } = false;
     public float UiScale { get; set; } = 0;
