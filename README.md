@@ -16,6 +16,9 @@ The release source is locked to `CarpeNukem/grid_nroot_update`. The plugin check
 - `/thegrid`, `/grid`, or `/cyberdeck` opens The Grid Cyberdeck.
 - `/thegrid update`, `/grid update`, or `/cyberdeck update` checks GitHub releases and applies the latest matching venue mod.
 - `/thegrid config`, `/grid config`, or `/cyberdeck config` opens the configuration window.
+- `/thegrid vault`, `/grid vault`, or `/cyberdeck vault` opens the encrypted Cipher Vault authentication terminal.
+
+The Cipher Vault creates a persistent seeded intrusion run with randomized technical packet frames, manual multi-layer decoding, forensic honeypots, trace penalties, graded clearance, and an S-rank encrypted payload. Closing the terminal preserves the current run; completing or explicitly aborting it permits a newly generated archive.
 
 ## Notes
 
@@ -29,7 +32,7 @@ Build the release package:
 dotnet build GridNrootUpdate.csproj -c Release
 ```
 
-Upload `bin/Release/dist/GridNrootUpdate-0.7.0.zip` to a GitHub release named `plugin-v0.7.0`, then users can add this custom repository URL in Dalamud:
+Upload `bin/Release/dist/GridNrootUpdate-0.8.0.zip` to a GitHub release named `plugin-v0.8.0`, then users can add this custom repository URL in Dalamud:
 
 ```text
 https://raw.githubusercontent.com/CarpeNukem/grid_nroot_update/main/repo.json

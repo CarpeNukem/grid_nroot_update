@@ -102,7 +102,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             PluginService.Commands.AddHandler(commandName, new CommandInfo(OnCommand)
             {
-                HelpMessage = "Open The Grid Cyberdeck. Aliases: /thegrid, /cyberdeck. Subcommands: update, config.",
+                HelpMessage = "Open The Grid Cyberdeck. Aliases: /thegrid, /cyberdeck. Subcommands: update, config, vault.",
                 ShowInHelp = commandName == PrimaryCommandName,
             });
         }
@@ -170,11 +170,53 @@ public sealed class Plugin : IDalamudPlugin
             case "config":
                 OpenConfigUi();
                 break;
+            case "vault":
+                cyberdeckWindow.OpenCipherVault();
+                break;
+#if DEBUG
+            case "debug":
+                HandleDebugCommand(split.Length > 1 ? split[1] : string.Empty);
+                break;
+#endif
             default:
-                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /grid, or /cyberdeck with optional update/config.", "TheGrid");
+                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /grid, or /cyberdeck with optional update/config/vault.", "TheGrid");
                 break;
         }
     }
+
+#if DEBUG
+    private void HandleDebugCommand(string args)
+    {
+        switch (args.Trim().ToLowerInvariant())
+        {
+            case "blackice-clear":
+                cyberdeckWindow.DebugClearBlackIce();
+                PluginService.Chat.Print("DEBUG: Black ICE clear state injected.", "TheGrid");
+                break;
+            case "vault-s-clear":
+                cyberdeckWindow.DebugClearCipherVault('S');
+                PluginService.Chat.Print("DEBUG: Vault S-clear queued. Authenticate if the archive is sealed.", "TheGrid");
+                break;
+            case "vault-a-clear":
+                cyberdeckWindow.DebugClearCipherVault('A');
+                PluginService.Chat.Print("DEBUG: Vault A-clear queued. Authenticate if the archive is sealed.", "TheGrid");
+                break;
+            case "vault-b-clear":
+                cyberdeckWindow.DebugClearCipherVault('B');
+                PluginService.Chat.Print("DEBUG: Vault B-clear queued. Authenticate if the archive is sealed.", "TheGrid");
+                break;
+            case "vault-c-clear":
+                cyberdeckWindow.DebugClearCipherVault('C');
+                PluginService.Chat.Print("DEBUG: Vault C-clear queued. Authenticate if the archive is sealed.", "TheGrid");
+                break;
+            default:
+                PluginService.Chat.PrintError(
+                    "Debug usage: /grid debug blackice-clear | vault-s-clear | vault-a-clear | vault-b-clear | vault-c-clear",
+                    "TheGrid");
+                break;
+        }
+    }
+#endif
 
     private void OpenMainUi()
         => cyberdeckWindow.IsOpen = true;

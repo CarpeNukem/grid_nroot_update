@@ -19,6 +19,23 @@ public sealed class PluginConfig : IPluginConfiguration
     public int IntrusionBestStandardScore { get; set; }
     public int IntrusionBestBlackIceScore { get; set; }
     public int IntrusionSuccessfulBreaches { get; set; }
+    public List<string> CipherSolvedIntercepts { get; set; } = [];
+    public Dictionary<string, int> CipherHintLevels { get; set; } = [];
+    public int CipherVaultVersion { get; set; }
+    public bool CipherDecoyTriggered { get; set; }
+    public int CipherTracePenalty { get; set; }
+    public int CipherRunSeed { get; set; }
+    public bool CipherRunActive { get; set; }
+    public bool CipherRunCompleted { get; set; }
+    public bool CipherRunCompromised { get; set; }
+    public int CipherTraceLevel { get; set; }
+    public int CipherBestScore { get; set; }
+    public string CipherBestGrade { get; set; } = string.Empty;
+    public bool CipherPrizeUnlocked { get; set; }
+    public int CipherAbortedRuns { get; set; }
+    public int CipherAuthFailedAttempts { get; set; }
+    public long CipherLockoutUntilUnixMs { get; set; }
+    public long CipherRunStartedUnixMs { get; set; }
 
     public List<ModMapping> Mappings { get; set; } =
     [

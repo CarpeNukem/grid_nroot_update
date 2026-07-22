@@ -12,7 +12,7 @@ using NativeCharacter = FFXIVClientStructs.FFXIV.Client.Game.Character.Character
 
 namespace GridNrootUpdate;
 
-internal sealed class CyberdeckWindow
+internal sealed partial class CyberdeckWindow
 {
     private const float DefaultMapZoom = 0.44f;
     private const string LifestreamNavigationTooltip = "Click to navigate. Requires Lifestream plugin to work";
@@ -20,21 +20,30 @@ internal sealed class CyberdeckWindow
     private const string LightlessSyncshellId = "LLS-6AAKEJBAPRB0";
     private const string PlayerSyncSyncshellId = "n_root";
     private const int IntrusionPayloadScoreThreshold = 12_000;
-    private const string IntrusionEncryptedPayload = "=B2MnKXchJ3U1YSs9BA=";
-    private const string IntrusionPayloadHint = "0x64 masks the path. Raise yourself above the GRID, then look backward.";
-    private static readonly string[] AmbientTerminalMessages =
+    private static readonly string IntrusionEncryptedPayload = DecodeIntrusionReward(
+        [0x59, 0x26, 0x56, 0x29, 0x0A, 0x2F, 0x3C, 0x07, 0x0C, 0x2E, 0x57, 0x31, 0x55, 0x3D, 0x37, 0x17, 0x5D, 0x26, 0x25, 0x59]);
+    private static readonly string IntrusionPayloadHint = DecodeIntrusionReward(
+        [0x54, 0x1C, 0x52, 0x50, 0x44, 0x09, 0x05, 0x17, 0x0F, 0x17, 0x44, 0x10, 0x0C, 0x01, 0x44, 0x14, 0x05, 0x10, 0x0C, 0x4A, 0x44, 0x36, 0x05, 0x0D, 0x17, 0x01, 0x44, 0x1D, 0x0B, 0x11, 0x16, 0x17, 0x01, 0x08, 0x02, 0x44, 0x05, 0x06, 0x0B, 0x12, 0x01, 0x44, 0x10, 0x0C, 0x01, 0x44, 0x23, 0x36, 0x2D, 0x20, 0x48, 0x44, 0x10, 0x0C, 0x01, 0x0A, 0x44, 0x08, 0x0B, 0x0B, 0x0F, 0x44, 0x06, 0x05, 0x07, 0x0F, 0x13, 0x05, 0x16, 0x00, 0x4A]);
+    private static readonly string[] AmbientMissionNames =
     [
-        "PROBING RELAY_06...",
-        "N_ROOT HEARTBEAT // OK",
-        "ICE SIGNATURE // DORMANT",
-        "ROUTE CIPHER // STABLE",
-        "PACKET TRACE // CLEAN",
-        "GHOST PORT 09 // OPEN",
-        "MIRROR NODE // SYNCED",
-        "DECRYPTING VENUE LINK...",
-        "ROOFTOP UPLINK // ONLINE",
-        "NULL SECTOR // NO THREATS",
+        "BREACH CORPO HOST",
+        "MIRROR AUTH CACHE",
+        "SUBVERT ROUTE DAEMON",
+        "EXTRACT SHADER MAP",
+        "SEED GHOST BEACON",
     ];
+
+    private static readonly string[] AmbientVectors = ["HTTP-GET", "TLS-RESUME", "DMA-MIRROR", "IPC-HIJACK", "SYN-FLOOD"];
+    private static readonly string[] AmbientBackdoors = ["LOFT-SHADOW-D", "GHOST-ECHO", "NULL-HOOK", "MIRROR-WRAITH", "NROOT-SHARD"];
+
+    private static string DecodeIntrusionReward(ReadOnlySpan<byte> masked)
+    {
+        var decoded = new byte[masked.Length];
+        for (var index = 0; index < masked.Length; index++)
+            decoded[index] = (byte)(masked[index] ^ 0x64);
+        return System.Text.Encoding.UTF8.GetString(decoded);
+    }
+
     private static readonly DrinkMenuItem[] DrinkMenu =
     [
         new("Above The Grid", "10 000", "above_the_grid.png", "gin, elderflower cordial, lemon, ChroManticore Ultraviolet",
@@ -76,11 +85,15 @@ internal sealed class CyberdeckWindow
     private readonly Dictionary<DeckView, int> badgeCounts = new();
     private readonly Dictionary<DeckView, Vector4> badgeColors = new();
     private long lastBadgeUpdateTick;
-    private string? ambientTerminalMessage;
-    private int lastAmbientMessageIndex = -1;
-    private long ambientMessageStartedAt;
-    private long ambientMessageUntil;
-    private long nextAmbientMessageAt;
+    private readonly List<string> ambientTerminalLines = [];
+    private string[] ambientTerminalOperation = [];
+    private int ambientTerminalOperationIndex;
+    private long ambientTerminalTypingStartedAt;
+    private long ambientTerminalScrollStartedAt;
+    private long nextAmbientTerminalLineAt;
+    private long ambientTerminalGlitchUntil;
+    private long nextAmbientTerminalGlitchAt;
+    private int ambientTerminalGlitchLine = -1;
     private string? hoverGlitchTile;
     private long hoverGlitchLastSeenAt;
     private long hoverGlitchUntil;
@@ -134,6 +147,8 @@ internal sealed class CyberdeckWindow
             DrawCyberdeckWindow();
         if (intrusionWindowOpen)
             DrawIntrusionWindow();
+        if (cipherVaultWindowOpen)
+            DrawCipherVaultWindow();
     }
 
     private void DrawCyberdeckWindow()
@@ -507,10 +522,11 @@ internal sealed class CyberdeckWindow
     {
         var uiScale = GetUiScale();
         var start = ImGui.GetCursorScreenPos();
-        var size = new Vector2(ImGui.GetContentRegionAvail().X, 130 * uiScale);
+        var size = new Vector2(ImGui.GetContentRegionAvail().X, 176 * uiScale);
         var max = start + size;
         var drawList = ImGui.GetWindowDrawList();
         ImGui.Dummy(size);
+        var afterHeaderCursor = ImGui.GetCursorScreenPos();
 
         drawList.PushClipRect(start, max, true);
         var rooftop = GetTextureWrap("rooftop.png");
@@ -554,6 +570,25 @@ internal sealed class CyberdeckWindow
         DrawAmbientTerminalBurst(drawList, start, size, uiScale);
         drawList.PopClipRect();
 
+        var authLabelPosition = new Vector2(
+            textX + ImGui.CalcTextSize("THE GRID // ").X,
+            start.Y + (24 * uiScale));
+        var authLabelSize = ImGui.CalcTextSize("n_root");
+        var authPadding = new Vector2(3, 2) * uiScale;
+        ImGui.SetCursorScreenPos(authLabelPosition - authPadding);
+        if (ImGui.InvisibleButton("##cipher_vault_entry", authLabelSize + (authPadding * 2)))
+            OpenCipherVault();
+        if (ImGui.IsItemHovered())
+        {
+            drawList.AddLine(
+                new Vector2(authLabelPosition.X, authLabelPosition.Y + authLabelSize.Y + uiScale),
+                new Vector2(authLabelPosition.X + authLabelSize.X, authLabelPosition.Y + authLabelSize.Y + uiScale),
+                ImGui.GetColorU32(CyberdeckTheme.Palette.Magenta),
+                MathF.Max(1, uiScale));
+            ImGui.SetTooltip("AUTH NODE // RESTRICTED");
+        }
+        ImGui.SetCursorScreenPos(afterHeaderCursor);
+
         if (ImGui.Button($"NAVIGATE // {config.VenueAddress}", new Vector2(ImGui.GetContentRegionAvail().X, 0)))
             OpenAddress();
         DrawHoverTooltip(LifestreamNavigationTooltip);
@@ -566,68 +601,286 @@ internal sealed class CyberdeckWindow
         var updateStatus = getUpdateStatus();
         if (ShouldShowUpdateStatusRail(updateStatus))
         {
-            ambientTerminalMessage = null;
+            nextAmbientTerminalLineAt = now + 500;
             DrawSystemTerminalStatus(drawList, start, size, uiScale, updateStatus);
+            return;
+        }
+
+        if (transientFeedback is { } feedback && now <= transientFeedbackUntil)
+        {
+            nextAmbientTerminalLineAt = now + 500;
+            DrawTerminalPriorityMessage(drawList, start, size, uiScale, $"> SYSTEM // {feedback}", CyberdeckTheme.Palette.Cyan);
             return;
         }
 
         if (config.ReduceMotion)
         {
-            ambientTerminalMessage = null;
-            if (nextAmbientMessageAt <= now)
-                nextAmbientMessageAt = now + Random.Shared.Next(3000, 7001);
+            ambientTerminalLines.Clear();
+            ambientTerminalOperation = [];
+            DrawTerminalPriorityMessage(
+                drawList,
+                start,
+                size,
+                uiScale,
+                "> N_ROOT HEARTBEAT // ROUTE MASK STABLE",
+                CyberdeckTheme.Palette.TextMuted);
             return;
         }
 
-        if (ambientTerminalMessage is null)
-        {
-            if (nextAmbientMessageAt == 0)
-                nextAmbientMessageAt = now + Random.Shared.Next(1800, 4501);
-            if (now < nextAmbientMessageAt)
-                return;
+        EnsureAmbientTerminalOperation(now);
+        if (now >= nextAmbientTerminalLineAt)
+            AdvanceAmbientTerminalOperation(now);
+        UpdateAmbientTerminalGlitch(now);
 
-            var index = Random.Shared.Next(AmbientTerminalMessages.Length);
-            if (AmbientTerminalMessages.Length > 1 && index == lastAmbientMessageIndex)
-                index = (index + 1) % AmbientTerminalMessages.Length;
-
-            lastAmbientMessageIndex = index;
-            ambientTerminalMessage = AmbientTerminalMessages[index];
-            ambientMessageStartedAt = now;
-            ambientMessageUntil = now + Random.Shared.Next(2100, 3001);
-        }
-
-        if (now >= ambientMessageUntil)
-        {
-            ambientTerminalMessage = null;
-            nextAmbientMessageAt = now + Random.Shared.Next(8000, 18001);
-            return;
-        }
-
-        if (ambientTerminalMessage is not { } message)
-            return;
-        var elapsed = Math.Max(0, now - ambientMessageStartedAt);
-        var visibleCharacters = Math.Clamp((int)(elapsed / 24), 1, message.Length);
-        var renderedMessage = $"> {message[..visibleCharacters]}{(visibleCharacters < message.Length ? "_" : string.Empty)}";
-        renderedMessage = EllipsizeToWidth(renderedMessage, MathF.Max(1, size.X - (28 * uiScale)));
-
-        var fadeRemaining = ambientMessageUntil - now;
-        var alpha = fadeRemaining < 360 ? Math.Clamp(fadeRemaining / 360f, 0f, 1f) : 1f;
-        var bandMin = new Vector2(start.X + (8 * uiScale), start.Y + (101 * uiScale));
-        var bandMax = new Vector2(start.X + size.X - (8 * uiScale), start.Y + (123 * uiScale));
+        var bandMin = new Vector2(start.X + (8 * uiScale), start.Y + (99 * uiScale));
+        var bandMax = new Vector2(start.X + size.X - (8 * uiScale), start.Y + (168 * uiScale));
         drawList.AddRectFilled(
             bandMin,
             bandMax,
-            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Panel, 0.70f * alpha)),
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Panel, 0.78f)),
             2 * uiScale);
         drawList.AddLine(
             bandMin,
             new Vector2(bandMax.X, bandMin.Y),
-            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Magenta, 0.52f * alpha)),
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Magenta, 0.58f)),
             MathF.Max(1, uiScale));
-        drawList.AddText(
-            bandMin + new Vector2(7, 3) * uiScale,
-            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, alpha)),
-            renderedMessage);
+
+        const float scrollDurationMs = 170f;
+        var lineHeight = 15 * uiScale;
+        var scrollProgress = ambientTerminalLines.Count > 4
+            ? Math.Clamp((now - ambientTerminalScrollStartedAt) / scrollDurationMs, 0f, 1f)
+            : 0f;
+        var scrollOffset = scrollProgress * lineHeight;
+        var textOrigin = bandMin + new Vector2(7, 5) * uiScale;
+        drawList.PushClipRect(bandMin + new Vector2(1), bandMax - new Vector2(1), true);
+        using (PluginService.PluginInterface.UiBuilder.MonoFontHandle.Push())
+        {
+            var codeFont = ImGui.GetFont();
+            var codeFontSize = ImGui.GetFontSize() * 0.80f;
+            for (var index = 0; index < ambientTerminalLines.Count; index++)
+            {
+                var line = ambientTerminalLines[index];
+                var glitching = now < ambientTerminalGlitchUntil && index == ambientTerminalGlitchLine;
+                if (index == ambientTerminalLines.Count - 1)
+                {
+                    var visibleCharacters = Math.Clamp((int)((now - ambientTerminalTypingStartedAt) / 18), 0, line.Length);
+                    line = line[..visibleCharacters];
+                    if (visibleCharacters < ambientTerminalLines[index].Length || (now / 420) % 2 == 0)
+                        line += "_";
+                }
+                if (glitching)
+                    line = GlitchAmbientTerminalLine(line, now);
+
+                var position = textOrigin + new Vector2(0, index * lineHeight - scrollOffset);
+                DrawAmbientCodeLine(drawList, codeFont, codeFontSize, position, line, glitching);
+            }
+        }
+        drawList.PopClipRect();
+    }
+
+    private void EnsureAmbientTerminalOperation(long now)
+    {
+        if (ambientTerminalOperation.Length != 0 && ambientTerminalLines.Count != 0)
+            return;
+
+        ambientTerminalOperation = BuildAmbientTerminalOperation();
+        ambientTerminalOperationIndex = 0;
+        ambientTerminalLines.Clear();
+        while (ambientTerminalLines.Count < 4 && ambientTerminalOperationIndex < ambientTerminalOperation.Length)
+            ambientTerminalLines.Add(ambientTerminalOperation[ambientTerminalOperationIndex++]);
+        ambientTerminalScrollStartedAt = now - 170;
+        ambientTerminalTypingStartedAt = now;
+        nextAmbientTerminalLineAt = now + GetAmbientTerminalLineDuration(ambientTerminalLines[^1]);
+        nextAmbientTerminalGlitchAt = now + Random.Shared.Next(6500, 12001);
+    }
+
+    private void AdvanceAmbientTerminalOperation(long now)
+    {
+        if (ambientTerminalOperationIndex >= ambientTerminalOperation.Length)
+        {
+            ambientTerminalOperation = BuildAmbientTerminalOperation();
+            ambientTerminalOperationIndex = 0;
+        }
+
+        if (ambientTerminalLines.Count >= 5)
+            ambientTerminalLines.RemoveAt(0);
+        ambientTerminalLines.Add(ambientTerminalOperation[ambientTerminalOperationIndex++]);
+        ambientTerminalScrollStartedAt = now;
+        ambientTerminalTypingStartedAt = now;
+        nextAmbientTerminalLineAt = now + GetAmbientTerminalLineDuration(ambientTerminalLines[^1]);
+    }
+
+    private static long GetAmbientTerminalLineDuration(string line)
+        => Math.Max(900, (line.Length * 18L) + 420);
+
+    private void UpdateAmbientTerminalGlitch(long now)
+    {
+        if (now < nextAmbientTerminalGlitchAt || now < ambientTerminalGlitchUntil || ambientTerminalLines.Count == 0)
+            return;
+
+        var firstVisibleLine = ambientTerminalLines.Count > 4 ? 1 : 0;
+        ambientTerminalGlitchLine = Random.Shared.Next(firstVisibleLine, ambientTerminalLines.Count);
+        ambientTerminalGlitchUntil = now + Random.Shared.Next(90, 161);
+        nextAmbientTerminalGlitchAt = ambientTerminalGlitchUntil + Random.Shared.Next(7000, 15001);
+    }
+
+    private static string GlitchAmbientTerminalLine(string line, long now)
+    {
+        if (line.Length < 4)
+            return line;
+
+        var glitched = line.ToCharArray();
+        var seed = unchecked((uint)(now / 32));
+        var first = (int)((seed * 17u) % (uint)glitched.Length);
+        var second = (int)(((seed * 31u) + 7u) % (uint)glitched.Length);
+        glitched[first] = '#';
+        glitched[second] = seed % 2 == 0 ? '0' : '/';
+        return new string(glitched);
+    }
+
+    private static void DrawAmbientCodeLine(
+        ImDrawListPtr drawList,
+        ImFontPtr font,
+        float fontSize,
+        Vector2 position,
+        string line,
+        bool glitching)
+    {
+        if (glitching)
+        {
+            drawList.AddText(font, fontSize, position + new Vector2(2, 0), ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.48f)), line);
+            drawList.AddText(font, fontSize, position, ImGui.GetColorU32(CyberdeckTheme.Palette.Magenta), line);
+            return;
+        }
+
+        var cursor = position;
+        var scale = fontSize / MathF.Max(1, ImGui.GetFontSize());
+        var index = 0;
+        while (index < line.Length)
+        {
+            var start = index;
+            var color = CyberdeckTheme.Palette.TextMuted;
+            if (index + 1 < line.Length && line[index] == '/' && line[index + 1] == '/')
+            {
+                index = line.Length;
+                color = CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Magenta, 0.82f);
+            }
+            else if (line[index] is '"' or '\'')
+            {
+                var quote = line[index++];
+                while (index < line.Length && line[index] != quote)
+                    index++;
+                if (index < line.Length)
+                    index++;
+                color = CyberdeckTheme.Palette.Amber;
+            }
+            else if (char.IsLetter(line[index]) || line[index] == '_')
+            {
+                index++;
+                while (index < line.Length && (char.IsLetterOrDigit(line[index]) || line[index] is '_' or '.'))
+                    index++;
+                var token = line[start..index];
+                var normalized = token.ToLowerInvariant();
+                if (normalized is "if" or "while" or "for" or "in" or "else")
+                    color = CyberdeckTheme.Palette.Magenta;
+                else if (normalized is "true" or "false" or "active" or "denied")
+                    color = CyberdeckTheme.Palette.Success;
+                else if (index < line.Length && line[index] == '(')
+                    color = CyberdeckTheme.Palette.Cyan;
+                else
+                    color = CyberdeckTheme.Palette.Text;
+            }
+            else if (char.IsDigit(line[index]) || line[index] == '#')
+            {
+                index++;
+                while (index < line.Length && (char.IsLetterOrDigit(line[index]) || line[index] is '#' or '.'))
+                    index++;
+                color = CyberdeckTheme.Palette.Cyan;
+            }
+            else
+            {
+                index++;
+                while (index < line.Length
+                       && !char.IsLetterOrDigit(line[index])
+                       && line[index] is not '"' and not '\'' and not '#'
+                       && !(index + 1 < line.Length && line[index] == '/' && line[index + 1] == '/'))
+                    index++;
+            }
+
+            var segment = line[start..index];
+            drawList.AddText(font, fontSize, cursor, ImGui.GetColorU32(color), segment);
+            cursor.X += ImGui.CalcTextSize(segment).X * scale;
+        }
+    }
+
+    private static string[] BuildAmbientTerminalOperation()
+    {
+        var node = Random.Shared.Next(100, 1000);
+        var accessKey = Random.Shared.Next(1000, 10000);
+        var hops = Random.Shared.Next(5, 10);
+        var phase = Random.Shared.Next(1, 10);
+        var shard = Random.Shared.Next(1, 10);
+        var pid = Random.Shared.Next(1100, 9900);
+        var traceId = Random.Shared.NextInt64(0, 1L << 32).ToString("X8");
+        var mission = AmbientMissionNames[Random.Shared.Next(AmbientMissionNames.Length)];
+        var vector = AmbientVectors[Random.Shared.Next(AmbientVectors.Length)];
+        var backdoor = AmbientBackdoors[Random.Shared.Next(AmbientBackdoors.Length)];
+        var timestamp = $"{Random.Shared.Next(0, 24):00}:{Random.Shared.Next(0, 60):00}:{Random.Shared.Next(0, 60):00}";
+
+        return
+        [
+            $"// node-{node} :: acquire",
+            $"// mission: {mission}",
+            "// uplink: spoofed / trace: scrubbed",
+            $"operator = mask(\"n_root.shard{shard}\")",
+            "session = init()",
+            $"auth = spoof(\"KEYGEN#{accessKey}\", deepmask=true)",
+            "if auth.denied:",
+            "    token = forge(level=9)",
+            $"    inject(\"BABEL\", vector=\"{vector}\")",
+            $"    phase_shift(+{phase:00})",
+            "log(\"reflection offset accepted\")",
+            $"target = \"LOFT.ARKNET.U{shard}\"",
+            $"route = ghost_route(hops={hops})",
+            "connect(target, via=route)",
+            "while link.active:",
+            "    dump(\"RAM.MIRROR.VOL\")",
+            "    mask_traffic(rate=256kbps)",
+            $"    headers.traceid = 0x{traceId}",
+            "    for table in scan(\"NODE_DB\"):",
+            "        if table.has(\"CRED\"):",
+            "            clone(table)",
+            "            scrub(table.logs)",
+            "            exfil(method=\"STEALTHDRIP\")",
+            $"implant = backdoor(\"{backdoor}\")",
+            "install(implant, path=\"/bin/syncd\")",
+            "verify_integrity(implant)",
+            "log(\"beacon awaiting remote pulse\")",
+            $"proc = spawn(\"ghost_echo\", pid={pid})",
+            "disguise(proc, as=\"systemd-logind\")",
+            "fake_traffic(count=8, loop=true)",
+            "scrub_logs(\"auth\", \"shadow_trace\")",
+            "emit(\"UPLINK_COMPLETE\")",
+            "session.terminate()",
+            $"// node-{node}: icewalk safe",
+            $"// end transmission / {timestamp}",
+        ];
+    }
+
+    private static void DrawTerminalPriorityMessage(
+        ImDrawListPtr drawList,
+        Vector2 start,
+        Vector2 size,
+        float uiScale,
+        string message,
+        Vector4 color)
+    {
+        var bandMin = new Vector2(start.X + (8 * uiScale), start.Y + (99 * uiScale));
+        var bandMax = new Vector2(start.X + size.X - (8 * uiScale), start.Y + (168 * uiScale));
+        drawList.AddRectFilled(bandMin, bandMax, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Panel, 0.88f)), 2 * uiScale);
+        drawList.AddLine(bandMin, new Vector2(bandMax.X, bandMin.Y), ImGui.GetColorU32(CyberdeckTheme.WithAlpha(color, 0.82f)), MathF.Max(1, uiScale));
+        var rendered = EllipsizeToWidth(message, MathF.Max(1, size.X - (32 * uiScale)));
+        drawList.AddText(bandMin + new Vector2(7, 26) * uiScale, ImGui.GetColorU32(color), rendered);
     }
 
     private void DrawSystemTerminalStatus(
@@ -638,8 +891,8 @@ internal sealed class CyberdeckWindow
         UpdateUiSnapshot status)
     {
         var statusColor = GetUpdateStatusColor(status);
-        var bandMin = new Vector2(start.X + (8 * uiScale), start.Y + (101 * uiScale));
-        var bandMax = new Vector2(start.X + size.X - (8 * uiScale), start.Y + (123 * uiScale));
+        var bandMin = new Vector2(start.X + (8 * uiScale), start.Y + (99 * uiScale));
+        var bandMax = new Vector2(start.X + size.X - (8 * uiScale), start.Y + (168 * uiScale));
         var statusText = $"> {status.Status}";
         if (status.IsBusy)
             statusText += $" // {GetProgressValue(status)}";
@@ -656,7 +909,7 @@ internal sealed class CyberdeckWindow
             ImGui.GetColorU32(CyberdeckTheme.WithAlpha(statusColor, 0.82f)),
             MathF.Max(1, uiScale));
         drawList.AddText(
-            bandMin + new Vector2(7, 3) * uiScale,
+            bandMin + new Vector2(7, 26) * uiScale,
             ImGui.GetColorU32(statusColor),
             statusText);
 
@@ -1717,7 +1970,7 @@ internal sealed class CyberdeckWindow
             CopyToClipboard(IntrusionPayloadHint, "CLUE COPIED");
 
         ImGui.Spacing();
-        DrawMutedWrapped("Decode the recovered payload and report the password directly to venue staff.");
+        DrawMutedWrapped("Decode the recovered payload, then use the recovered password to unlock the Cipher Vault.");
         ImGui.Spacing();
         var stackActions = ImGui.GetContentRegionAvail().X < (390 * GetUiScale());
         using (CyberdeckTheme.PushAccentButton())
@@ -2346,7 +2599,7 @@ internal sealed class CyberdeckWindow
             config.ReduceMotion = !animationsEnabled;
             config.Save();
         }
-        DrawMutedWrapped("Controls terminal bursts, hover glitches, pulses, scanlines, and loading animation together.");
+        DrawMutedWrapped("Controls operations-feed scrolling, terminal glitches, pulses, scanlines, and loading animation together.");
 
         var autoOpenOnEntrance = config.AutoOpenOnVenueAddress;
         if (ImGui.Checkbox("Auto-open Cyberdeck", ref autoOpenOnEntrance))
@@ -2459,7 +2712,7 @@ internal sealed class CyberdeckWindow
     private void SetTransientFeedback(string text)
     {
         transientFeedback = text;
-        transientFeedbackUntil = Environment.TickCount64 + 1600;
+        transientFeedbackUntil = Environment.TickCount64 + 2800;
     }
 
     private void DrawTransientFeedbackOverlay()
@@ -2472,6 +2725,9 @@ internal sealed class CyberdeckWindow
             transientFeedback = null;
             return;
         }
+
+        if (selectedView == DeckView.Home)
+            return;
 
         var drawList = ImGui.GetWindowDrawList();
         var textSize = ImGui.CalcTextSize(transientFeedback);
