@@ -85,6 +85,7 @@ internal sealed class CyberdeckWindow
     private long hoverGlitchLastSeenAt;
     private long hoverGlitchUntil;
     private long nextHoverGlitchAt;
+    private long moduleTransitionStartedAt;
     private IntrusionGame? intrusionGame;
     private bool intrusionResultRecorded;
     private bool showIntrusionPayload;
@@ -123,7 +124,7 @@ internal sealed class CyberdeckWindow
 
     public void OpenSettings()
     {
-        selectedView = DeckView.Settings;
+        SelectDeckView(DeckView.Settings);
         IsOpen = true;
     }
 
@@ -176,6 +177,7 @@ internal sealed class CyberdeckWindow
 
             if (!config.ReduceMotion && updateStatus.IsBusy)
                 DrawDeckScanline(deckMin, deckMax, uiScale);
+            DrawModuleTransition(deckMin, deckMax, uiScale);
         }
 
         ImGui.EndChild();
@@ -370,7 +372,7 @@ internal sealed class CyberdeckWindow
     private void DrawAppScreen()
     {
         if (ImGui.Button("< HOME"))
-            selectedView = DeckView.Home;
+            SelectDeckView(DeckView.Home);
 
         ImGui.SameLine();
         ImGui.TextUnformatted($"// {GetDeckViewTitle(selectedView).ToUpperInvariant()}");
@@ -401,6 +403,92 @@ internal sealed class CyberdeckWindow
             case DeckView.Settings:
                 DrawSettingsView();
                 break;
+        }
+    }
+
+    private void SelectDeckView(DeckView view)
+    {
+        if (selectedView == view)
+            return;
+
+        selectedView = view;
+        moduleTransitionStartedAt = config.ReduceMotion ? 0 : Environment.TickCount64;
+    }
+
+    private void DrawModuleTransition(Vector2 min, Vector2 max, float uiScale)
+    {
+        if (config.ReduceMotion || moduleTransitionStartedAt == 0)
+            return;
+
+        const float durationMs = 180f;
+        var elapsed = Environment.TickCount64 - moduleTransitionStartedAt;
+        if (elapsed >= durationMs)
+        {
+            moduleTransitionStartedAt = 0;
+            return;
+        }
+
+        var progress = Math.Clamp(elapsed / durationMs, 0f, 1f);
+        var scanX = min.X + ((max.X - min.X) * progress);
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.PushClipRect(min, max, true);
+        drawList.AddRectFilled(
+            new Vector2(scanX, min.Y),
+            max,
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Background, 0.94f)));
+        drawList.AddRectFilled(
+            new Vector2(MathF.Max(min.X, scanX - (10 * uiScale)), min.Y),
+            new Vector2(MathF.Min(max.X, scanX + (2 * uiScale)), max.Y),
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.20f)));
+        drawList.AddLine(
+            new Vector2(scanX, min.Y),
+            new Vector2(scanX, max.Y),
+            ImGui.GetColorU32(CyberdeckTheme.Palette.Cyan),
+            MathF.Max(1.5f, 2 * uiScale));
+        drawList.PopClipRect();
+    }
+
+    private string GetAddressTelemetry()
+    {
+        var segments = config.VenueAddress
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return string.Join(' ', segments.TakeLast(Math.Min(3, segments.Length))).ToUpperInvariant();
+    }
+
+    private static string GetSettingsTelemetry(UpdateUiSnapshot status)
+    {
+        if (status.IsBusy)
+        {
+            return status.Phase switch
+            {
+                UpdateOperationPhase.Checking => "SCANNING",
+                UpdateOperationPhase.Downloading => "FETCHING",
+                UpdateOperationPhase.Importing => "INSTALLING",
+                UpdateOperationPhase.Assigning or UpdateOperationPhase.Configuring or UpdateOperationPhase.WaitingForPenumbra => "LINKING",
+                _ => "QUEUED",
+            };
+        }
+
+        if (status.Phase == UpdateOperationPhase.Error)
+            return "SYSTEM FAULT";
+        if (status.Phase == UpdateOperationPhase.NeedsAttention)
+            return "ACTION REQUIRED";
+        if (status.ReleaseAvailability == UpdateReleaseAvailability.UpdateAvailable)
+            return status.AvailableVersion is { Length: > 0 } version ? $"UPDATE v{version}" : "UPDATE READY";
+        return status.InstalledVersion is { Length: > 0 } installed ? $"SYNCED v{installed}" : "READY";
+    }
+
+    private static int GetNetworkSignalCount()
+    {
+        try
+        {
+            return PluginService.Objects
+                .OfType<IPlayerCharacter>()
+                .Count(IsNetworkPlayer);
+        }
+        catch
+        {
+            return 0;
         }
     }
 
@@ -667,26 +755,28 @@ internal sealed class CyberdeckWindow
     private void DrawDeckButtons(float width)
     {
         var uiScale = GetUiScale();
+        var updateStatus = getUpdateStatus();
+        var networkSignalCount = GetNetworkSignalCount();
         var spacing = ImGui.GetStyle().ItemSpacing.X;
         var useTwoColumns = width >= (260 * uiScale);
         var buttonWidth = useTwoColumns ? (width - spacing) / 2 : width;
         var buttonHeight = (useTwoColumns ? 132f : 108f) * uiScale;
         var buttonSize = new Vector2(buttonWidth, buttonHeight);
 
-        if (DrawImageNavButton("Menu", "menu.png", buttonSize))
-            selectedView = DeckView.Menu;
+        if (DrawImageNavButton("Menu", "menu.png", buttonSize, $"{DrinkMenu.Length:00} ITEMS"))
+            SelectDeckView(DeckView.Menu);
         if (useTwoColumns)
             ImGui.SameLine();
-        if (DrawImageNavButton("Wi-Fi", "wifi.png", buttonSize))
-            selectedView = DeckView.Wifi;
+        if (DrawImageNavButton("Wi-Fi", "wifi.png", buttonSize, "02 RELAYS"))
+            SelectDeckView(DeckView.Wifi);
 
-        if (DrawImageNavButton("Address", "address.png", buttonSize))
-            selectedView = DeckView.Map;
+        if (DrawImageNavButton("Address", "address.png", buttonSize, GetAddressTelemetry()))
+            SelectDeckView(DeckView.Map);
         if (useTwoColumns)
             ImGui.SameLine();
         var networkPos = ImGui.GetCursorScreenPos();
-        if (DrawImageNavButton("Network", "network.png", buttonSize))
-            selectedView = DeckView.Network;
+        if (DrawImageNavButton("Network", "network.png", buttonSize, $"{networkSignalCount:00} SIGNALS"))
+            SelectDeckView(DeckView.Network);
         if (badgeCounts.TryGetValue(DeckView.Network, out var networkBadge) && networkBadge > 0)
             DrawTileBadge(networkPos, buttonSize, networkBadge, badgeColors.GetValueOrDefault(DeckView.Network, CyberdeckTheme.Palette.Error));
 
@@ -699,23 +789,22 @@ internal sealed class CyberdeckWindow
         if (useTwoColumns)
             ImGui.SameLine();
         var settingsPos = ImGui.GetCursorScreenPos();
-        if (DrawImageNavButton("Settings", "settings.png", buttonSize))
-            selectedView = DeckView.Settings;
-        var updateStatus = getUpdateStatus();
+        if (DrawImageNavButton("Settings", "settings.png", buttonSize, GetSettingsTelemetry(updateStatus)))
+            SelectDeckView(DeckView.Settings);
         if (updateStatus.IsBusy)
             DrawTileActivityBadge(settingsPos, buttonSize, GetUpdateStatusColor(updateStatus));
         else if (badgeCounts.TryGetValue(DeckView.Settings, out var settingsBadge) && settingsBadge > 0)
             DrawTileBadge(settingsPos, buttonSize, settingsBadge, badgeColors.GetValueOrDefault(DeckView.Settings, CyberdeckTheme.Palette.Amber));
     }
 
-    private bool DrawImageNavButton(string label, string imageName, Vector2 size)
+    private bool DrawImageNavButton(string label, string imageName, Vector2 size, string telemetry)
     {
         ImGui.BeginGroup();
-        var clicked = false;
         var wrap = GetTextureWrap(imageName);
         var start = ImGui.GetCursorScreenPos();
-        var hovered = false;
         var uiScale = GetUiScale();
+        bool clicked;
+        bool hovered;
 
         if (wrap is not null)
         {
@@ -724,7 +813,7 @@ internal sealed class CyberdeckWindow
             hovered = ImGui.IsItemHovered();
             var glitching = IsHoverGlitchActive(label, hovered);
             DrawTileGlow(start, size, hovered, glitching, uiScale);
-            var iconSize = FitTileIcon(wrap, size, uiScale);
+            var iconSize = FitTileIcon(wrap, size, uiScale, hasTelemetry: true);
             var iconPos = new Vector2(start.X + (size.X - iconSize.X) / 2, start.Y + (12 * uiScale));
             if (glitching)
                 DrawGlitchedImage(wrap.Handle, iconPos, iconSize, ImGui.GetColorU32(Vector4.One), uiScale, reduceMotion: false);
@@ -733,12 +822,7 @@ internal sealed class CyberdeckWindow
             if (glitching)
                 DrawHoverGlitchOverlay(start, size, uiScale);
 
-            var displayLabel = glitching ? ScrambleTileLabel(label) : label;
-            var textWidth = ImGui.CalcTextSize(displayLabel).X;
-            ImGui.GetWindowDrawList().AddText(
-                new Vector2(start.X + MathF.Max(0, (size.X - textWidth) / 2), start.Y + size.Y - (25 * uiScale)),
-                ImGui.GetColorU32(ImGuiCol.Text),
-                displayLabel);
+            DrawTileLabels(start, size, glitching ? ScrambleTileLabel(label) : label, telemetry, uiScale);
         }
         else
         {
@@ -746,23 +830,34 @@ internal sealed class CyberdeckWindow
             hovered = ImGui.IsItemHovered();
             var glitching = IsHoverGlitchActive(label, hovered);
             DrawTileGlow(start, size, hovered, glitching, uiScale);
-            var displayLabel = glitching ? ScrambleTileLabel(label) : label;
-            var textWidth = ImGui.CalcTextSize(displayLabel).X;
-            ImGui.GetWindowDrawList().AddText(
-                new Vector2(start.X + MathF.Max(0, (size.X - textWidth) / 2), start.Y + size.Y - (25 * uiScale)),
-                ImGui.GetColorU32(ImGuiCol.Text),
-                displayLabel);
+            DrawTileLabels(start, size, glitching ? ScrambleTileLabel(label) : label, telemetry, uiScale);
         }
         ImGui.EndGroup();
         return clicked;
     }
 
-    private static Vector2 FitTileIcon(IDalamudTextureWrap texture, Vector2 tileSize, float uiScale)
+    private static void DrawTileLabels(Vector2 start, Vector2 size, string label, string telemetry, float uiScale)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var labelSize = ImGui.CalcTextSize(label);
+        var telemetryText = EllipsizeToWidth(telemetry, MathF.Max(1, size.X - (16 * uiScale)));
+        var telemetrySize = ImGui.CalcTextSize(telemetryText);
+        drawList.AddText(
+            new Vector2(start.X + MathF.Max(0, (size.X - labelSize.X) / 2), start.Y + size.Y - (38 * uiScale)),
+            ImGui.GetColorU32(CyberdeckTheme.Palette.Text),
+            label);
+        drawList.AddText(
+            new Vector2(start.X + MathF.Max(0, (size.X - telemetrySize.X) / 2), start.Y + size.Y - (19 * uiScale)),
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.72f)),
+            telemetryText);
+    }
+
+    private static Vector2 FitTileIcon(IDalamudTextureWrap texture, Vector2 tileSize, float uiScale, bool hasTelemetry = false)
     {
         var naturalSize = GetTextureSize(texture, uiScale);
         var available = new Vector2(
             MathF.Max(1, tileSize.X - (20 * uiScale)),
-            MathF.Max(1, tileSize.Y - (42 * uiScale)));
+            MathF.Max(1, tileSize.Y - ((hasTelemetry ? 58 : 42) * uiScale)));
         var fit = MathF.Min(1.0f, MathF.Min(available.X / naturalSize.X, available.Y / naturalSize.Y));
         return naturalSize * fit;
     }
@@ -867,14 +962,15 @@ internal sealed class CyberdeckWindow
         var offlineMin = offlineMax - offlineSize - (offlinePadding * 2);
         var offlineTextPosition = offlineMin + offlinePadding;
 
-        // Submit the small secret target before the decorative tile. A disabled full-size
-        // button here would otherwise retain ImGui's hover ID and block the overlapping glyph.
+        // Submit the small secret target before the decorative tile. Keep its horizontal
+        // bounds exact so neither neighboring glyph in OFFLINE can activate the port.
         var secondFPosition = offlineTextPosition + new Vector2(ImGui.CalcTextSize("OF").X, 0);
-        var glyphPadding = new Vector2(5, 5) * uiScale;
-        ImGui.SetCursorScreenPos(secondFPosition - glyphPadding);
+        var secondFSize = ImGui.CalcTextSize("F");
+        var verticalPadding = 4 * uiScale;
+        ImGui.SetCursorScreenPos(secondFPosition - new Vector2(0, verticalPadding));
         var secretActivated = ImGui.InvisibleButton(
             "##services_offline_second_f",
-            ImGui.CalcTextSize("F") + (glyphPadding * 2));
+            new Vector2(secondFSize.X, secondFSize.Y + (verticalPadding * 2)));
         ImGui.SetCursorScreenPos(start);
         ImGui.Dummy(size);
 
@@ -1488,42 +1584,35 @@ internal sealed class CyberdeckWindow
     private void DrawIntrusionMatrix(IntrusionGame game, long now)
     {
         var uiScale = GetUiScale();
-        var spacing = MathF.Max(2, 4 * uiScale);
+        var columnSpacing = MathF.Max(2, 4 * uiScale);
+        var rowSpacing = ImGui.GetStyle().ItemSpacing.Y;
         var available = ImGui.GetContentRegionAvail().X;
         var cellSize = Math.Clamp(
-            (available - (spacing * (game.GridSize - 1))) / game.GridSize,
+            (available - (columnSpacing * (game.GridSize - 1))) / game.GridSize,
             22 * uiScale,
             56 * uiScale);
-        var gridWidth = (cellSize * game.GridSize) + (spacing * (game.GridSize - 1));
+        var gridWidth = (cellSize * game.GridSize) + (columnSpacing * (game.GridSize - 1));
+        var gridHeight = (cellSize * game.GridSize) + (rowSpacing * (game.GridSize - 1));
         var rowStart = ImGui.GetCursorPosX() + MathF.Max(0, (available - gridWidth) / 2);
         var gridOrigin = ImGui.GetCursorScreenPos() + new Vector2(MathF.Max(0, (available - gridWidth) / 2), 0);
         var drawList = ImGui.GetWindowDrawList();
+        Vector2? axisFrameMin = null;
+        Vector2? axisFrameMax = null;
 
-        if (game.Difficulty == IntrusionDifficulty.BlackIce && !game.IsTerminal && game.Phase != IntrusionPhase.Countdown)
+        if (!game.IsTerminal && game.Phase != IntrusionPhase.Countdown)
         {
-            var framePadding = 2 * uiScale;
-            Vector2 frameMin;
-            Vector2 frameMax;
             if (game.Selections.Count == 0 || game.Selections.Count % 2 == 0)
             {
                 var row = game.Selections.Count == 0 ? 0 : game.Selections[^1].Row;
-                frameMin = gridOrigin + new Vector2(-framePadding, row * (cellSize + spacing) - framePadding);
-                frameMax = frameMin + new Vector2(gridWidth + (framePadding * 2), cellSize + (framePadding * 2));
+                axisFrameMin = gridOrigin + new Vector2(0, row * (cellSize + rowSpacing));
+                axisFrameMax = axisFrameMin + new Vector2(gridWidth, cellSize);
             }
             else
             {
                 var column = game.Selections[^1].Column;
-                frameMin = gridOrigin + new Vector2(column * (cellSize + spacing) - framePadding, -framePadding);
-                frameMax = frameMin + new Vector2(cellSize + (framePadding * 2), gridWidth + (framePadding * 2));
+                axisFrameMin = gridOrigin + new Vector2(column * (cellSize + columnSpacing), 0);
+                axisFrameMax = axisFrameMin + new Vector2(cellSize, gridHeight);
             }
-
-            drawList.AddRect(
-                frameMin,
-                frameMax,
-                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.78f)),
-                2 * uiScale,
-                ImDrawFlags.None,
-                MathF.Max(1, 1.5f * uiScale));
         }
 
         for (var row = 0; row < game.GridSize; row++)
@@ -1532,20 +1621,13 @@ internal sealed class CyberdeckWindow
             for (var column = 0; column < game.GridSize; column++)
             {
                 if (column > 0)
-                    ImGui.SameLine(0, spacing);
+                    ImGui.SameLine(0, columnSpacing);
 
                 var selected = game.IsCellSelected(row, column);
                 var legal = game.CanSelect(row, column);
-                var legalAlpha = config.ReduceMotion
-                    ? 0.25f
-                    : 0.24f + (MathF.Sin((float)ImGui.GetTime() * 3.4f + row + (column * 0.7f)) * 0.07f);
                 var buttonColor = selected
                     ? CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Magenta, 0.48f)
-                    : game.Difficulty == IntrusionDifficulty.BlackIce
-                        ? CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.PanelRaised, 0.72f)
-                    : legal
-                        ? CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, legalAlpha)
-                        : CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.PanelRaised, 0.72f);
+                    : CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.PanelRaised, 0.72f);
                 var hoverColor = legal
                     ? CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.52f)
                     : buttonColor;
@@ -1560,6 +1642,17 @@ internal sealed class CyberdeckWindow
                 if (clicked)
                     game.Select(row, column, now);
             }
+        }
+
+        if (axisFrameMin is { } frameMin && axisFrameMax is { } frameMax)
+        {
+            drawList.AddRect(
+                frameMin,
+                frameMax,
+                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.88f)),
+                2 * uiScale,
+                ImDrawFlags.None,
+                MathF.Max(1.5f, 2 * uiScale));
         }
     }
 
@@ -1718,7 +1811,7 @@ internal sealed class CyberdeckWindow
         => difficulty switch
         {
             IntrusionDifficulty.Casual => "5x5 matrix // 8-slot buffer // trace timer disabled",
-            IntrusionDifficulty.BlackIce => "7x7 matrix // 8-slot buffer // 4 overlapping daemons // 22-second trace",
+            IntrusionDifficulty.BlackIce => "8x8 matrix // 12-slot zero-error buffer // 4/4/5/5 daemons // 18-second trace",
             _ => "6x6 matrix // 8-slot buffer // 3/4/4 daemons // 45-second trace",
         };
 
@@ -1750,67 +1843,7 @@ internal sealed class CyberdeckWindow
         ImGui.Spacing();
 
         DrawSettingsGroupHeader("SYSTEM HEALTH");
-        DrawStatusCheck(penumbraAvailable, "Penumbra");
-        var modLabel = modDirectory is not null && !string.IsNullOrWhiteSpace(mapping.LastAppliedVersion)
-            ? $"Venue mod (v{mapping.LastAppliedVersion})"
-            : "Venue mod";
-        DrawStatusCheck(modDirectory is not null, modLabel);
-
-        var collectionLabel = collection is not null
-            ? $"Collection '{collection.Value.Name}'"
-            : $"Collection matching '{mapping.CollectionName}'";
-        DrawStatusCheck(collection is not null, collectionLabel);
-        if (collection is null)
-        {
-            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (22 * GetUiScale()));
-            if (ImGui.SmallButton("Open Penumbra"))
-                PluginService.Commands.ProcessCommand("/penumbra");
-            DrawHoverTooltip("Open Penumbra to create the collection");
-        }
-
-        if (penumbraAvailable && modDirectory is not null && collection is not null)
-        {
-            bool modEnabled;
-            try { modEnabled = penumbra.IsModEnabled(collection.Value.Id, modDirectory, mapping.ModName); }
-            catch { modEnabled = false; }
-
-            DrawStatusCheck(modEnabled, $"Mod enabled in '{collection.Value.Name}'");
-            if (!modEnabled)
-            {
-                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (22 * GetUiScale()));
-                if (CyberdeckWidgets.DrawActionButton("Enable", updateStatus.IsBusy))
-                    assignAll();
-                DrawHoverTooltip("Enable the mod in the collection");
-            }
-
-            var npcFound = IsVenueMannequinInRange(mapping);
-
-            if (npcFound)
-            {
-                if (config.FullAuto)
-                {
-                    var cachedNpc = InstallStatusItems.FirstOrDefault(s => s.Label.Contains(mapping.NpcName));
-                    DrawStatusCheck(cachedNpc != default ? cachedNpc.Ok : null,
-                        cachedNpc != default ? "Mannequin assigned" : "Mannequin in range");
-                }
-                else
-                {
-                    DrawStatusCheck(null, "Mannequin is in range");
-                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (22 * GetUiScale()));
-                    if (CyberdeckWidgets.DrawActionButton("Assign", updateStatus.IsBusy))
-                        assignAll();
-                    DrawHoverTooltip("Assign collection to NPC and redraw");
-                }
-            }
-            else
-            {
-                DrawStatusCheck(null, "Mannequin not in range");
-            }
-        }
-        else if (modDirectory is null || collection is null)
-        {
-            DrawStatusCheck(null, "Install not yet confirmed");
-        }
+        DrawSystemHealthTopology(mapping, penumbraAvailable, modDirectory, collection, updateStatus);
 
         ImGui.Spacing();
         DrawNeonSeparator();
@@ -1818,6 +1851,180 @@ internal sealed class CyberdeckWindow
 
         DrawSettingsGroupHeader("INTERFACE");
         DrawInterfaceSettings();
+    }
+
+    private void DrawSystemHealthTopology(
+        ModMapping mapping,
+        bool penumbraAvailable,
+        string? modDirectory,
+        (Guid Id, string Name)? collection,
+        UpdateUiSnapshot updateStatus)
+    {
+        bool? modEnabled = null;
+        if (penumbraAvailable && modDirectory is not null && collection is not null)
+        {
+            try { modEnabled = penumbra.IsModEnabled(collection.Value.Id, modDirectory, mapping.ModName); }
+            catch { modEnabled = false; }
+        }
+
+        var prerequisitesReady = penumbraAvailable && modDirectory is not null && collection is not null && modEnabled == true;
+        var targetInRange = prerequisitesReady && IsVenueMannequinInRange(mapping);
+        var cachedTarget = InstallStatusItems.FirstOrDefault(status => status.Label.Contains(mapping.NpcName));
+        var targetState = !prerequisitesReady || !targetInRange
+            ? DiagnosticNodeState.Inactive
+            : !config.FullAuto
+                ? DiagnosticNodeState.Attention
+                : cachedTarget == default || cachedTarget.Ok is null
+                    ? DiagnosticNodeState.Attention
+                    : cachedTarget.Ok == true
+                        ? DiagnosticNodeState.Healthy
+                        : DiagnosticNodeState.Fault;
+        var states = new[]
+        {
+            penumbraAvailable ? DiagnosticNodeState.Healthy : DiagnosticNodeState.Fault,
+            !penumbraAvailable
+                ? DiagnosticNodeState.Inactive
+                : modDirectory is not null ? DiagnosticNodeState.Healthy : DiagnosticNodeState.Attention,
+            !penumbraAvailable || modDirectory is null
+                ? DiagnosticNodeState.Inactive
+                : collection is null || modEnabled != true ? DiagnosticNodeState.Attention : DiagnosticNodeState.Healthy,
+            targetState,
+        };
+        string[] labels = ["PENUMBRA", "MOD", "COLLECT", "TARGET"];
+        DrawDiagnosticChain(labels, states);
+        ImGui.Spacing();
+
+        if (!penumbraAvailable)
+        {
+            ImGui.TextColored(CyberdeckTheme.Palette.Error, "LINK 01 // PENUMBRA IPC OFFLINE");
+            DrawMutedWrapped("Enable Penumbra before attempting package or collection operations.");
+            if (ImGui.SmallButton("Open Penumbra"))
+                PluginService.Commands.ProcessCommand("/penumbra");
+            return;
+        }
+
+        if (modDirectory is null)
+        {
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "LINK 02 // VENUE MOD MISSING");
+            DrawMutedWrapped("The managed venue package has not been detected.");
+            if (CyberdeckWidgets.DrawActionButton("Install Now", updateStatus.IsBusy))
+                queueReconcileForce();
+            return;
+        }
+
+        if (collection is null)
+        {
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "LINK 03 // COLLECTION NOT FOUND");
+            DrawMutedWrapped($"Create or restore the '{mapping.CollectionName}' collection in Penumbra.");
+            if (ImGui.SmallButton("Open Penumbra"))
+                PluginService.Commands.ProcessCommand("/penumbra");
+            return;
+        }
+
+        if (modEnabled != true)
+        {
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "LINK 03 // MOD NOT BOUND");
+            DrawMutedWrapped($"The venue mod is present but disabled in '{collection.Value.Name}'.");
+            if (CyberdeckWidgets.DrawActionButton("Enable + Bind", updateStatus.IsBusy))
+                assignAll();
+            return;
+        }
+
+        if (!targetInRange)
+        {
+            ImGui.TextColored(CyberdeckTheme.Palette.TextMuted, "LINK 04 // TARGET OUT OF RANGE");
+            DrawMutedWrapped("Move within range of the venue mannequin to complete the final link.");
+            return;
+        }
+
+        if (!config.FullAuto)
+        {
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "LINK 04 // TARGET READY");
+            DrawMutedWrapped("The mannequin is detected and ready for collection assignment.");
+            if (CyberdeckWidgets.DrawActionButton("Assign Target", updateStatus.IsBusy))
+                assignAll();
+            return;
+        }
+
+        if (targetState == DiagnosticNodeState.Healthy)
+        {
+            ImGui.TextColored(CyberdeckTheme.Palette.Success, "ALL LINKS // OPERATIONAL");
+            DrawMutedWrapped(!string.IsNullOrWhiteSpace(mapping.LastAppliedVersion)
+                ? $"Venue package v{mapping.LastAppliedVersion} is installed, bound and assigned."
+                : "Venue package is installed, bound and assigned.");
+        }
+        else
+        {
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "LINK 04 // AUTO-BIND PENDING");
+            DrawMutedWrapped("Target detected; waiting for automatic assignment confirmation.");
+        }
+    }
+
+    private void DrawDiagnosticChain(IReadOnlyList<string> labels, IReadOnlyList<DiagnosticNodeState> states)
+    {
+        var uiScale = GetUiScale();
+        var width = MathF.Max(1, ImGui.GetContentRegionAvail().X);
+        var segmentWidth = width / labels.Count;
+        var origin = ImGui.GetCursorScreenPos();
+        var centerY = origin.Y + (8 * uiScale);
+        var nodeHalfSize = 5 * uiScale;
+        var drawList = ImGui.GetWindowDrawList();
+
+        for (var index = 0; index < labels.Count - 1; index++)
+        {
+            var from = new Vector2(origin.X + (segmentWidth * (index + 0.5f)) + nodeHalfSize, centerY);
+            var to = new Vector2(origin.X + (segmentWidth * (index + 1.5f)) - nodeHalfSize, centerY);
+            var connected = states[index] == DiagnosticNodeState.Healthy && states[index + 1] != DiagnosticNodeState.Inactive;
+            drawList.AddLine(
+                from,
+                to,
+                ImGui.GetColorU32(connected
+                    ? CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Success, 0.68f)
+                    : CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Border, 0.48f)),
+                MathF.Max(1, uiScale));
+        }
+
+        for (var index = 0; index < labels.Count; index++)
+        {
+            var state = states[index];
+            var center = new Vector2(origin.X + (segmentWidth * (index + 0.5f)), centerY);
+            var color = state switch
+            {
+                DiagnosticNodeState.Healthy => CyberdeckTheme.Palette.Success,
+                DiagnosticNodeState.Attention => CyberdeckTheme.Palette.Amber,
+                DiagnosticNodeState.Fault => CyberdeckTheme.Palette.Error,
+                _ => CyberdeckTheme.Palette.TextMuted,
+            };
+            var alpha = state == DiagnosticNodeState.Inactive ? 0.42f : 1f;
+            drawList.AddRectFilled(
+                center - new Vector2(nodeHalfSize),
+                center + new Vector2(nodeHalfSize),
+                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(color, alpha)),
+                1.5f * uiScale);
+            drawList.AddRect(
+                center - new Vector2(nodeHalfSize + (2 * uiScale)),
+                center + new Vector2(nodeHalfSize + (2 * uiScale)),
+                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(color, state == DiagnosticNodeState.Inactive ? 0.20f : 0.56f)),
+                2 * uiScale);
+
+            if (state is DiagnosticNodeState.Attention or DiagnosticNodeState.Fault && !config.ReduceMotion)
+            {
+                var pulse = 1 + ((0.5f + (0.5f * MathF.Sin((float)ImGui.GetTime() * 4.5f))) * 3);
+                drawList.AddRect(
+                    center - new Vector2(nodeHalfSize + (pulse * uiScale)),
+                    center + new Vector2(nodeHalfSize + (pulse * uiScale)),
+                    ImGui.GetColorU32(CyberdeckTheme.WithAlpha(color, 0.24f)),
+                    2 * uiScale);
+            }
+
+            var labelSize = ImGui.CalcTextSize(labels[index]);
+            drawList.AddText(
+                new Vector2(center.X - (labelSize.X / 2), centerY + (12 * uiScale)),
+                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(color, state == DiagnosticNodeState.Inactive ? 0.50f : 0.90f)),
+                labels[index]);
+        }
+
+        ImGui.Dummy(new Vector2(width, 34 * uiScale));
     }
 
     private void DrawUpdateOperationDetails(UpdateUiSnapshot status, string fallbackDetail)
@@ -1836,6 +2043,10 @@ internal sealed class CyberdeckWindow
         {
             ImGui.TextDisabled($"INSTALLED // {installed}    LATEST // {latest}");
         }
+
+        ImGui.Spacing();
+        DrawUpdatePipeline(status);
+        ImGui.Spacing();
 
         var detail = !string.IsNullOrWhiteSpace(status.Detail) && status.Detail != "No update operation is active."
             ? status.Detail
@@ -1860,6 +2071,116 @@ internal sealed class CyberdeckWindow
             CyberdeckTheme.Palette.TextMuted,
             GetProgressValue(status),
             height: 8 * GetUiScale());
+    }
+
+    private void DrawUpdatePipeline(UpdateUiSnapshot status)
+    {
+        string[] labels = ["SCAN", "FETCH", "VERIFY", "INSTALL", "LINK"];
+        var uiScale = GetUiScale();
+        var width = MathF.Max(1, ImGui.GetContentRegionAvail().X);
+        var origin = ImGui.GetCursorScreenPos();
+        var centerY = origin.Y + (7 * uiScale);
+        var segmentWidth = width / labels.Length;
+        var radius = 4.5f * uiScale;
+        var drawList = ImGui.GetWindowDrawList();
+        var states = labels
+            .Select((_, index) => GetUpdatePipelineState(status, index))
+            .ToArray();
+
+        for (var index = 0; index < labels.Length - 1; index++)
+        {
+            var from = new Vector2(origin.X + (segmentWidth * (index + 0.5f)) + radius, centerY);
+            var to = new Vector2(origin.X + (segmentWidth * (index + 1.5f)) - radius, centerY);
+            var connected = states[index] == UpdatePipelineState.Complete;
+            drawList.AddLine(
+                from,
+                to,
+                ImGui.GetColorU32(connected
+                    ? CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Success, 0.72f)
+                    : CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Border, 0.52f)),
+                MathF.Max(1, uiScale));
+        }
+
+        for (var index = 0; index < labels.Length; index++)
+        {
+            var state = states[index];
+            var center = new Vector2(origin.X + (segmentWidth * (index + 0.5f)), centerY);
+            var color = state switch
+            {
+                UpdatePipelineState.Complete => CyberdeckTheme.Palette.Success,
+                UpdatePipelineState.Active => GetUpdateStatusColor(status),
+                UpdatePipelineState.Fault => status.Phase == UpdateOperationPhase.Error
+                    ? CyberdeckTheme.Palette.Error
+                    : CyberdeckTheme.Palette.Amber,
+                _ => CyberdeckTheme.Palette.TextMuted,
+            };
+            var alpha = state == UpdatePipelineState.Pending ? 0.48f : 1f;
+            drawList.AddCircleFilled(center, radius, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(color, alpha)));
+            drawList.AddCircle(
+                center,
+                radius + (2 * uiScale),
+                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(color, state == UpdatePipelineState.Pending ? 0.22f : 0.58f)),
+                0,
+                MathF.Max(1, uiScale));
+
+            if (state == UpdatePipelineState.Active && !config.ReduceMotion)
+            {
+                var pulse = 2 + ((0.5f + (0.5f * MathF.Sin((float)ImGui.GetTime() * 5f))) * 3);
+                drawList.AddCircle(
+                    center,
+                    radius + (pulse * uiScale),
+                    ImGui.GetColorU32(CyberdeckTheme.WithAlpha(color, 0.28f)),
+                    0,
+                    MathF.Max(1, uiScale));
+            }
+
+            var labelSize = ImGui.CalcTextSize(labels[index]);
+            drawList.AddText(
+                new Vector2(center.X - (labelSize.X / 2), centerY + (10 * uiScale)),
+                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(color, state == UpdatePipelineState.Pending ? 0.58f : 0.92f)),
+                labels[index]);
+        }
+
+        ImGui.Dummy(new Vector2(width, 30 * uiScale));
+    }
+
+    private static UpdatePipelineState GetUpdatePipelineState(UpdateUiSnapshot status, int stageIndex)
+    {
+        if (status.Phase == UpdateOperationPhase.Idle)
+            return UpdatePipelineState.Pending;
+
+        if (status.Phase == UpdateOperationPhase.Success)
+        {
+            var completedThrough = status.Operation == UpdateOperationKind.UpdateCheck ? 0 : 4;
+            return stageIndex <= completedThrough ? UpdatePipelineState.Complete : UpdatePipelineState.Pending;
+        }
+
+        if (status.Phase is UpdateOperationPhase.Error or UpdateOperationPhase.NeedsAttention)
+        {
+            var faultStage = status.Operation switch
+            {
+                UpdateOperationKind.UpdateCheck => 0,
+                UpdateOperationKind.Assignment => 4,
+                _ when status.ReleaseAvailability == UpdateReleaseAvailability.Unknown => 0,
+                _ when status.ReleaseAvailability == UpdateReleaseAvailability.UpToDate => 4,
+                _ => 3,
+            };
+            if (stageIndex < faultStage)
+                return UpdatePipelineState.Complete;
+            return stageIndex == faultStage ? UpdatePipelineState.Fault : UpdatePipelineState.Pending;
+        }
+
+        var activeStage = status.Phase switch
+        {
+            UpdateOperationPhase.Queued or UpdateOperationPhase.Checking => 0,
+            UpdateOperationPhase.Downloading => 1,
+            UpdateOperationPhase.Importing => 3,
+            UpdateOperationPhase.WaitingForPenumbra or UpdateOperationPhase.Configuring or UpdateOperationPhase.Assigning => 4,
+            _ => 0,
+        };
+        if (stageIndex < activeStage)
+            return UpdatePipelineState.Complete;
+        return stageIndex == activeStage ? UpdatePipelineState.Active : UpdatePipelineState.Pending;
     }
 
     private void DrawUpdaterActions(UpdateUiSnapshot status, string? modDirectory)
@@ -1957,31 +2278,6 @@ internal sealed class CyberdeckWindow
             ImGui.EndPopup();
         }
     }
-
-    private void DrawStatusCheck(bool? ok, string label)
-    {
-        switch (ok)
-        {
-            case true:
-                ImGui.TextColored(CyberdeckTheme.Palette.Success, "<\u2713>");
-                break;
-            case false:
-                var pulse = config.ReduceMotion
-                    ? 1.0f
-                    : 0.72f + MathF.Sin((float)ImGui.GetTime() * 6.0f) * 0.28f;
-                ImGui.TextColored(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Error, pulse), "<X>");
-                break;
-            default:
-                ImGui.TextColored(CyberdeckTheme.Palette.TextMuted, "<->");
-                break;
-        }
-
-        ImGui.SameLine();
-        ImGui.TextWrapped(label);
-    }
-
-    private void DrawStatusCheck(bool ok, string label)
-        => DrawStatusCheck((bool?)ok, label);
 
     private static void DrawSettingsGroupHeader(string label)
         => ImGui.TextColored(CyberdeckTheme.Palette.Cyan, label);
@@ -2404,6 +2700,22 @@ internal sealed class CyberdeckWindow
         Menu,
         Network,
         Settings,
+    }
+
+    private enum UpdatePipelineState
+    {
+        Pending,
+        Active,
+        Complete,
+        Fault,
+    }
+
+    private enum DiagnosticNodeState
+    {
+        Inactive,
+        Healthy,
+        Attention,
+        Fault,
     }
 
     private readonly record struct NetworkPlayerStatus(bool? WeaponDisplayed, bool WeaponOut, bool OffhandOut, string? MinionName)

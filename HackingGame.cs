@@ -85,7 +85,7 @@ internal sealed class IntrusionGame
         var (gridSize, bufferCapacity, timeLimitSeconds) = difficulty switch
         {
             IntrusionDifficulty.Casual => (5, 8, (int?)null),
-            IntrusionDifficulty.BlackIce => (7, 8, 22),
+            IntrusionDifficulty.BlackIce => (8, 12, 18),
             _ => (6, 8, 45),
         };
 
@@ -315,8 +315,8 @@ internal sealed class IntrusionGame
 
     private static IntrusionGame CreateBlackIce(int gridSize, int bufferCapacity, int timeLimitSeconds, long now)
     {
-        const int solutionLength = 7;
-        for (var attempt = 0; attempt < 256; attempt++)
+        const int solutionLength = 12;
+        for (var attempt = 0; attempt < 512; attempt++)
         {
             var targetTokens = TokenPool.ToArray();
             Shuffle(targetTokens);
@@ -325,27 +325,27 @@ internal sealed class IntrusionGame
             if (solutionPath is null)
                 continue;
 
-            var grid = CreateRandomGrid(gridSize);
+            var grid = CreateBlackIceGrid(gridSize, solutionTokens);
             for (var index = 0; index < solutionPath.Count; index++)
             {
                 var cell = solutionPath[index];
                 grid[cell.Row, cell.Column] = solutionTokens[index];
             }
 
-            var entryObjective = new IntrusionObjective("ENTRY VECTOR", solutionTokens.GetRange(0, 3));
+            var entryObjective = new IntrusionObjective("ENTRY VECTOR", solutionTokens.GetRange(0, 4));
             var shuffledObjectives = new List<IntrusionObjective>
             {
-                new(ObjectiveLabels[1], solutionTokens.GetRange(2, 3)),
-                new(ObjectiveLabels[2], solutionTokens.GetRange(1, 4)),
-                new(ObjectiveLabels[3], solutionTokens.GetRange(3, 4)),
+                new(ObjectiveLabels[1], solutionTokens.GetRange(2, 4)),
+                new(ObjectiveLabels[2], solutionTokens.GetRange(4, 5)),
+                new(ObjectiveLabels[3], solutionTokens.GetRange(7, 5)),
             };
             Shuffle(shuffledObjectives);
             var objectives = new List<IntrusionObjective> { entryObjective };
             objectives.AddRange(shuffledObjectives);
 
-            var winningRoutes = CountExactTokenRoutes(grid, solutionTokens, 4);
+            var winningRoutes = CountExactTokenRoutes(grid, solutionTokens, 3);
             var trapBranches = CountMatchingTrapBranches(grid, solutionPath, solutionTokens);
-            if (winningRoutes is < 1 or > 3 || trapBranches < 2)
+            if (winningRoutes is < 1 or > 2 || trapBranches < 4)
                 continue;
 
             if (!ValidateGeneratedPuzzle(gridSize, solutionLength, solutionPath, solutionTokens, objectives))
@@ -460,6 +460,22 @@ internal sealed class IntrusionGame
         for (var row = 0; row < size; row++)
         for (var column = 0; column < size; column++)
             grid[row, column] = TokenPool[Random.Shared.Next(TokenPool.Length)];
+        return grid;
+    }
+
+    private static string[,] CreateBlackIceGrid(int size, IReadOnlyList<string> solutionTokens)
+    {
+        var decoyTokens = TokenPool
+            .Where(token => !solutionTokens.Contains(token, StringComparer.Ordinal))
+            .ToArray();
+        Shuffle(decoyTokens);
+        var densePool = solutionTokens
+            .Concat(decoyTokens.Take(3))
+            .ToArray();
+        var grid = new string[size, size];
+        for (var row = 0; row < size; row++)
+        for (var column = 0; column < size; column++)
+            grid[row, column] = densePool[Random.Shared.Next(densePool.Length)];
         return grid;
     }
 
