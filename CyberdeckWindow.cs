@@ -19,7 +19,6 @@ internal sealed partial class CyberdeckWindow
     private static readonly float[] ManualUiScales = [1.0f, 1.25f, 1.5f, 1.75f, 2.0f];
     private const string LightlessSyncshellId = "LLS-6AAKEJBAPRB0";
     private const string PlayerSyncSyncshellId = "n_root";
-    private const int IntrusionPayloadScoreThreshold = 12_000;
     private static readonly string IntrusionEncryptedPayload = DecodeIntrusionReward(
         [0x59, 0x26, 0x56, 0x29, 0x0A, 0x2F, 0x3C, 0x07, 0x0C, 0x2E, 0x57, 0x31, 0x55, 0x3D, 0x37, 0x17, 0x5D, 0x26, 0x25, 0x59]);
     private static readonly string IntrusionPayloadHint = DecodeIntrusionReward(
@@ -1663,7 +1662,7 @@ internal sealed partial class CyberdeckWindow
         DrawSettingsGroupHeader("LOCAL RECORD");
         ImGui.TextDisabled($"BEST // {GetIntrusionBestScore(difficulty):00000}");
         ImGui.TextDisabled($"SUCCESSFUL BREACHES // {config.IntrusionSuccessfulBreaches}");
-        ImGui.TextDisabled($"PAYLOAD THRESHOLD // {IntrusionPayloadScoreThreshold:00000}");
+        ImGui.TextDisabled("PAYLOAD AUTH // ALL SEQUENCES + CLEAN ROUTE");
         ImGui.Spacing();
 
         using (CyberdeckTheme.PushAccentButton())
@@ -1924,14 +1923,14 @@ internal sealed partial class CyberdeckWindow
         }
         else
         {
-            var remaining = Math.Max(0, IntrusionPayloadScoreThreshold - game.FinalScore);
+            var payloadAuthenticated = game.AllObjectivesCompleted && game.UsedOptimalBuffer;
             ImGui.TextColored(
-                game.UsedOptimalBuffer && remaining == 0 ? CyberdeckTheme.Palette.Success : CyberdeckTheme.Palette.Amber,
-                !game.UsedOptimalBuffer
-                    ? "ROOT PAYLOAD // CLEAN ROUTE REQUIRED"
-                    : remaining == 0
-                        ? "ROOT PAYLOAD // AUTHENTICATED"
-                        : $"ROOT PAYLOAD // {remaining:00000} POINTS SHORT");
+                payloadAuthenticated ? CyberdeckTheme.Palette.Success : CyberdeckTheme.Palette.Amber,
+                !game.AllObjectivesCompleted
+                    ? "ROOT PAYLOAD // SEQUENCES INCOMPLETE"
+                    : !game.UsedOptimalBuffer
+                        ? "ROOT PAYLOAD // CLEAN ROUTE REQUIRED"
+                        : "ROOT PAYLOAD // AUTHENTICATED");
         }
 
         ImGui.Spacing();
@@ -2033,8 +2032,7 @@ internal sealed partial class CyberdeckWindow
         var qualifiesForPayload = game.Phase == IntrusionPhase.Success &&
                                   game.AllObjectivesCompleted &&
                                   game.Difficulty == IntrusionDifficulty.BlackIce &&
-                                  game.UsedOptimalBuffer &&
-                                  game.FinalScore >= IntrusionPayloadScoreThreshold;
+                                  game.UsedOptimalBuffer;
         if (qualifiesForPayload)
         {
             showIntrusionPayload = true;
@@ -2469,7 +2467,9 @@ internal sealed partial class CyberdeckWindow
             ImGui.SameLine();
         if (CyberdeckWidgets.DrawActionButton("Check Now", status.IsBusy, new Vector2(actionWidth, 0)))
             checkForUpdates();
-        DrawHoverTooltip("Check availability without installing anything");
+        DrawHoverTooltip(config.FullAuto
+            ? "Check now and automatically install or restore an available release"
+            : "Check availability without installing anything");
 
         if (status.Phase is UpdateOperationPhase.Error or UpdateOperationPhase.NeedsAttention)
         {

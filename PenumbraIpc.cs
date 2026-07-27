@@ -134,22 +134,27 @@ internal sealed class PenumbraIpc
         try
         {
             pluginInterface.GetIpcSubscriber<int, object, object>("Penumbra.RedrawObject.V5").InvokeAction(objectIndex, redrawType);
+            PluginService.Log.Debug("Requested Penumbra redraw for object index {Index} through RedrawObject.V5.", objectIndex);
             return;
         }
-        catch
+        catch (Exception exception)
         {
+            PluginService.Log.Debug(exception, "Typed Penumbra RedrawObject.V5 call failed for object index {Index}; trying integer compatibility mode.", objectIndex);
         }
 
         try
         {
             pluginInterface.GetIpcSubscriber<int, int, object>("Penumbra.RedrawObject.V5").InvokeAction(objectIndex, RedrawTypeRedraw);
+            PluginService.Log.Debug("Requested Penumbra redraw for object index {Index} through integer compatibility mode.", objectIndex);
             return;
         }
-        catch
+        catch (Exception exception)
         {
+            PluginService.Log.Debug(exception, "Integer Penumbra RedrawObject.V5 call failed for object index {Index}; trying legacy label.", objectIndex);
         }
 
         pluginInterface.GetIpcSubscriber<int, object, object>("Penumbra.RedrawObjectByIndex").InvokeAction(objectIndex, redrawType);
+        PluginService.Log.Debug("Requested Penumbra redraw for object index {Index} through the legacy label.", objectIndex);
     }
 
     private static object GetRedrawType()

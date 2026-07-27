@@ -318,6 +318,7 @@ public sealed class Plugin : IDalamudPlugin
         _ = Task.Run(async () =>
         {
             var enteredGate = false;
+            var queueAutomaticInstall = false;
             try
             {
                 await operationGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
@@ -350,6 +351,7 @@ public sealed class Plugin : IDalamudPlugin
                 }
                 else
                 {
+                    var installAutomatically = Config.FullAuto;
                     PluginService.Log.Information(
                         "Update available: v{Latest} (stored: {Stored}, managed mod: {ManagedMod}).",
                         latestAsset.Version,
@@ -360,11 +362,18 @@ public sealed class Plugin : IDalamudPlugin
                         latestAsset.Version,
                         hasManagedMod ? mapping.LastAppliedVersion : null);
                     var message = hasVersion && hasManagedMod
-                        ? $"Update available: v{latestAsset.Version} (installed v{mapping.LastAppliedVersion}). Press Update to install."
+                        ? installAutomatically
+                            ? $"Update available: v{latestAsset.Version} (installed v{mapping.LastAppliedVersion}). Automatic update queued."
+                            : $"Update available: v{latestAsset.Version} (installed v{mapping.LastAppliedVersion}). Press Update to install."
                         : hasVersion
-                            ? $"The Grid mod v{latestAsset.Version} is available; the managed Penumbra mod is missing. Press Update to restore it."
-                            : $"The Grid mod v{latestAsset.Version} is available (not installed). Press Update to install.";
+                            ? installAutomatically
+                                ? $"The Grid mod v{latestAsset.Version} is available; the managed Penumbra mod is missing. Automatic restore queued."
+                                : $"The Grid mod v{latestAsset.Version} is available; the managed Penumbra mod is missing. Press Update to restore it."
+                            : installAutomatically
+                                ? $"The Grid mod v{latestAsset.Version} is available (not installed). Automatic installation queued."
+                                : $"The Grid mod v{latestAsset.Version} is available (not installed). Press Update to install.";
                     updateUiState.Complete("UPDATE AVAILABLE", message);
+                    queueAutomaticInstall = installAutomatically;
                     PluginService.Chat.Print(message, "TheGrid");
                 }
             }
@@ -393,6 +402,8 @@ public sealed class Plugin : IDalamudPlugin
                 if (enteredGate)
                     operationGate.Release();
                 Volatile.Write(ref updateCheckPending, 0);
+                if (queueAutomaticInstall && !disposed && !lifetime.IsCancellationRequested)
+                    QueueReconcile();
             }
         });
     }
@@ -1202,7 +1213,7 @@ public sealed class Plugin : IDalamudPlugin
         var assigned = 0;
         var alreadyAssigned = 0;
         var failedAssignments = 0;
-        var assignedObjectIndices = new List<int>();
+        var redrawObjectIndices = new HashSet<int>();
         var targetObjects = FindTargetNpcObjects(mapping.NpcName, out var mannequinFallbackCandidates);
         if (targetObjects.Count > 0 && IsKnownWrongVenueAddress(out var mismatchReason))
             PluginService.Log.Debug("Venue address check reported a mismatch while assigning mannequin '{Npc}'; continuing with mannequin assignment: {Reason}", mapping.NpcName, mismatchReason);
@@ -1215,6 +1226,7 @@ public sealed class Plugin : IDalamudPlugin
             if (currentCollection.HasValue && currentCollection.Value.Individual && currentCollection.Value.Id == collection.Value.Id)
             {
                 alreadyAssigned++;
+                redrawObjectIndices.Add(objectIndex);
                 continue;
             }
 
@@ -1222,11 +1234,12 @@ public sealed class Plugin : IDalamudPlugin
             if (errorCode == PenumbraApiSuccess)
             {
                 assigned++;
-                assignedObjectIndices.Add(objectIndex);
+                redrawObjectIndices.Add(objectIndex);
             }
             else if (errorCode == PenumbraApiNothingChanged)
             {
                 alreadyAssigned++;
+                redrawObjectIndices.Add(objectIndex);
             }
             else
             {
@@ -1236,25 +1249,28 @@ public sealed class Plugin : IDalamudPlugin
         }
 
 
-        if (assigned > 0)
+        var redrawFailures = 0;
+        foreach (var objectIndex in redrawObjectIndices)
         {
-            foreach (var objectIndex in assignedObjectIndices)
+            try
             {
-                try
-                {
-                    penumbra.RedrawObject(objectIndex);
-                }
-                catch (Exception ex)
-                {
-                    PluginService.Log.Warning(ex, "Could not redraw assigned NPC {Npc} at object index {Index}.", mapping.NpcName, objectIndex);
-                }
+                penumbra.RedrawObject(objectIndex);
             }
-
-            statusItems.Add((true, $"Assigned to {assigned} '{mapping.NpcName}' object(s)"));
+            catch (Exception ex)
+            {
+                redrawFailures++;
+                PluginService.Log.Warning(ex, "Could not redraw assigned NPC {Npc} at object index {Index}.", mapping.NpcName, objectIndex);
+            }
         }
 
+        if (assigned > 0)
+            statusItems.Add((true, $"Assigned to {assigned} '{mapping.NpcName}' object(s)"));
+
         if (alreadyAssigned > 0)
-            statusItems.Add((true, $"Already individually assigned to {alreadyAssigned} '{mapping.NpcName}' object(s); no redraw needed"));
+            statusItems.Add((true, $"Already individually assigned to {alreadyAssigned} '{mapping.NpcName}' object(s)"));
+
+        if (redrawObjectIndices.Count > 0)
+            statusItems.Add((redrawFailures == 0, $"Redraw requested for {redrawObjectIndices.Count - redrawFailures} of {redrawObjectIndices.Count} '{mapping.NpcName}' object(s)"));
 
         if (failedAssignments > 0)
             statusItems.Add((false, $"Could not assign {failedAssignments} '{mapping.NpcName}' object(s)"));
