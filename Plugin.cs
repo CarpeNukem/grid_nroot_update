@@ -723,10 +723,10 @@ public sealed class Plugin : IDalamudPlugin
             latestAsset.Version,
             installedModDirectory is not null ? mapping.LastAppliedVersion : null);
 
+        var missingVersionRecord = string.IsNullOrWhiteSpace(mapping.LastAppliedVersion);
         if (!forceDownload)
         {
             var alreadyKnownLatest = VersionsEqual(latestAsset.Version, mapping.LastAppliedVersion);
-            var missingVersionRecord = string.IsNullOrWhiteSpace(mapping.LastAppliedVersion);
             PluginService.Log.Information(
                 "Update decision: latest v{Latest}, stored v{Installed}, installed mod {InstalledModDirectory}, force download {ForceDownload}.",
                 NormalizeVersionForComparison(latestAsset.Version),
@@ -748,9 +748,14 @@ public sealed class Plugin : IDalamudPlugin
                 PluginService.Log.Information("Stored version is missing; installed Penumbra mod {ModDirectory} exists but its release version is unknown, refreshing from GitHub.", installedModDirectory);
         }
 
+        var installReason = forceDownload
+            ? "Forced reinstall requested"
+            : missingVersionRecord && installedModDirectory is not null
+                ? "Installed mod version is unknown; refreshing"
+                : "New update found";
         PluginService.Log.Information(
             "{Reason}: v{Version} (stored v{Installed}); {Mode} - downloading '{Asset}'.",
-            forceDownload ? "Forced reinstall requested" : "New update found",
+            installReason,
             NormalizeVersionForComparison(latestAsset.Version),
             string.IsNullOrWhiteSpace(mapping.LastAppliedVersion) ? "none" : NormalizeVersionForComparison(mapping.LastAppliedVersion),
             Config.FullAuto ? "automatic mode" : "manual mode",
@@ -1013,7 +1018,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        PluginService.Log.Warning("Could not delete old managed Penumbra mod {ModDirectory} before update. Penumbra code {Code}.", modDirectory, deleteCode);
+        throw new InvalidOperationException($"Could not delete old managed Penumbra mod '{modDirectory}' before update. Penumbra returned code {deleteCode}.");
     }
 
     private void CorrectReleaseHealthAfterInstallFailure(ModMapping mapping, string latestVersion)
