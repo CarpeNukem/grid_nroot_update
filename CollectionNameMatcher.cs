@@ -32,11 +32,13 @@ internal static class CollectionNameMatcher
         Add(unquoted);
         Add(compact);
 
-        if (string.Equals(compact, "thegrid", StringComparison.OrdinalIgnoreCase))
+        if (IsGridAlias(compact))
         {
             Add("TheGrid");
             Add("The Grid");
             Add("the grid");
+            Add("Grid");
+            Add("grid");
         }
 
         foreach (var candidate in variants.ToArray())
@@ -52,8 +54,14 @@ internal static class CollectionNameMatcher
     {
         var normalizedLeft = Normalize(left);
         var normalizedRight = Normalize(right);
-        return normalizedLeft.Length > 0 && normalizedLeft == normalizedRight;
+        return normalizedLeft.Length > 0 &&
+               (normalizedLeft == normalizedRight ||
+                (IsGridAlias(normalizedLeft) && IsGridAlias(normalizedRight)));
     }
+
+    private static bool IsGridAlias(string normalized)
+        => string.Equals(normalized, "grid", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(normalized, "thegrid", StringComparison.OrdinalIgnoreCase);
 
     public static string Normalize(string? value)
     {

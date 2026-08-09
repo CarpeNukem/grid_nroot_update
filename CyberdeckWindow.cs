@@ -97,12 +97,17 @@ internal sealed partial class CyberdeckWindow
     private long hoverGlitchLastSeenAt;
     private long hoverGlitchUntil;
     private long nextHoverGlitchAt;
+    private long servicesBlinkUntil;
+    private long nextServicesBlinkAt;
+    private long servicesHintStartedAt;
+    private long nextServicesHintAt;
     private long moduleTransitionStartedAt;
     private IntrusionGame? intrusionGame;
     private bool intrusionResultRecorded;
     private bool showIntrusionPayload;
     private bool intrusionWindowOpen;
     private bool focusIntrusionWindow;
+    private bool showInstallationDetails;
 
     public bool IsOpen;
     public long InstallStatusTimestamp;
@@ -169,7 +174,7 @@ internal sealed partial class CyberdeckWindow
         ImGui.SetWindowFontScale(uiScale);
         UpdateBadges();
         var updateStatus = getUpdateStatus();
-        if (config.FirstRunCompleted && selectedView != DeckView.Home && ShouldShowUpdateStatusRail(updateStatus))
+        if (config.FirstRunCompleted && ShouldShowUpdateStatusRail(updateStatus))
         {
             DrawUpdateStatusRail(updateStatus);
             ImGui.Spacing();
@@ -249,40 +254,70 @@ internal sealed partial class CyberdeckWindow
     private void DrawFirstRunPrompt()
     {
         ImGui.Spacing();
-        ImGui.TextColored(CyberdeckTheme.Palette.Cyan, "Welcome to The Grid");
+        ImGui.TextColored(CyberdeckTheme.Palette.Cyan, "Set up The Grid venue mod");
         DrawNeonSeparator();
         ImGui.Spacing();
-        ImGui.TextWrapped("How should the plugin manage venue mod updates?");
-        ImGui.Spacing();
 
-        ImGui.TextColored(CyberdeckTheme.Palette.Amber, "RECOMMENDED");
-        if (ImGui.Button("Automatic", new Vector2(ImGui.GetContentRegionAvail().X, 0)))
+        if (!isPenumbraAvailable())
         {
-            config.FullAuto = true;
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "Penumbra is required");
+            ImGui.TextWrapped("Install and enable Penumbra before installing the venue mod.");
+            ImGui.Spacing();
+            if (ImGui.Button("Open Plugin Installer", new Vector2(ImGui.GetContentRegionAvail().X, 0)))
+                PluginService.Commands.ProcessCommand("/xlplugins");
+            ImGui.Spacing();
+            if (ImGui.Button("Set Up Later", new Vector2(ImGui.GetContentRegionAvail().X, 0)))
+            {
+                config.FirstRunCompleted = true;
+                config.Save();
+            }
+            return;
+        }
+
+        ImGui.TextWrapped("This downloads the venue mod, installs it in Penumbra, and completes the required setup automatically.");
+        ImGui.Spacing();
+        var automaticUpdates = config.FullAuto;
+        if (ImGui.Checkbox("Install future updates automatically", ref automaticUpdates))
+        {
+            config.FullAuto = automaticUpdates;
+            config.Save();
+        }
+        DrawMutedWrapped("When disabled, you will be notified and can choose when to install each update.");
+
+        ImGui.Spacing();
+        using (CyberdeckTheme.PushAccentButton())
+        {
+            if (ImGui.Button("Install", new Vector2(ImGui.GetContentRegionAvail().X, 36 * GetUiScale())))
+            {
+                config.FirstRunCompleted = true;
+                config.Save();
+                queueReconcile();
+            }
+        }
+
+        ImGui.Spacing();
+        if (ImGui.Button("Not Now", new Vector2(ImGui.GetContentRegionAvail().X, 0)))
+        {
             config.FirstRunCompleted = true;
             config.Save();
-            queueReconcile();
         }
-        DrawMutedWrapped("Checks and installs venue updates automatically, then assigns the collection when you enter the venue.");
-
-        ImGui.Spacing();
-        if (ImGui.Button("Manual", new Vector2(ImGui.GetContentRegionAvail().X, 0)))
-        {
-            config.FullAuto = false;
-            config.FirstRunCompleted = true;
-            config.Save();
-        }
-        DrawMutedWrapped("Only checks for availability. You decide when to download, install, and assign updates.");
-
-        ImGui.Spacing();
-        ImGui.TextDisabled("You can change this later in Settings.");
     }
 
     private void DrawUpdateStatusRail(UpdateUiSnapshot status)
     {
         var uiScale = GetUiScale();
         var statusColor = GetUpdateStatusColor(status);
-        var height = (status.IsBusy ? 82f : 42f) * uiScale;
+        var isFailure = status.Phase is UpdateOperationPhase.Error or UpdateOperationPhase.NeedsAttention;
+        var detail = isFailure ? GetVisibleStatusDetail(status) : null;
+        var technicalError = isFailure ? GetDistinctTechnicalError(status, detail) : null;
+        var wrapWidth = MathF.Max(1, ImGui.GetContentRegionAvail().X - (20 * uiScale));
+        var height = status.IsBusy
+            ? 82f * uiScale
+            : isFailure
+                ? (58f * uiScale) +
+                  GetWrappedTextHeight(detail, wrapWidth) +
+                  GetWrappedTextHeight(technicalError is null ? null : $"Reason: {technicalError}", wrapWidth)
+                : 42f * uiScale;
 
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(10, 7) * uiScale);
         if (ImGui.BeginChild("update_status_rail", new Vector2(0, height), true, ImGuiWindowFlags.NoScrollbar))
@@ -317,12 +352,54 @@ internal sealed partial class CyberdeckWindow
                     statusColor,
                     CyberdeckTheme.Palette.Text,
                     uiScale);
+
+                if (isFailure)
+                {
+                    if (status.FailureStage is { } failureStage)
+                        ImGui.TextDisabled($"Step: {GetUpdateStageLabel(failureStage)}");
+
+                    if (detail is not null)
+                        ImGui.TextWrapped(detail);
+
+                    if (technicalError is not null)
+                    {
+                        ImGui.PushStyleColor(ImGuiCol.Text, CyberdeckTheme.Palette.TextMuted);
+                        ImGui.TextWrapped($"Reason: {technicalError}");
+                        ImGui.PopStyleColor();
+                    }
+                }
             }
         }
 
         ImGui.EndChild();
         ImGui.PopStyleVar();
     }
+
+    private static string? GetVisibleStatusDetail(UpdateUiSnapshot status)
+        => string.IsNullOrWhiteSpace(status.Detail) || status.Detail == "No update operation is active."
+            ? status.ErrorMessage
+            : status.Detail;
+
+    private static string? GetDistinctTechnicalError(UpdateUiSnapshot status, string? visibleDetail)
+        => string.IsNullOrWhiteSpace(status.ErrorMessage) ||
+           string.Equals(status.ErrorMessage.Trim(), visibleDetail?.Trim(), StringComparison.Ordinal)
+            ? null
+            : status.ErrorMessage.Trim();
+
+    private static float GetWrappedTextHeight(string? text, float wrapWidth)
+        => string.IsNullOrWhiteSpace(text)
+            ? 0
+            : ImGui.CalcTextSize(text, false, wrapWidth).Y + ImGui.GetStyle().ItemSpacing.Y;
+
+    private static string GetUpdateStageLabel(UpdateOperationPhase phase)
+        => phase switch
+        {
+            UpdateOperationPhase.Queued or UpdateOperationPhase.Checking => "Check for updates",
+            UpdateOperationPhase.Downloading => "Download",
+            UpdateOperationPhase.Importing or UpdateOperationPhase.WaitingForPenumbra => "Install in Penumbra",
+            UpdateOperationPhase.Configuring or UpdateOperationPhase.Assigning => "Finish setup",
+            _ => "Venue mod setup",
+        };
 
     private static Vector4 GetUpdateStatusColor(UpdateUiSnapshot status)
     {
@@ -340,12 +417,11 @@ internal sealed partial class CyberdeckWindow
     private static string GetOperationLabel(UpdateUiSnapshot status)
         => status.Phase switch
         {
-            UpdateOperationPhase.Downloading => "PACKAGE TRANSFER",
-            UpdateOperationPhase.Importing => "PENUMBRA IMPORT",
-            UpdateOperationPhase.WaitingForPenumbra => "IPC HANDSHAKE",
-            UpdateOperationPhase.Configuring => "COLLECTION CONFIG",
-            UpdateOperationPhase.Assigning => "OBJECT ASSIGNMENT",
-            _ => "RELEASE CHANNEL",
+            UpdateOperationPhase.Checking => "CHECKING",
+            UpdateOperationPhase.Downloading => "DOWNLOADING",
+            UpdateOperationPhase.Importing or UpdateOperationPhase.WaitingForPenumbra => "INSTALLING",
+            UpdateOperationPhase.Configuring or UpdateOperationPhase.Assigning => "FINISHING SETUP",
+            _ => "VENUE MOD",
         };
 
     private static string GetProgressValue(UpdateUiSnapshot status)
@@ -475,10 +551,10 @@ internal sealed partial class CyberdeckWindow
         {
             return status.Phase switch
             {
-                UpdateOperationPhase.Checking => "SCANNING",
-                UpdateOperationPhase.Downloading => "FETCHING",
+                UpdateOperationPhase.Checking => "CHECKING",
+                UpdateOperationPhase.Downloading => "DOWNLOADING",
                 UpdateOperationPhase.Importing => "INSTALLING",
-                UpdateOperationPhase.Assigning or UpdateOperationPhase.Configuring or UpdateOperationPhase.WaitingForPenumbra => "LINKING",
+                UpdateOperationPhase.Assigning or UpdateOperationPhase.Configuring or UpdateOperationPhase.WaitingForPenumbra => "FINISHING SETUP",
                 _ => "QUEUED",
             };
         }
@@ -489,7 +565,7 @@ internal sealed partial class CyberdeckWindow
             return "ACTION REQUIRED";
         if (status.ReleaseAvailability == UpdateReleaseAvailability.UpdateAvailable)
             return status.AvailableVersion is { Length: > 0 } version ? $"UPDATE v{version}" : "UPDATE READY";
-        return status.InstalledVersion is { Length: > 0 } installed ? $"SYNCED v{installed}" : "READY";
+        return status.InstalledVersion is { Length: > 0 } installed ? $"INSTALLED v{installed}" : "READY";
     }
 
     private static int GetNetworkSignalCount()
@@ -1223,6 +1299,7 @@ internal sealed partial class CyberdeckWindow
         var secretActivated = ImGui.InvisibleButton(
             "##services_offline_second_f",
             new Vector2(secondFSize.X, secondFSize.Y + (verticalPadding * 2)));
+        var secondFHovered = ImGui.IsItemHovered();
         ImGui.SetCursorScreenPos(start);
         ImGui.Dummy(size);
 
@@ -1249,10 +1326,153 @@ internal sealed partial class CyberdeckWindow
 
         drawList.AddRectFilled(offlineMin, offlineMax, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Error, 0.14f)), 3 * uiScale);
         drawList.AddRect(offlineMin, offlineMax, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Error, 0.66f)), 3 * uiScale);
-        drawList.AddText(offlineTextPosition, ImGui.GetColorU32(CyberdeckTheme.Palette.Error), offlineLabel);
+        var now = Environment.TickCount64;
+        var hintProgress = GetServicesHintProgress(now);
+        var hintBlinking = IsServicesSecondFBlinking(now, hintProgress);
+        var errorColor = ImGui.GetColorU32(CyberdeckTheme.Palette.Error);
+        var secondFColor = secondFHovered
+            ? ImGui.GetColorU32(CyberdeckTheme.Palette.Magenta)
+            : hintBlinking
+                ? ImGui.GetColorU32(CyberdeckTheme.Palette.Cyan)
+                : errorColor;
+        drawList.AddText(offlineTextPosition, errorColor, "OF");
+        drawList.AddText(secondFPosition, secondFColor, "F");
+        drawList.AddText(secondFPosition + new Vector2(secondFSize.X, 0), errorColor, "LINE");
+
+        if (secondFHovered)
+        {
+            drawList.AddLine(
+                secondFPosition + new Vector2(0, secondFSize.Y + uiScale),
+                secondFPosition + new Vector2(secondFSize.X, secondFSize.Y + uiScale),
+                ImGui.GetColorU32(CyberdeckTheme.Palette.Magenta),
+                MathF.Max(1, uiScale));
+        }
+
+        if (hintProgress >= 0)
+            DrawServicesDiscoveryHint(drawList, secondFPosition, secondFSize, uiScale, hintProgress);
         ImGui.EndGroup();
         return secretActivated;
     }
+
+    private bool IsServicesSecondFBlinking(long now, float cursorHintProgress)
+    {
+        if (config.ReduceMotion)
+        {
+            servicesBlinkUntil = 0;
+            nextServicesBlinkAt = 0;
+            return false;
+        }
+
+        if (cursorHintProgress is >= 0.24f and <= 0.84f &&
+            ((int)(cursorHintProgress * 22) & 1) == 0)
+            return true;
+
+        if (nextServicesBlinkAt == 0)
+            nextServicesBlinkAt = now + Random.Shared.Next(1400, 3501);
+
+        if (now >= nextServicesBlinkAt)
+        {
+            servicesBlinkUntil = now + Random.Shared.Next(360, 721);
+            nextServicesBlinkAt = servicesBlinkUntil + Random.Shared.Next(2500, 6501);
+        }
+
+        return now < servicesBlinkUntil && ((now / 95) & 1) == 0;
+    }
+
+    private float GetServicesHintProgress(long now)
+    {
+        const long durationMs = 2200;
+        if (config.ReduceMotion)
+        {
+            servicesHintStartedAt = 0;
+            nextServicesHintAt = 0;
+            return -1;
+        }
+
+        if (servicesHintStartedAt == 0)
+        {
+            if (nextServicesHintAt == 0)
+                nextServicesHintAt = now + Random.Shared.Next(3500, 7501);
+
+            if (now < nextServicesHintAt)
+                return -1;
+
+            servicesHintStartedAt = now;
+        }
+
+        var elapsed = now - servicesHintStartedAt;
+        if (elapsed < durationMs)
+            return Math.Clamp(elapsed / (float)durationMs, 0, 1);
+
+        servicesHintStartedAt = 0;
+        nextServicesHintAt = now + Random.Shared.Next(14000, 30001);
+        return -1;
+    }
+
+    private static void DrawServicesDiscoveryHint(
+        ImDrawListPtr drawList,
+        Vector2 secondFPosition,
+        Vector2 secondFSize,
+        float uiScale,
+        float progress)
+    {
+        var movement = SmoothStep(Math.Clamp((progress - 0.05f) / 0.48f, 0, 1));
+        var fadeIn = Math.Clamp(progress / 0.12f, 0, 1);
+        var fadeOut = Math.Clamp((1 - progress) / 0.16f, 0, 1);
+        var alpha = MathF.Min(fadeIn, fadeOut);
+        var clickPoint = secondFPosition + new Vector2(secondFSize.X * 0.62f, secondFSize.Y * 0.62f);
+        var cursorStart = clickPoint + new Vector2(38, 27) * uiScale;
+        var cursorPosition = Vector2.Lerp(cursorStart, clickPoint, movement);
+
+        DrawCyberCursorShape(
+            drawList,
+            cursorPosition + new Vector2(1.5f, 1.5f) * uiScale,
+            uiScale,
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Magenta, 0.42f * alpha)));
+        DrawCyberCursorShape(
+            drawList,
+            cursorPosition,
+            uiScale,
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.95f * alpha)));
+
+        var clickProgress = (progress - 0.53f) / 0.18f;
+        if (clickProgress is >= 0 and <= 1)
+        {
+            var ringAlpha = 1 - clickProgress;
+            var radius = (3 + (13 * clickProgress)) * uiScale;
+            drawList.AddCircle(
+                clickPoint,
+                radius,
+                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.88f * ringAlpha)),
+                18,
+                MathF.Max(1, 1.5f * uiScale));
+            drawList.AddCircle(
+                clickPoint,
+                radius + (2 * uiScale),
+                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Magenta, 0.52f * ringAlpha)),
+                18,
+                MathF.Max(1, uiScale));
+        }
+    }
+
+    private static void DrawCyberCursorShape(
+        ImDrawListPtr drawList,
+        Vector2 point,
+        float uiScale,
+        uint color)
+    {
+        var lower = point + new Vector2(1.5f, 17) * uiScale;
+        var notch = point + new Vector2(6, 12) * uiScale;
+        drawList.AddTriangleFilled(point, lower, notch, color);
+        drawList.AddLine(
+            notch,
+            point + new Vector2(11, 20) * uiScale,
+            color,
+            MathF.Max(2, 3.5f * uiScale));
+    }
+
+    private static float SmoothStep(float value)
+        => value * value * (3 - (2 * value));
 
     private static void DrawGlitchedImage(ImTextureID textureHandle, Vector2 iconPos, Vector2 iconSize, uint baseColor, float uiScale, bool reduceMotion)
     {
@@ -2085,16 +2305,32 @@ internal sealed partial class CyberdeckWindow
         var modDirectory = GetImportedModDirectory(mapping, penumbraAvailable);
         var updateStatus = getUpdateStatus();
 
-        DrawSettingsGroupHeader("UPDATE CHANNEL");
+        DrawSettingsGroupHeader("VENUE MOD");
         DrawUpdateOperationDetails(updateStatus, mapping.LastStatus);
         ImGui.Spacing();
-        DrawUpdaterActions(updateStatus, modDirectory);
-        ImGui.Spacing();
-        DrawNeonSeparator();
+        DrawUpdaterActions(updateStatus, modDirectory, penumbraAvailable);
         ImGui.Spacing();
 
-        DrawSettingsGroupHeader("SYSTEM HEALTH");
-        DrawSystemHealthTopology(mapping, penumbraAvailable, modDirectory, collection, updateStatus);
+        var automaticUpdates = config.FullAuto;
+        ImGui.BeginDisabled(updateStatus.IsBusy);
+        if (ImGui.Checkbox("Install updates automatically", ref automaticUpdates))
+        {
+            config.FullAuto = automaticUpdates;
+            config.Save();
+            if (automaticUpdates)
+                queueReconcile();
+        }
+        ImGui.EndDisabled();
+        DrawMutedWrapped("When disabled, updates are only installed after you press Update.");
+
+        ImGui.Spacing();
+        if (ImGui.SmallButton(showInstallationDetails ? "Hide Details" : "Show Details"))
+            showInstallationDetails = !showInstallationDetails;
+        if (showInstallationDetails)
+        {
+            ImGui.Spacing();
+            DrawInstallationDetails(mapping, penumbraAvailable, modDirectory, collection);
+        }
 
         ImGui.Spacing();
         DrawNeonSeparator();
@@ -2102,6 +2338,32 @@ internal sealed partial class CyberdeckWindow
 
         DrawSettingsGroupHeader("INTERFACE");
         DrawInterfaceSettings();
+    }
+
+    private void DrawInstallationDetails(
+        ModMapping mapping,
+        bool penumbraAvailable,
+        string? modDirectory,
+        (Guid Id, string Name)? collection)
+    {
+        ImGui.TextDisabled($"Penumbra: {(penumbraAvailable ? "Available" : "Unavailable")}");
+        ImGui.TextDisabled($"Venue mod: {(modDirectory is null ? "Not installed" : "Installed")}");
+        ImGui.TextDisabled(collection is not null
+            ? $"Collection: {collection.Value.Name}"
+            : "Collection: Managed automatically");
+
+        if (!penumbraAvailable)
+        {
+            ImGui.Spacing();
+            if (ImGui.SmallButton("Open Plugin Installer"))
+                PluginService.Commands.ProcessCommand("/xlplugins");
+            return;
+        }
+
+        if (modDirectory is not null)
+            ImGui.TextDisabled(IsVenueMannequinInRange(mapping)
+                ? "Venue mannequin: Detected"
+                : "Venue mannequin: Activates automatically at The Grid");
     }
 
     private void DrawSystemHealthTopology(
@@ -2299,11 +2561,26 @@ internal sealed partial class CyberdeckWindow
         DrawUpdatePipeline(status);
         ImGui.Spacing();
 
+        if (status.Phase is UpdateOperationPhase.Error or UpdateOperationPhase.NeedsAttention &&
+            status.FailureStage is { } failureStage)
+        {
+            ImGui.TextDisabled($"Affected step: {GetUpdateStageLabel(failureStage)}");
+            ImGui.Spacing();
+        }
+
         var detail = !string.IsNullOrWhiteSpace(status.Detail) && status.Detail != "No update operation is active."
             ? status.Detail
             : fallbackDetail;
         if (!string.IsNullOrWhiteSpace(detail))
             ImGui.TextWrapped(detail);
+
+        var technicalError = GetDistinctTechnicalError(status, detail);
+        if (technicalError is not null)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(CyberdeckTheme.Palette.Error, "Technical details");
+            ImGui.TextWrapped(technicalError);
+        }
 
         if (status.CompletedAt is { } completedAt)
             ImGui.TextDisabled($"Last result: {completedAt.ToLocalTime():HH:mm:ss}");
@@ -2326,7 +2603,7 @@ internal sealed partial class CyberdeckWindow
 
     private void DrawUpdatePipeline(UpdateUiSnapshot status)
     {
-        string[] labels = ["SCAN", "FETCH", "VERIFY", "INSTALL", "LINK"];
+        string[] labels = ["CHECK", "DOWNLOAD", "INSTALL", "FINISH"];
         var uiScale = GetUiScale();
         var width = MathF.Max(1, ImGui.GetContentRegionAvail().X);
         var origin = ImGui.GetCursorScreenPos();
@@ -2402,20 +2679,21 @@ internal sealed partial class CyberdeckWindow
 
         if (status.Phase == UpdateOperationPhase.Success)
         {
-            var completedThrough = status.Operation == UpdateOperationKind.UpdateCheck ? 0 : 4;
+            var completedThrough = status.Operation == UpdateOperationKind.UpdateCheck ? 0 : 3;
             return stageIndex <= completedThrough ? UpdatePipelineState.Complete : UpdatePipelineState.Pending;
         }
 
         if (status.Phase is UpdateOperationPhase.Error or UpdateOperationPhase.NeedsAttention)
         {
-            var faultStage = status.Operation switch
-            {
-                UpdateOperationKind.UpdateCheck => 0,
-                UpdateOperationKind.Assignment => 4,
-                _ when status.ReleaseAvailability == UpdateReleaseAvailability.Unknown => 0,
-                _ when status.ReleaseAvailability == UpdateReleaseAvailability.UpToDate => 4,
-                _ => 3,
-            };
+            var faultStage = GetUpdatePipelineStage(status.FailureStage) ??
+                             (status.Operation switch
+                             {
+                                 UpdateOperationKind.UpdateCheck => 0,
+                                 UpdateOperationKind.Assignment => 3,
+                                 _ when status.ReleaseAvailability == UpdateReleaseAvailability.Unknown => 0,
+                                 _ when status.ReleaseAvailability == UpdateReleaseAvailability.UpToDate => 3,
+                                 _ => 2,
+                             });
             if (stageIndex < faultStage)
                 return UpdatePipelineState.Complete;
             return stageIndex == faultStage ? UpdatePipelineState.Fault : UpdatePipelineState.Pending;
@@ -2425,8 +2703,8 @@ internal sealed partial class CyberdeckWindow
         {
             UpdateOperationPhase.Queued or UpdateOperationPhase.Checking => 0,
             UpdateOperationPhase.Downloading => 1,
-            UpdateOperationPhase.Importing => 3,
-            UpdateOperationPhase.WaitingForPenumbra or UpdateOperationPhase.Configuring or UpdateOperationPhase.Assigning => 4,
+            UpdateOperationPhase.Importing or UpdateOperationPhase.WaitingForPenumbra => 2,
+            UpdateOperationPhase.Configuring or UpdateOperationPhase.Assigning => 3,
             _ => 0,
         };
         if (stageIndex < activeStage)
@@ -2434,15 +2712,31 @@ internal sealed partial class CyberdeckWindow
         return stageIndex == activeStage ? UpdatePipelineState.Active : UpdatePipelineState.Pending;
     }
 
-    private void DrawUpdaterActions(UpdateUiSnapshot status, string? modDirectory)
+    private static int? GetUpdatePipelineStage(UpdateOperationPhase? phase)
+        => phase switch
+        {
+            UpdateOperationPhase.Queued or UpdateOperationPhase.Checking => 0,
+            UpdateOperationPhase.Downloading => 1,
+            UpdateOperationPhase.Importing or UpdateOperationPhase.WaitingForPenumbra => 2,
+            UpdateOperationPhase.Configuring or UpdateOperationPhase.Assigning => 3,
+            _ => null,
+        };
+
+    private void DrawUpdaterActions(UpdateUiSnapshot status, string? modDirectory, bool penumbraAvailable)
     {
         var availableVersion = status.AvailableVersion;
         var needsInstall = modDirectory is null;
         var primaryLabel = needsInstall
-            ? "Install Venue Mod"
-            : availableVersion is not null
-                ? $"Install v{availableVersion}"
-                : "Sync / Update Now";
+            ? "Install"
+            : status.Operation == UpdateOperationKind.Assignment &&
+              status.Phase is UpdateOperationPhase.Error or UpdateOperationPhase.NeedsAttention
+                ? "Finish Setup"
+                : availableVersion is not null
+                    ? $"Update to v{availableVersion}"
+                    : status.Phase == UpdateOperationPhase.Error
+                        ? "Try Again"
+                        : "Check and Update";
+        var actionsDisabled = status.IsBusy || !penumbraAvailable;
         var spacing = ImGui.GetStyle().ItemSpacing.X;
         var availableWidth = ImGui.GetContentRegionAvail().X;
         var stackActions = availableWidth < (320 * GetUiScale());
@@ -2452,9 +2746,12 @@ internal sealed partial class CyberdeckWindow
 
         using (CyberdeckTheme.PushAccentButton())
         {
-            if (CyberdeckWidgets.DrawActionButton(primaryLabel, status.IsBusy, new Vector2(actionWidth, 0)))
+            if (CyberdeckWidgets.DrawActionButton(primaryLabel, actionsDisabled, new Vector2(actionWidth, 0)))
             {
-                if (needsInstall)
+                if (status.Operation == UpdateOperationKind.Assignment &&
+                    status.Phase is UpdateOperationPhase.Error or UpdateOperationPhase.NeedsAttention)
+                    assignAll();
+                else if (status.Operation == UpdateOperationKind.Repair && status.Phase == UpdateOperationPhase.Error)
                     queueReconcileForce();
                 else
                     queueReconcile();
@@ -2465,60 +2762,24 @@ internal sealed partial class CyberdeckWindow
             ImGui.Spacing();
         else
             ImGui.SameLine();
-        if (CyberdeckWidgets.DrawActionButton("Check Now", status.IsBusy, new Vector2(actionWidth, 0)))
+        if (CyberdeckWidgets.DrawActionButton("Check for Updates", actionsDisabled, new Vector2(actionWidth, 0)))
             checkForUpdates();
         DrawHoverTooltip(config.FullAuto
-            ? "Check now and automatically install or restore an available release"
-            : "Check availability without installing anything");
-
-        if (status.Phase is UpdateOperationPhase.Error or UpdateOperationPhase.NeedsAttention)
-        {
-            ImGui.Spacing();
-            var retryLabel = status.Phase == UpdateOperationPhase.NeedsAttention
-                ? status.Operation switch
-                {
-                    UpdateOperationKind.None => "Validate New Mapping",
-                    UpdateOperationKind.Assignment => "Retry Penumbra Setup",
-                    UpdateOperationKind.Repair => "Retry Repair",
-                    _ => "Retry Sync",
-                }
-                : "Retry Last Operation";
-            if (CyberdeckWidgets.DrawActionButton(retryLabel, status.IsBusy))
-            {
-                if (status.Phase == UpdateOperationPhase.NeedsAttention)
-                {
-                    if (status.Operation == UpdateOperationKind.None)
-                        queueReconcile();
-                    else if (status.Operation == UpdateOperationKind.Assignment)
-                        assignAll();
-                    else if (status.Operation == UpdateOperationKind.Repair)
-                        queueReconcileForce();
-                    else
-                        queueReconcile();
-                }
-                else if (status.Operation == UpdateOperationKind.UpdateCheck)
-                    checkForUpdates();
-                else if (status.Operation == UpdateOperationKind.Assignment)
-                    assignAll();
-                else if (status.Operation == UpdateOperationKind.Repair)
-                    queueReconcileForce();
-                else
-                    queueReconcile();
-            }
-        }
+            ? "Check now; available updates will install automatically"
+            : "Check whether an update is available without installing it");
 
         ImGui.Spacing();
-        if (CyberdeckWidgets.DrawActionButton("Repair / Reinstall...", status.IsBusy))
+        if (CyberdeckWidgets.DrawActionButton("Repair Installation...", actionsDisabled))
             ImGui.OpenPopup("confirm_reinstall");
 
         if (ImGui.BeginPopup("confirm_reinstall"))
         {
-            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "REPAIR VENUE MOD");
-            ImGui.TextWrapped("This downloads the latest package again and replaces the managed Penumbra mod. Use it when files are missing or corrupted.");
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "Repair installation");
+            ImGui.TextWrapped("This downloads and installs the latest venue mod again. Use it when files are missing or the mod is not working correctly.");
             ImGui.Spacing();
             using (CyberdeckTheme.PushAccentButton())
             {
-                if (CyberdeckWidgets.DrawActionButton("Reinstall", status.IsBusy))
+                if (CyberdeckWidgets.DrawActionButton("Repair", status.IsBusy))
                 {
                     queueReconcileForce();
                     ImGui.CloseCurrentPopup();
@@ -2610,17 +2871,6 @@ internal sealed partial class CyberdeckWindow
         }
         DrawMutedWrapped("Opens automatically when you enter the venue address.");
 
-        var fullAuto = config.FullAuto;
-        ImGui.BeginDisabled(getUpdateStatus().IsBusy);
-        if (ImGui.Checkbox("Automatic updates", ref fullAuto))
-        {
-            config.FullAuto = fullAuto;
-            config.Save();
-            if (fullAuto)
-                queueReconcile();
-        }
-        ImGui.EndDisabled();
-        DrawHoverTooltip("Automatically download mod updates on login and assign collections on zone changes. When disabled, you'll be notified of new versions but must press Update/Install manually.");
     }
 
     private void SetManualUiScale(float uiScale)

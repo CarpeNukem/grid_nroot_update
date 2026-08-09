@@ -50,6 +50,18 @@ internal sealed class PenumbraIpc
     public void UnsubscribeModAdded(Action<string> handler)
         => pluginInterface.GetIpcSubscriber<string, object>("Penumbra.ModAdded").Unsubscribe(handler);
 
+    public void SubscribeInitialized(Action handler)
+        => pluginInterface.GetIpcSubscriber<object>("Penumbra.Initialized").Subscribe(handler);
+
+    public void UnsubscribeInitialized(Action handler)
+        => pluginInterface.GetIpcSubscriber<object>("Penumbra.Initialized").Unsubscribe(handler);
+
+    public void SubscribeDisposed(Action handler)
+        => pluginInterface.GetIpcSubscriber<object>("Penumbra.Disposed").Subscribe(handler);
+
+    public void UnsubscribeDisposed(Action handler)
+        => pluginInterface.GetIpcSubscriber<object>("Penumbra.Disposed").Unsubscribe(handler);
+
     public Dictionary<string, string> GetModList()
         => pluginInterface.GetIpcSubscriber<Dictionary<string, string>>("Penumbra.GetModList").InvokeFunc();
 
@@ -118,6 +130,43 @@ internal sealed class PenumbraIpc
         {
             return pluginInterface.GetIpcSubscriber<int, (bool Valid, bool Individual, (Guid Id, string Name) Collection)>("Penumbra.GetCollectionForObject").InvokeFunc(objectIndex);
         }
+    }
+
+    public (int ErrorCode, Guid CollectionId) CreateTemporaryCollection(string identity, string name)
+        => pluginInterface
+            .GetIpcSubscriber<string, string, (int ErrorCode, Guid CollectionId)>("Penumbra.CreateTemporaryCollection.V6")
+            .InvokeFunc(identity, name);
+
+    public int DeleteTemporaryCollection(Guid collectionId)
+        => pluginInterface
+            .GetIpcSubscriber<Guid, int>("Penumbra.DeleteTemporaryCollection.V5")
+            .InvokeFunc(collectionId);
+
+    public int AssignTemporaryCollection(Guid collectionId, int objectIndex)
+        => pluginInterface
+            .GetIpcSubscriber<Guid, int, bool, int>("Penumbra.AssignTemporaryCollection.V5")
+            .InvokeFunc(collectionId, objectIndex, true);
+
+    public int EnableModInTemporaryCollection(Guid collectionId, string modDirectory, string modName, int priority)
+    {
+        IReadOnlyDictionary<string, IReadOnlyList<string>> settings =
+            new Dictionary<string, IReadOnlyList<string>>();
+        return pluginInterface
+            .GetIpcSubscriber<
+                Guid,
+                string,
+                string,
+                (bool ForceInherit, bool Enabled, int Priority, IReadOnlyDictionary<string, IReadOnlyList<string>> Settings),
+                string,
+                int,
+                int>("Penumbra.SetTemporaryModSettings.V5")
+            .InvokeFunc(
+                collectionId,
+                modDirectory,
+                modName,
+                (false, true, priority, settings),
+                "The Grid venue mod",
+                0);
     }
 
     public bool IsModEnabled(Guid collectionId, string modDirectory, string modName)
@@ -196,7 +245,7 @@ internal sealed class PenumbraIpc
         if (looseMatches.Count > 0)
             return looseMatches[0];
 
-        return collections.Count == 1 ? collections[0] : null;
+        return null;
     }
 
     private static void AddUniqueCollection(List<(Guid Id, string Name)> collections, (Guid Id, string Name) collection)

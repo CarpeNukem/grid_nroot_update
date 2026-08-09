@@ -50,6 +50,7 @@ public sealed record UpdateUiSnapshot(
     long? BytesDownloaded,
     long? TotalBytes,
     string? ErrorMessage,
+    UpdateOperationPhase? FailureStage,
     DateTimeOffset? StartedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt)
@@ -60,6 +61,7 @@ public sealed record UpdateUiSnapshot(
         UpdateReleaseAvailability.Unknown,
         "READY",
         "No update operation is active.",
+        null,
         null,
         null,
         null,
@@ -138,6 +140,7 @@ internal sealed class UpdateUiStateStore
                 BytesDownloaded = null,
                 TotalBytes = null,
                 ErrorMessage = null,
+                FailureStage = null,
                 StartedAt = now,
                 UpdatedAt = now,
                 CompletedAt = null,
@@ -159,6 +162,7 @@ internal sealed class UpdateUiStateStore
             BytesDownloaded = null,
             TotalBytes = null,
             ErrorMessage = null,
+            FailureStage = null,
             StartedAt = snapshot.Operation == operation && snapshot.Phase == UpdateOperationPhase.Queued
                 ? snapshot.StartedAt ?? now
                 : now,
@@ -178,6 +182,7 @@ internal sealed class UpdateUiStateStore
             BytesDownloaded = null,
             TotalBytes = null,
             ErrorMessage = null,
+            FailureStage = null,
             UpdatedAt = now,
             CompletedAt = null,
         });
@@ -189,11 +194,12 @@ internal sealed class UpdateUiStateStore
         Update(snapshot => snapshot with
         {
             Phase = UpdateOperationPhase.Downloading,
-            Status = "DOWNLOADING PACKAGE",
+            Status = "DOWNLOADING",
             Detail = NullIfWhiteSpace(detail),
             BytesDownloaded = Math.Max(0, bytesDownloaded),
             TotalBytes = totalBytes is > 0 ? totalBytes : null,
             ErrorMessage = null,
+            FailureStage = null,
             UpdatedAt = now,
             CompletedAt = null,
         });
@@ -229,6 +235,7 @@ internal sealed class UpdateUiStateStore
             BytesDownloaded = null,
             TotalBytes = null,
             ErrorMessage = null,
+            FailureStage = null,
             UpdatedAt = now,
             CompletedAt = now,
         });
@@ -239,6 +246,7 @@ internal sealed class UpdateUiStateStore
         var now = DateTimeOffset.UtcNow;
         Update(snapshot => snapshot with
         {
+            FailureStage = GetFailureStage(snapshot),
             Phase = UpdateOperationPhase.NeedsAttention,
             Status = status,
             Detail = NullIfWhiteSpace(detail),
@@ -255,6 +263,7 @@ internal sealed class UpdateUiStateStore
         var now = DateTimeOffset.UtcNow;
         Update(snapshot => snapshot with
         {
+            FailureStage = GetFailureStage(snapshot),
             Phase = UpdateOperationPhase.Error,
             Status = status,
             Detail = NullIfWhiteSpace(detail) ?? exception.Message,
@@ -282,4 +291,9 @@ internal sealed class UpdateUiStateStore
 
     private static string? NullIfWhiteSpace(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static UpdateOperationPhase? GetFailureStage(UpdateUiSnapshot snapshot)
+        => snapshot.Phase is UpdateOperationPhase.Error or UpdateOperationPhase.NeedsAttention
+            ? snapshot.FailureStage
+            : snapshot.Phase;
 }

@@ -21,6 +21,8 @@ namespace GridNrootUpdate;
 public sealed class Plugin : IDalamudPlugin
 {
     private const string PrimaryCommandName = "/grid";
+    private const string TemporaryCollectionIdentity = "GridNrootUpdate";
+    private const string TemporaryCollectionName = "The Grid Venue";
     private static readonly string[] CommandNames = [PrimaryCommandName, "/thegrid", "/cyberdeck"];
     private static readonly string[] DataCenterNames =
     [
@@ -62,6 +64,10 @@ public sealed class Plugin : IDalamudPlugin
     private bool startupActionDone;
     private uint lastAutoOpenedTerritory;
     private bool modAddedSubscribed;
+    private bool penumbraStateSubscribed;
+    private Guid? managedTemporaryCollectionId;
+    private string? pendingReplacementModDirectory;
+    private string? pendingReplacementModName;
     private CancellationTokenSource? zoneTickCts;
     private TaskCompletionSource<string>? pendingModAdded;
     private bool? cachedPenumbraAvailable;
@@ -142,6 +148,12 @@ public sealed class Plugin : IDalamudPlugin
         PluginService.ClientState.Login -= OnLogin;
         if (modAddedSubscribed)
             penumbra.UnsubscribeModAdded(OnPenumbraModAdded);
+        if (penumbraStateSubscribed)
+        {
+            penumbra.UnsubscribeInitialized(OnPenumbraInitialized);
+            penumbra.UnsubscribeDisposed(OnPenumbraDisposed);
+        }
+        ReleaseManagedTemporaryCollection();
         PluginService.PluginInterface.UiBuilder.OpenConfigUi -= OpenConfigUi;
         PluginService.PluginInterface.UiBuilder.OpenMainUi -= OpenMainUi;
         PluginService.PluginInterface.UiBuilder.Draw -= DrawUi;
@@ -223,19 +235,61 @@ public sealed class Plugin : IDalamudPlugin
 
     private void TrySubscribePenumbraEvents()
     {
-        if (modAddedSubscribed)
-            return;
+        if (!modAddedSubscribed)
+        {
+            try
+            {
+                penumbra.SubscribeModAdded(OnPenumbraModAdded);
+                modAddedSubscribed = true;
+            }
+            catch (Exception ex)
+            {
+                PluginService.Log.Warning(ex, "Could not subscribe to Penumbra ModAdded event; mod install detection will rely on IPC list polling.");
+            }
+        }
 
-        try
+        if (!penumbraStateSubscribed)
         {
-            penumbra.SubscribeModAdded(OnPenumbraModAdded);
-            modAddedSubscribed = true;
+            try
+            {
+                penumbra.SubscribeInitialized(OnPenumbraInitialized);
+                try
+                {
+                    penumbra.SubscribeDisposed(OnPenumbraDisposed);
+                }
+                catch
+                {
+                    penumbra.UnsubscribeInitialized(OnPenumbraInitialized);
+                    throw;
+                }
+
+                penumbraStateSubscribed = true;
+            }
+            catch (Exception ex)
+            {
+                PluginService.Log.Warning(ex, "Could not subscribe to Penumbra lifecycle events.");
+            }
         }
-        catch (Exception ex)
-        {
-            PluginService.Log.Warning(ex, "Could not subscribe to Penumbra ModAdded event; mod install detection will rely on IPC list polling.");
-            PluginService.Chat.PrintError("TheGrid: Penumbra event subscription failed — mod installs may not be detected reliably. Try reloading the plugin.", "TheGrid");
-        }
+    }
+
+    private void OnPenumbraInitialized()
+    {
+        cachedPenumbraAvailable = true;
+        lastPenumbraAvailableCheckTick = Environment.TickCount64;
+        managedTemporaryCollectionId = null;
+        startupActionDone = false;
+        venueUpdateCheckDoneThisZone = false;
+        QueueStartupAction();
+        QueueVenueUpdateCheck();
+    }
+
+    private void OnPenumbraDisposed()
+    {
+        cachedPenumbraAvailable = false;
+        lastPenumbraAvailableCheckTick = Environment.TickCount64;
+        managedTemporaryCollectionId = null;
+        startupActionDone = false;
+        venueUpdateCheckDoneThisZone = false;
     }
 
     private void OpenConfigUi()
@@ -326,8 +380,8 @@ public sealed class Plugin : IDalamudPlugin
                 updateUiState.Begin(
                     UpdateOperationKind.UpdateCheck,
                     UpdateOperationPhase.Checking,
-                    "CHECKING RELEASES",
-                    "Querying the latest published GitHub release.");
+                    "CHECKING FOR UPDATES",
+                    "Checking the latest available venue mod.");
 
                 var mapping = Config.GetPrimaryMapping();
                 var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, lifetime.Token).ConfigureAwait(false);
@@ -458,8 +512,8 @@ public sealed class Plugin : IDalamudPlugin
         {
             updateUiState.Queue(
                 forceDownload ? UpdateOperationKind.Repair : UpdateOperationKind.Reconcile,
-                forceDownload ? "REINSTALL QUEUED" : "UPDATE QUEUED",
-                "Waiting for the updater channel.");
+                forceDownload ? "REPAIR QUEUED" : "INSTALLATION QUEUED",
+                "Waiting for the current installation task to finish.");
         }
     }
 
@@ -620,14 +674,14 @@ public sealed class Plugin : IDalamudPlugin
             updateUiState.Begin(
                 forceDownload ? UpdateOperationKind.Repair : UpdateOperationKind.Reconcile,
                 UpdateOperationPhase.Checking,
-                "CHECKING RELEASES",
-                "Validating Penumbra and querying the latest release.");
+                "CHECKING FOR UPDATES",
+                "Checking Penumbra and the latest available venue mod.");
 
             if (!IsPenumbraAvailable())
             {
-                const string unavailableMessage = "Penumbra IPC is not available. Install and enable Penumbra, then run /grid update.";
+                const string unavailableMessage = "Penumbra is unavailable. Install or enable Penumbra, then try again.";
                 await PluginService.Framework.RunOnFrameworkThread(() => SetAllStatus(unavailableMessage));
-                updateUiState.Fail("PENUMBRA OFFLINE", unavailableMessage);
+                updateUiState.Fail("PENUMBRA UNAVAILABLE", unavailableMessage);
                 return;
             }
 
@@ -646,15 +700,15 @@ public sealed class Plugin : IDalamudPlugin
             {
                 updateUiState.SetOperation(UpdateOperationKind.Assignment);
                 updateUiState.NeedsAttention(
-                    "SYNC COMPLETE // ACTION REQUIRED",
+                    "SETUP NEEDS ATTENTION",
                     mapping.LastStatus);
                 return;
             }
 
             updateUiState.Transition(
                 UpdateOperationPhase.Assigning,
-                "ASSIGNING COLLECTION",
-                $"Waiting for Penumbra to settle before assigning '{mapping.CollectionName}'.");
+                "FINISHING SETUP",
+                "Waiting for Penumbra to finish installing the venue mod.");
             await Task.Delay(TimeSpan.FromSeconds(3), lifetime.Token).ConfigureAwait(false);
             AssignmentResult assignmentResult;
             try
@@ -666,9 +720,9 @@ public sealed class Plugin : IDalamudPlugin
                 ReportAssignmentFailure(ex);
                 updateUiState.SetOperation(UpdateOperationKind.Assignment);
                 updateUiState.Fail(
-                    "ASSIGNMENT FAILED",
+                    "SETUP FAILED",
                     ex,
-                    "The release is installed, but collection assignment did not complete.");
+                    "The venue mod is installed, but Penumbra setup could not be completed.");
                 return;
             }
 
@@ -676,7 +730,7 @@ public sealed class Plugin : IDalamudPlugin
                 return;
 
             updateUiState.Complete(
-                forceDownload ? "REINSTALL COMPLETE" : "SYNC COMPLETE",
+                forceDownload ? "REPAIR COMPLETE" : "INSTALLATION COMPLETE",
                 assignmentResult.Detail);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
@@ -688,7 +742,7 @@ public sealed class Plugin : IDalamudPlugin
         catch (Exception ex)
         {
             updateUiState.Fail(
-                "UPDATE FAILED",
+                "INSTALLATION FAILED",
                 ex,
                 updateUiState.Snapshot.ReleaseAvailability == UpdateReleaseAvailability.UpdateAvailable
                     ? "Installation failed. The available release remains ready to retry."
@@ -737,8 +791,8 @@ public sealed class Plugin : IDalamudPlugin
             {
                 updateUiState.Transition(
                     UpdateOperationPhase.Configuring,
-                    "CONFIGURING PENUMBRA",
-                    $"Release v{latestAsset.Version} is already imported; validating its collection settings.");
+                    "FINISHING SETUP",
+                    $"Venue mod v{latestAsset.Version} is already installed; completing its Penumbra setup.");
                 mapping.ModDirectory = installedModDirectory;
                 mapping.ModName = installedMods[installedModDirectory];
                 return ReconcileAlreadyImportedMapping(mapping, latestAsset.Version, installedModDirectory);
@@ -757,7 +811,7 @@ public sealed class Plugin : IDalamudPlugin
             latestAsset.Name);
         updateUiState.Transition(
             UpdateOperationPhase.Downloading,
-            "PREPARING DOWNLOAD",
+            "DOWNLOADING",
             $"{latestAsset.Name} // release v{latestAsset.Version}");
         var download = await github.DownloadReleaseAssetAsync(
             mapping,
@@ -772,20 +826,17 @@ public sealed class Plugin : IDalamudPlugin
         cancellationToken.ThrowIfCancellationRequested();
         updateUiState.Transition(
             UpdateOperationPhase.Importing,
-            "IMPORTING PACKAGE",
-            $"Sending {Path.GetFileName(download.Path)} to Penumbra.");
+            "INSTALLING IN PENUMBRA",
+            $"Installing {Path.GetFileName(download.Path)}.");
 
-        var destructiveInstallStarted = false;
         try
         {
-            var previousModDirectory = NormalizeManagedModDirectory(mapping.ModDirectory);
-            mapping.ModDirectory = previousModDirectory;
-            var previousModName = mapping.ModName;
             var modsBeforeInstall = penumbra.GetModList();
-            cancellationToken.ThrowIfCancellationRequested();
-            destructiveInstallStarted = true;
-            DeleteExistingManagedModBeforeInstall(previousModDirectory, previousModName, modsBeforeInstall);
-            modsBeforeInstall = penumbra.GetModList();
+            var previousModDirectory = FindInstalledModDirectory(mapping, modsBeforeInstall);
+            var previousModName = previousModDirectory is not null &&
+                                  modsBeforeInstall.TryGetValue(previousModDirectory, out var installedModName)
+                ? installedModName
+                : mapping.ModName;
 
             cancellationToken.ThrowIfCancellationRequested();
             var modAddedWaiter = PrepareForModAdded();
@@ -799,8 +850,8 @@ public sealed class Plugin : IDalamudPlugin
 
                 updateUiState.Transition(
                     UpdateOperationPhase.WaitingForPenumbra,
-                    "WAITING FOR PENUMBRA",
-                    "The package was accepted; waiting for the imported mod to appear in IPC.");
+                    "INSTALLING IN PENUMBRA",
+                    "Penumbra accepted the download and is finishing the installation.");
                 addedDirectory = await WaitForModAddedAsync(modAddedWaiter, cancellationToken).ConfigureAwait(false);
             }
             finally
@@ -811,8 +862,8 @@ public sealed class Plugin : IDalamudPlugin
             cancellationToken.ThrowIfCancellationRequested();
             updateUiState.Transition(
                 UpdateOperationPhase.Configuring,
-                "CONFIGURING PENUMBRA",
-                "Resolving the imported mod and applying folder, collection, and priority settings.");
+                "FINISHING SETUP",
+                "Completing the Penumbra setup.");
             var modsAfterInstall = penumbra.GetModList();
 
             var modDirectory = TryResolveModDirectory(mapping, modsAfterInstall, modsBeforeInstall, addedDirectory);
@@ -821,6 +872,16 @@ public sealed class Plugin : IDalamudPlugin
                 throw new InvalidOperationException($"Penumbra accepted '{Path.GetFileName(download.Path)}', but the imported mod did not appear in IPC within 30 seconds.");
 
             mapping.ModDirectory = modDirectory;
+            mapping.ModName = modsAfterInstall.TryGetValue(modDirectory, out var importedModName)
+                ? importedModName
+                : mapping.ModName;
+            if (previousModDirectory is not null &&
+                !string.Equals(previousModDirectory, modDirectory, StringComparison.OrdinalIgnoreCase))
+            {
+                pendingReplacementModDirectory = previousModDirectory;
+                pendingReplacementModName = previousModName;
+            }
+
             var folderConfigured = OrganizeModInPenumbra(mapping, modDirectory);
             var collectionConfigured = collection is null || EnableImportedMod(mapping, collection.Value, modDirectory);
             CleanupCacheDirectory(cacheDirectory, download.Path);
@@ -832,12 +893,11 @@ public sealed class Plugin : IDalamudPlugin
             if (!collectionConfigured)
                 mapping.LastStatus += " Penumbra did not confirm the collection enable/priority settings.";
             PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
-            return collection is not null && collectionConfigured && folderConfigured;
+            return collectionConfigured;
         }
         catch
         {
-            if (destructiveInstallStarted)
-                CorrectReleaseHealthAfterInstallFailure(mapping, latestAsset.Version);
+            CorrectReleaseHealthAfterInstallFailure(mapping, latestAsset.Version);
             throw;
         }
     }
@@ -857,7 +917,7 @@ public sealed class Plugin : IDalamudPlugin
             mapping.LastStatus += " Penumbra did not confirm the collection enable/priority settings.";
         if (!Config.FullAuto)
             PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
-        return collection is not null && collectionConfigured && folderConfigured;
+        return collectionConfigured;
     }
 
     private bool EnableImportedMod(ModMapping mapping, (Guid Id, string Name) collection, string modDirectory)
@@ -918,12 +978,12 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (modDirectory is null)
             return alreadyApplied
-                ? $"Latest release {version} already applied, but the imported mod is not visible in Penumbra IPC."
-                : $"Imported latest release {version}; Penumbra did not expose the mod in IPC immediately.";
+                ? $"Venue mod v{version} is recorded as installed, but Penumbra cannot currently find it."
+                : $"Venue mod v{version} was installed, but Penumbra has not finished loading it.";
 
         var prefix = alreadyApplied
-            ? $"Latest release {version} already imported"
-            : $"Imported latest release {version}";
+            ? $"Venue mod v{version} is installed"
+            : $"Installed venue mod v{version}";
         var requestedFolder = mapping.PenumbraFolderPath.Trim().Trim('/', '\\');
         var folderText = string.IsNullOrWhiteSpace(requestedFolder)
             ? "in Penumbra"
@@ -932,8 +992,8 @@ public sealed class Plugin : IDalamudPlugin
                 : "in Penumbra";
 
         return collection is not null
-            ? $"{prefix} {folderText}; enabled in collection '{collection.Value.Name}'."
-            : $"{prefix} {folderText}. The mod can be imported without the collection, but assignment requires a persistent Penumbra collection matching '{mapping.CollectionName}'.";
+            ? $"{prefix} {folderText} and is enabled in '{collection.Value.Name}'."
+            : $"{prefix} {folderText}. The remaining Penumbra setup will be completed automatically.";
     }
 
     private TaskCompletionSource<string> PrepareForModAdded()
@@ -984,36 +1044,37 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private void DeleteExistingManagedModBeforeInstall(string previousModDirectory, string previousModName, Dictionary<string, string> installedMods)
-    {
-        if (string.IsNullOrWhiteSpace(previousModDirectory))
-            return;
-
-        if (!installedMods.ContainsKey(previousModDirectory))
-        {
-            var duplicateDirectories = installedMods.Keys
-                .Where(IsManagedDuplicateDirectory)
-                .ToList();
-
-            foreach (var duplicateDirectory in duplicateDirectories)
-                DeleteManagedMod(duplicateDirectory, previousModName);
-
-            return;
-        }
-
-        DeleteManagedMod(previousModDirectory, previousModName);
-    }
-
-    private void DeleteManagedMod(string modDirectory, string modName)
+    private bool DeleteManagedMod(string modDirectory, string modName)
     {
         var deleteCode = penumbra.DeleteMod(modDirectory, modName);
         if (IsSuccess(deleteCode))
         {
-            PluginService.Log.Information("Deleted old managed Penumbra mod {ModDirectory} before update.", modDirectory);
+            PluginService.Log.Information("Removed replaced Penumbra mod {ModDirectory}.", modDirectory);
+            return true;
+        }
+
+        PluginService.Log.Warning("Could not remove replaced Penumbra mod {ModDirectory}. Penumbra code {Code}.", modDirectory, deleteCode);
+        return false;
+    }
+
+    private void FinalizePendingModReplacement(string activeModDirectory)
+    {
+        if (pendingReplacementModDirectory is not { } previousDirectory ||
+            string.Equals(previousDirectory, activeModDirectory, StringComparison.OrdinalIgnoreCase))
+        {
+            pendingReplacementModDirectory = null;
+            pendingReplacementModName = null;
             return;
         }
 
-        PluginService.Log.Warning("Could not delete old managed Penumbra mod {ModDirectory} before update. Penumbra code {Code}.", modDirectory, deleteCode);
+        var previousName = string.IsNullOrWhiteSpace(pendingReplacementModName)
+            ? Config.GetPrimaryMapping().ModName
+            : pendingReplacementModName;
+        if (DeleteManagedMod(previousDirectory, previousName))
+        {
+            pendingReplacementModDirectory = null;
+            pendingReplacementModName = null;
+        }
     }
 
     private void CorrectReleaseHealthAfterInstallFailure(ModMapping mapping, string latestVersion)
@@ -1044,12 +1105,9 @@ public sealed class Plugin : IDalamudPlugin
         }
         catch (Exception ex)
         {
-            PluginService.Log.Warning(ex, "Could not re-query Penumbra after the failed destructive install.");
+            PluginService.Log.Warning(ex, "Could not re-query Penumbra after the failed installation.");
         }
     }
-
-    private static string NormalizeManagedModDirectory(string modDirectory)
-        => IsManagedDuplicateDirectory(modDirectory) ? "n_root_the_grid" : modDirectory;
 
     private static bool IsManagedDuplicateDirectory(string modDirectory)
         => modDirectory.StartsWith("n_root_the_grid (", StringComparison.OrdinalIgnoreCase);
@@ -1064,8 +1122,8 @@ public sealed class Plugin : IDalamudPlugin
 
         updateUiState.Queue(
             UpdateOperationKind.Assignment,
-            "ASSIGNMENT QUEUED",
-            "Waiting for the updater channel.");
+            "SETUP QUEUED",
+            "Waiting for the current installation task to finish.");
 
         var enteredGate = false;
         try
@@ -1076,11 +1134,11 @@ public sealed class Plugin : IDalamudPlugin
             updateUiState.Begin(
                 UpdateOperationKind.Assignment,
                 UpdateOperationPhase.Assigning,
-                "ASSIGNING COLLECTION",
-                $"Applying '{mapping.CollectionName}' to nearby '{mapping.NpcName}' objects.");
+                "FINISHING SETUP",
+                "Applying the venue mod to nearby mannequins.");
             var assignmentResult = await AssignAllCoreAsync(cancellationToken).ConfigureAwait(false);
             if (!TryPublishAssignmentIssue(assignmentResult, afterSync: false))
-                updateUiState.Complete("ASSIGNMENT COMPLETE", assignmentResult.Detail);
+                updateUiState.Complete("SETUP COMPLETE", assignmentResult.Detail);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1091,7 +1149,7 @@ public sealed class Plugin : IDalamudPlugin
         catch (Exception ex)
         {
             ReportAssignmentFailure(ex);
-            updateUiState.Fail("ASSIGNMENT FAILED", ex);
+            updateUiState.Fail("SETUP FAILED", ex);
         }
         finally
         {
@@ -1123,10 +1181,10 @@ public sealed class Plugin : IDalamudPlugin
         if (result.HasFailures)
         {
             updateUiState.Fail(
-                afterSync ? "SYNC COMPLETE // ASSIGNMENT FAILED" : "ASSIGNMENT FAILED",
+                afterSync ? "INSTALLATION NEEDS ATTENTION" : "SETUP FAILED",
                 result.Detail,
                 afterSync
-                    ? $"The release is installed, but assignment needs repair. {result.Detail}"
+                    ? $"The venue mod is installed, but setup needs attention. {result.Detail}"
                     : result.Detail);
             return true;
         }
@@ -1134,25 +1192,16 @@ public sealed class Plugin : IDalamudPlugin
         if (result.NeedsAttention)
         {
             updateUiState.NeedsAttention(
-                afterSync ? "SYNC COMPLETE // ACTION REQUIRED" : "ASSIGNMENT NEEDS ATTENTION",
+                afterSync ? "INSTALLATION NEEDS ATTENTION" : "SETUP NEEDS ATTENTION",
                 result.Detail);
             return true;
         }
 
         if (result.HasPending)
         {
-            if (afterSync && Config.FullAuto)
-            {
-                updateUiState.Complete(
-                    "SYNC COMPLETE // ASSIGNMENT DEFERRED",
-                    $"{result.Detail} Automatic mode will try again when the venue is detected.");
-            }
-            else
-            {
-                updateUiState.NeedsAttention(
-                    afterSync ? "SYNC COMPLETE // ASSIGNMENT PENDING" : "ASSIGNMENT PENDING",
-                    result.Detail);
-            }
+            updateUiState.Complete(
+                afterSync ? "INSTALLATION COMPLETE" : "READY AT VENUE",
+                "The venue mod is installed and will activate automatically when you enter The Grid.");
             return true;
         }
 
@@ -1173,41 +1222,37 @@ public sealed class Plugin : IDalamudPlugin
 
         if (!IsPenumbraAvailable())
         {
-            mapping.LastStatus = "Penumbra IPC is not available.";
+            mapping.LastStatus = "Penumbra is unavailable.";
             statusItems.Add((false, "Penumbra not available"));
             return PublishAssignmentResult(statusItems, mapping);
         }
 
-        var collection = FindCollection(mapping.CollectionName);
-        if (collection is null)
+        var modDirectory = FindInstalledModDirectory(mapping, penumbra.GetModList());
+        if (modDirectory is null)
         {
-            mapping.LastStatus = $"Collection matching '{mapping.CollectionName}' does not exist.";
-            statusItems.Add((false, $"Collection matching '{mapping.CollectionName}' not found"));
-            PluginService.Chat.PrintError($"No Penumbra collection matching '{mapping.CollectionName}' exists. Names like TheGrid, The Grid, and 'the grid' are accepted.", "TheGrid");
+            statusItems.Add((false, "Mod not found in Penumbra"));
             return PublishAssignmentResult(statusItems, mapping);
         }
 
-        var modDirectory = FindInstalledModDirectory(mapping, penumbra.GetModList());
-        if (modDirectory is not null)
+        mapping.ModDirectory = modDirectory;
+        _ = OrganizeModInPenumbra(mapping, modDirectory);
+        statusItems.Add((true, "Venue mod installed in Penumbra"));
+
+        var assignmentCollection = PrepareAssignmentCollection(mapping, modDirectory);
+        if (assignmentCollection is null)
         {
-            mapping.ModDirectory = modDirectory;
-            var organized = OrganizeModInPenumbra(mapping, modDirectory);
-            if (!organized)
-            {
-                needsAttention = true;
-                statusItems.Add((null, $"Could not place mod under '{mapping.PenumbraFolderPath}'"));
-            }
-            var configured = EnableImportedMod(mapping, collection.Value, modDirectory);
-            statusItems.Add((
-                configured,
-                configured
-                    ? $"Mod enabled in '{collection.Value.Name}'"
-                    : $"Could not confirm mod enable/priority in '{collection.Value.Name}'"));
+            statusItems.Add((false, "Penumbra setup could not be completed automatically"));
+            PluginService.Chat.PrintError(
+                "Automatic Penumbra setup failed. Create a permanent collection named Grid or TheGrid, then try again.",
+                "TheGrid");
+            return PublishAssignmentResult(statusItems, mapping);
         }
-        else
-        {
-            statusItems.Add((false, "Mod not found in Penumbra"));
-        }
+
+        statusItems.Add((true, assignmentCollection.Value.IsTemporary
+            ? "Automatic Penumbra setup ready"
+            : $"Using Penumbra collection '{assignmentCollection.Value.Name}'"));
+        FinalizePendingModReplacement(modDirectory);
+        _ = OrganizeModInPenumbra(mapping, modDirectory);
 
         var targetCount = 0;
         var assigned = 0;
@@ -1223,14 +1268,16 @@ public sealed class Plugin : IDalamudPlugin
             var objectIndex = targetObject.ObjectIndex;
             targetCount++;
             var currentCollection = TryGetCollectionForObject(objectIndex);
-            if (currentCollection.HasValue && currentCollection.Value.Individual && currentCollection.Value.Id == collection.Value.Id)
+            if (currentCollection.HasValue && currentCollection.Value.Id == assignmentCollection.Value.Id)
             {
                 alreadyAssigned++;
                 redrawObjectIndices.Add(objectIndex);
                 continue;
             }
 
-            var (errorCode, _) = penumbra.SetCollectionForObject(objectIndex, collection.Value.Id);
+            var errorCode = assignmentCollection.Value.IsTemporary
+                ? penumbra.AssignTemporaryCollection(assignmentCollection.Value.Id, objectIndex)
+                : penumbra.SetCollectionForObject(objectIndex, assignmentCollection.Value.Id).ErrorCode;
             if (errorCode == PenumbraApiSuccess)
             {
                 assigned++;
@@ -1244,7 +1291,7 @@ public sealed class Plugin : IDalamudPlugin
             else
             {
                 failedAssignments++;
-                PluginService.Log.Warning("Could not assign collection {Collection} to {Npc} at object index {Index}: {Code}", collection.Value.Name, mapping.NpcName, objectIndex, errorCode);
+                PluginService.Log.Warning("Could not apply Penumbra setup {Collection} to {Npc} at object index {Index}: {Code}", assignmentCollection.Value.Name, mapping.NpcName, objectIndex, errorCode);
             }
         }
 
@@ -1264,26 +1311,117 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         if (assigned > 0)
-            statusItems.Add((true, $"Assigned to {assigned} '{mapping.NpcName}' object(s)"));
+            statusItems.Add((true, $"Activated for {assigned} venue mannequin(s)"));
 
         if (alreadyAssigned > 0)
-            statusItems.Add((true, $"Already individually assigned to {alreadyAssigned} '{mapping.NpcName}' object(s)"));
+            statusItems.Add((true, $"Already active for {alreadyAssigned} venue mannequin(s)"));
 
         if (redrawObjectIndices.Count > 0)
-            statusItems.Add((redrawFailures == 0, $"Redraw requested for {redrawObjectIndices.Count - redrawFailures} of {redrawObjectIndices.Count} '{mapping.NpcName}' object(s)"));
+            statusItems.Add((redrawFailures == 0, $"Refreshed {redrawObjectIndices.Count - redrawFailures} of {redrawObjectIndices.Count} venue mannequin(s)"));
 
         if (failedAssignments > 0)
-            statusItems.Add((false, $"Could not assign {failedAssignments} '{mapping.NpcName}' object(s)"));
+            statusItems.Add((false, $"Could not activate {failedAssignments} venue mannequin(s)"));
 
         if (targetCount == 0)
         {
             if (mannequinFallbackCandidates > 1)
                 statusItems.Add((false, $"Found {mannequinFallbackCandidates} mannequins but could not identify '{mapping.NpcName}'"));
             else
-                statusItems.Add((null, $"Mannequin '{mapping.NpcName}' not in range"));
+                statusItems.Add((null, "Venue mannequin is not currently nearby"));
         }
 
         return PublishAssignmentResult(statusItems, mapping, needsAttention);
+    }
+
+    private AssignmentCollection? PrepareAssignmentCollection(ModMapping mapping, string modDirectory)
+    {
+        var permanentCollection = FindCollection(mapping.CollectionName);
+        if (permanentCollection is not null)
+        {
+            if (!ReleaseManagedTemporaryCollection())
+                return null;
+
+            return EnableImportedMod(mapping, permanentCollection.Value, modDirectory)
+                ? new AssignmentCollection(permanentCollection.Value.Id, permanentCollection.Value.Name, false)
+                : null;
+        }
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                if (managedTemporaryCollectionId is null)
+                {
+                    var (errorCode, collectionId) = penumbra.CreateTemporaryCollection(
+                        TemporaryCollectionIdentity,
+                        TemporaryCollectionName);
+                    if (!IsSuccess(errorCode) || collectionId == Guid.Empty)
+                    {
+                        PluginService.Log.Warning(
+                            "Penumbra could not create the managed temporary collection. Code {Code}.",
+                            errorCode);
+                        return null;
+                    }
+
+                    managedTemporaryCollectionId = collectionId;
+                }
+
+                var configureCode = penumbra.EnableModInTemporaryCollection(
+                    managedTemporaryCollectionId.Value,
+                    modDirectory,
+                    mapping.ModName,
+                    mapping.Priority);
+                if (IsSuccess(configureCode))
+                {
+                    return new AssignmentCollection(
+                        managedTemporaryCollectionId.Value,
+                        TemporaryCollectionName,
+                        true);
+                }
+
+                PluginService.Log.Warning(
+                    "Penumbra could not configure the managed temporary collection. Code {Code}.",
+                    configureCode);
+            }
+            catch (Exception ex)
+            {
+                PluginService.Log.Warning(
+                    ex,
+                    "Automatic Penumbra collection setup is unavailable; a permanent Grid collection can be used instead.");
+                return null;
+            }
+
+            _ = ReleaseManagedTemporaryCollection();
+        }
+
+        return null;
+    }
+
+    private bool ReleaseManagedTemporaryCollection()
+    {
+        if (managedTemporaryCollectionId is not { } collectionId)
+            return true;
+
+        try
+        {
+            var errorCode = penumbra.DeleteTemporaryCollection(collectionId);
+            if (!IsSuccess(errorCode))
+            {
+                PluginService.Log.Warning(
+                    "Penumbra could not remove the managed temporary collection {CollectionId}. Code {Code}.",
+                    collectionId,
+                    errorCode);
+                return false;
+            }
+
+            managedTemporaryCollectionId = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Debug(ex, "Could not remove the managed temporary Penumbra collection.");
+            return false;
+        }
     }
 
     private AssignmentResult PublishAssignmentResult(
@@ -1731,6 +1869,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly record struct CurrentHousingAddress(string? WorldName, string? DistrictName, int? Ward, int? Plot);
 
     private readonly record struct TargetObjectMatch(int ObjectIndex, string Name, string ObjectKind, bool MatchedByName);
+
+    private readonly record struct AssignmentCollection(Guid Id, string Name, bool IsTemporary);
 
     private readonly record struct AssignmentResult(bool HasFailures, bool HasPending, bool NeedsAttention, string Detail);
 }
