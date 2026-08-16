@@ -8,7 +8,6 @@ using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Utility;
-using NativeCharacter = FFXIVClientStructs.FFXIV.Client.Game.Character.Character;
 
 namespace GridNrootUpdate;
 
@@ -17,8 +16,17 @@ internal sealed partial class CyberdeckWindow
     private const float DefaultMapZoom = 0.44f;
     private const string LifestreamNavigationTooltip = "Click to navigate. Requires Lifestream plugin to work";
     private static readonly float[] ManualUiScales = [1.0f, 1.25f, 1.5f, 1.75f, 2.0f];
+    private static readonly CyberdeckThemeId[] ThemeOptions = Enum.GetValues<CyberdeckThemeId>();
+    private static readonly HashSet<string> VenueManagerIdentities = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Carpe Nukem@Raiden",
+        "Rhas J'ae@Raiden",
+        "Sketch Nine@Raiden",
+    };
     private const string LightlessSyncshellId = "LLS-6AAKEJBAPRB0";
     private const string PlayerSyncSyncshellId = "n_root";
+    private const string TarotReaderRecipient = "Virginia John@Raiden";
+    private const string TarotReadingRequestMessage = "Hello, I'd like to request a tarot reading.";
     private static readonly string IntrusionEncryptedPayload = DecodeIntrusionReward(
         [0x59, 0x26, 0x56, 0x29, 0x0A, 0x2F, 0x3C, 0x07, 0x0C, 0x2E, 0x57, 0x31, 0x55, 0x3D, 0x37, 0x17, 0x5D, 0x26, 0x25, 0x59]);
     private static readonly string IntrusionPayloadHint = DecodeIntrusionReward(
@@ -76,6 +84,7 @@ internal sealed partial class CyberdeckWindow
     private readonly Action<bool> autoOpenChanged;
     private readonly Func<bool> isPenumbraAvailable;
     private readonly Func<UpdateUiSnapshot> getUpdateStatus;
+    private readonly Func<NetworkStatsSnapshot> getNetworkStats;
 
     private DeckView selectedView = DeckView.Home;
     private float mapZoom = DefaultMapZoom;
@@ -97,17 +106,34 @@ internal sealed partial class CyberdeckWindow
     private long hoverGlitchLastSeenAt;
     private long hoverGlitchUntil;
     private long nextHoverGlitchAt;
-    private long servicesBlinkUntil;
-    private long nextServicesBlinkAt;
-    private long servicesHintStartedAt;
-    private long nextServicesHintAt;
     private long moduleTransitionStartedAt;
     private IntrusionGame? intrusionGame;
     private bool intrusionResultRecorded;
     private bool showIntrusionPayload;
     private bool intrusionWindowOpen;
     private bool focusIntrusionWindow;
+    private bool tarotRequestWindowOpen;
+    private bool focusTarotRequestWindow;
+    private bool tarotRequestSucceeded;
+    private long tarotRequestLastSentAt;
+    private string tarotRequestFeedback = string.Empty;
+    private bool staffDirectoryWindowOpen;
+    private bool focusStaffDirectoryWindow;
+    private string staffDirectoryTitle = string.Empty;
+    private string staffDirectoryCategory = string.Empty;
+    private IReadOnlyList<StaffProfile> staffProfiles = [];
+    private string staffProfilesSourcePath = string.Empty;
+    private string? staffProfilesLoadError;
+    private StaffProfile? pendingStaffRequestProfile;
+    private readonly Dictionary<string, long> staffRequestLastSentAt = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (bool Success, string Message)> staffRequestFeedback = new(StringComparer.OrdinalIgnoreCase);
     private bool showInstallationDetails;
+    private CyberdeckThemeId customThemeSource = CyberdeckThemeId.Grid;
+    private bool mainWindowCollapsed;
+    private bool restoreMainWindowSize;
+    private bool mainWindowDragging;
+    private Vector2 mainWindowDragOffset;
+    private Vector2 mainWindowExpandedSize;
 
     public bool IsOpen;
     public long InstallStatusTimestamp;
@@ -124,12 +150,15 @@ internal sealed partial class CyberdeckWindow
         Action checkForUpdates,
         Action<bool> autoOpenChanged,
         Func<bool> isPenumbraAvailable,
-        Func<UpdateUiSnapshot> getUpdateStatus)
+        Func<UpdateUiSnapshot> getUpdateStatus,
+        Func<NetworkStatsSnapshot> getNetworkStats)
     {
         this.config = config;
         this.penumbra = penumbra;
         this.textures = textures;
         this.textureLoadSource = textureLoadSource;
+        ReloadStaffProfiles();
+        ReloadTarotYesNoCatalog();
         this.queueReconcile = queueReconcile;
         this.queueReconcileForce = queueReconcileForce;
         this.assignAll = assignAll;
@@ -137,6 +166,7 @@ internal sealed partial class CyberdeckWindow
         this.autoOpenChanged = autoOpenChanged;
         this.isPenumbraAvailable = isPenumbraAvailable;
         this.getUpdateStatus = getUpdateStatus;
+        this.getNetworkStats = getNetworkStats;
     }
 
     public void OpenSettings()
@@ -147,36 +177,87 @@ internal sealed partial class CyberdeckWindow
 
     public void Draw()
     {
+        ApplyConfiguredTheme();
+        UpdateTarotTellQueue();
         if (IsOpen)
             DrawCyberdeckWindow();
         if (intrusionWindowOpen)
             DrawIntrusionWindow();
         if (cipherVaultWindowOpen)
             DrawCipherVaultWindow();
+        if (tarotRequestWindowOpen)
+            DrawTarotRequestWindow();
+        if (tarotAiWindowOpen)
+            DrawTarotAiWindow();
+        if (tarotYesNoWindowOpen)
+            DrawTarotYesNoWindow();
+        if (staffDirectoryWindowOpen)
+            DrawStaffDirectoryWindow();
+        if (tarotDebugWindowOpen)
+            DrawTarotDebugWindow();
+        if (tarotCardViewerOpen)
+            DrawTarotCardViewerWindow();
     }
 
     private void DrawCyberdeckWindow()
     {
         var uiScale = GetUiScale();
+        using var fontScale = CyberdeckTheme.PushFontScale(uiScale);
         using var theme = CyberdeckTheme.Push(uiScale);
-        ImGui.SetNextWindowSize(GetInitialWindowSize(uiScale), ImGuiCond.FirstUseEver);
-        var (minimumSize, maximumSize) = CyberdeckTheme.ResolveWindowConstraints(
-            uiScale,
-            new Vector2(280, 420),
-            new Vector2(720, 1000));
-        ImGui.SetNextWindowSizeConstraints(minimumSize, maximumSize);
-        if (!ImGui.Begin("The Grid Cyberdeck", ref IsOpen, ImGuiWindowFlags.NoScrollbar))
+        UpdateMainWindowDragPosition();
+        var initialSize = GetInitialWindowSize(uiScale);
+        var titleBarHeight = GetMainTitleBarHeight(uiScale);
+        if (mainWindowCollapsed)
+        {
+            var collapsedWidth = mainWindowExpandedSize.X > 0 ? mainWindowExpandedSize.X : initialSize.X;
+            var collapsedSize = new Vector2(collapsedWidth, titleBarHeight + 2);
+            ImGui.SetNextWindowSize(collapsedSize, ImGuiCond.Always);
+            ImGui.SetNextWindowSizeConstraints(collapsedSize, collapsedSize);
+        }
+        else
+        {
+            ImGui.SetNextWindowSize(
+                restoreMainWindowSize && mainWindowExpandedSize.X > 0
+                    ? mainWindowExpandedSize
+                    : initialSize,
+                restoreMainWindowSize ? ImGuiCond.Always : ImGuiCond.FirstUseEver);
+            restoreMainWindowSize = false;
+            var (minimumSize, maximumSize) = CyberdeckTheme.ResolveWindowConstraints(
+                uiScale,
+                new Vector2(280, 420),
+                new Vector2(720, 1000));
+            ImGui.SetNextWindowSizeConstraints(minimumSize, maximumSize);
+        }
+
+        var windowFlags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoScrollbar;
+        if (mainWindowCollapsed)
+            windowFlags |= ImGuiWindowFlags.NoResize;
+        if (!ImGui.Begin("The Grid Cyberdeck", ref IsOpen, windowFlags))
         {
             ImGui.End();
             return;
         }
 
-        ImGui.SetWindowFontScale(uiScale);
+        if (!DrawMainWindowTitleBar(uiScale))
+        {
+            ImGui.End();
+            return;
+        }
+
         UpdateBadges();
         var updateStatus = getUpdateStatus();
-        if (config.FirstRunCompleted && ShouldShowUpdateStatusRail(updateStatus))
+        // Home owns a fixed status surface inside the banner terminal. Do not insert
+        // a second rail above it and shift the whole deck while an operation runs.
+        if (config.FirstRunCompleted &&
+            selectedView != DeckView.Home &&
+            ShouldShowUpdateStatusRail(updateStatus))
         {
             DrawUpdateStatusRail(updateStatus);
+            ImGui.Spacing();
+        }
+        if (tarotDebugSession.Role == TarotDebugRole.Customer && tarotDebugSession.Phase == TarotDebugPhase.InviteReceived)
+        {
+            DrawTarotConnectionPromptInline();
             ImGui.Spacing();
         }
 
@@ -201,13 +282,177 @@ internal sealed partial class CyberdeckWindow
 
         ImGui.EndChild();
         DrawTransientFeedbackOverlay();
-        ImGui.SetWindowFontScale(1.0f);
         ImGui.End();
+    }
+
+    private static float GetMainTitleBarHeight(float uiScale)
+        => MathF.Max(30 * uiScale, ImGui.GetFontSize() + (12 * uiScale));
+
+    private bool DrawMainWindowTitleBar(float uiScale)
+    {
+        var windowPos = ImGui.GetWindowPos();
+        var windowSize = ImGui.GetWindowSize();
+        var titleHeight = GetMainTitleBarHeight(uiScale);
+        var border = MathF.Max(1, uiScale);
+        var barMin = windowPos;
+        var barMax = new Vector2(windowPos.X + windowSize.X, windowPos.Y + titleHeight);
+        var buttonWidth = titleHeight;
+        var closeMin = new Vector2(barMax.X - buttonWidth, barMin.Y);
+        var collapseMin = new Vector2(closeMin.X - buttonWidth, barMin.Y);
+        var buttonSize = new Vector2(buttonWidth, barMax.Y - barMin.Y);
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.PushClipRect(windowPos, windowPos + windowSize, false);
+
+        drawList.AddRectFilled(
+            barMin,
+            barMax,
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.PanelRaised, 0.98f)),
+            5 * uiScale,
+            ImDrawFlags.RoundCornersTop);
+        var borderColor = ImGui.GetColorU32(CyberdeckTheme.Palette.Border);
+
+        var title = "The Grid Cyberdeck";
+        var titleSize = ImGui.CalcTextSize(title);
+        drawList.AddText(
+            new Vector2(barMin.X + (12 * uiScale), barMin.Y + ((buttonSize.Y - titleSize.Y) * 0.5f)),
+            ImGui.GetColorU32(CyberdeckTheme.Palette.Text),
+            title);
+
+        ImGui.SetCursorScreenPos(barMin);
+        var dragWidth = MathF.Max(1, collapseMin.X - barMin.X);
+        ImGui.InvisibleButton("##cyberdeck_title_drag", new Vector2(dragWidth, buttonSize.Y));
+        if (ImGui.IsItemActivated())
+        {
+            mainWindowDragging = true;
+            mainWindowDragOffset = ImGui.GetIO().MousePos - windowPos;
+        }
+
+        ImGui.SetCursorScreenPos(collapseMin);
+        var collapseClicked = ImGui.InvisibleButton("##cyberdeck_title_collapse", buttonSize);
+        var collapseHovered = ImGui.IsItemHovered();
+        var collapseActive = ImGui.IsItemActive();
+        DrawMainTitleButtonBackground(drawList, collapseMin, collapseMin + buttonSize, collapseHovered, collapseActive, false);
+        var collapseCenter = collapseMin + (buttonSize * 0.5f);
+        var iconHalf = 5 * uiScale;
+        if (mainWindowCollapsed)
+        {
+            drawList.AddRect(
+                collapseCenter - new Vector2(iconHalf),
+                collapseCenter + new Vector2(iconHalf),
+                ImGui.GetColorU32(CyberdeckTheme.Palette.Text),
+                0,
+                ImDrawFlags.None,
+                MathF.Max(1, 1.4f * uiScale));
+        }
+        else
+        {
+            drawList.AddLine(
+                new Vector2(collapseCenter.X - iconHalf, collapseCenter.Y),
+                new Vector2(collapseCenter.X + iconHalf, collapseCenter.Y),
+                ImGui.GetColorU32(CyberdeckTheme.Palette.Text),
+                MathF.Max(1, 1.4f * uiScale));
+        }
+
+        ImGui.SetCursorScreenPos(closeMin);
+        var closeClicked = ImGui.InvisibleButton("##cyberdeck_title_close", buttonSize);
+        var closeHovered = ImGui.IsItemHovered();
+        var closeActive = ImGui.IsItemActive();
+        DrawMainTitleButtonBackground(drawList, closeMin, closeMin + buttonSize, closeHovered, closeActive, true);
+        var closeCenter = closeMin + (buttonSize * 0.5f);
+        var closeHalf = 5 * uiScale;
+        var closeColor = ImGui.GetColorU32(CyberdeckTheme.Palette.Text);
+        var closeThickness = MathF.Max(1, 1.4f * uiScale);
+        drawList.AddLine(
+            closeCenter - new Vector2(closeHalf),
+            closeCenter + new Vector2(closeHalf),
+            closeColor,
+            closeThickness);
+        drawList.AddLine(
+            closeCenter + new Vector2(-closeHalf, closeHalf),
+            closeCenter + new Vector2(closeHalf, -closeHalf),
+            closeColor,
+            closeThickness);
+
+        // Draw the outline after the controls so hover fills cannot cover it. Keeping
+        // the stroke inside the clip rectangle also preserves the right edge at every
+        // UI scale instead of clipping half of the line at the window boundary.
+        var borderInset = border * 0.5f;
+        drawList.AddRect(
+            barMin + new Vector2(borderInset),
+            barMax - new Vector2(borderInset),
+            borderColor,
+            5 * uiScale,
+            ImDrawFlags.RoundCornersTop,
+            border);
+        drawList.PopClipRect();
+
+        if (closeClicked)
+            IsOpen = false;
+        if (collapseClicked)
+        {
+            if (mainWindowCollapsed)
+            {
+                mainWindowCollapsed = false;
+                restoreMainWindowSize = true;
+            }
+            else
+            {
+                mainWindowExpandedSize = windowSize;
+                mainWindowCollapsed = true;
+            }
+        }
+        else if (!mainWindowCollapsed)
+        {
+            mainWindowExpandedSize = windowSize;
+        }
+
+        ImGui.SetCursorPos(new Vector2(
+            ImGui.GetStyle().WindowPadding.X,
+            titleHeight + ImGui.GetStyle().WindowPadding.Y));
+        return IsOpen && !mainWindowCollapsed && !collapseClicked;
+    }
+
+    private void UpdateMainWindowDragPosition()
+    {
+        if (!mainWindowDragging)
+            return;
+
+        if (!ImGui.IsMouseDown(ImGuiMouseButton.Left))
+        {
+            mainWindowDragging = false;
+            return;
+        }
+
+        ImGui.SetNextWindowPos(
+            ImGui.GetIO().MousePos - mainWindowDragOffset,
+            ImGuiCond.Always);
+    }
+
+    private static void DrawMainTitleButtonBackground(
+        ImDrawListPtr drawList,
+        Vector2 min,
+        Vector2 max,
+        bool hovered,
+        bool active,
+        bool closeButton)
+    {
+        if (!hovered && !active)
+            return;
+
+        var color = closeButton
+            ? active
+                ? new Vector4(0.85f, 0.08f, 0.20f, 0.96f)
+                : new Vector4(0.62f, 0.06f, 0.17f, 0.90f)
+            : active
+                ? CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.48f)
+                : CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.28f);
+        drawList.AddRectFilled(min, max, ImGui.GetColorU32(color));
     }
 
     private void DrawIntrusionWindow()
     {
         var uiScale = GetUiScale();
+        using var fontScale = CyberdeckTheme.PushFontScale(uiScale);
         using var theme = CyberdeckTheme.Push(uiScale);
         ImGui.SetNextWindowSize(new Vector2(620, 700) * uiScale, ImGuiCond.FirstUseEver);
         var (minimumSize, maximumSize) = CyberdeckTheme.ResolveWindowConstraints(
@@ -229,14 +474,18 @@ internal sealed partial class CyberdeckWindow
             return;
         }
 
-        ImGui.SetWindowFontScale(uiScale);
         if (ImGui.BeginChild("intrusion_body", Vector2.Zero, true))
             DrawIntrusionView();
         ImGui.EndChild();
-        ImGui.SetWindowFontScale(1f);
         ImGui.End();
         if (!intrusionWindowOpen)
             showIntrusionPayload = false;
+    }
+
+    private void OpenIntrusionGame()
+    {
+        intrusionWindowOpen = true;
+        focusIntrusionWindow = true;
     }
 
     private static bool ShouldShowUpdateStatusRail(UpdateUiSnapshot status)
@@ -490,6 +739,9 @@ internal sealed partial class CyberdeckWindow
             case DeckView.Network:
                 DrawNetworkView();
                 break;
+            case DeckView.Services:
+                DrawServicesView();
+                break;
             case DeckView.Settings:
                 DrawSettingsView();
                 break;
@@ -572,15 +824,29 @@ internal sealed partial class CyberdeckWindow
     {
         try
         {
-            return PluginService.Objects
-                .OfType<IPlayerCharacter>()
-                .Count(IsNetworkPlayer);
+            return NetworkGuestScanner.Capture().Count +
+                   (NetworkGuestScanner.CaptureLocal() is null ? 0 : 1);
         }
         catch
         {
             return 0;
         }
     }
+
+    private static bool IsVenueManager()
+    {
+        try
+        {
+            return IsVenueManager(NetworkGuestScanner.CaptureLocal());
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsVenueManager(NetworkGuestObservation? localPlayer)
+        => localPlayer is not null && VenueManagerIdentities.Contains(localPlayer.Identity);
 
     private static string GetDeckViewTitle(DeckView view)
         => view switch
@@ -589,6 +855,7 @@ internal sealed partial class CyberdeckWindow
             DeckView.Wifi => "Wi-Fi",
             DeckView.Menu => "Menu",
             DeckView.Network => "Network",
+            DeckView.Services => "Services",
             DeckView.Settings => "Settings",
             _ => "The Grid",
         };
@@ -667,6 +934,13 @@ internal sealed partial class CyberdeckWindow
         if (ImGui.Button($"NAVIGATE // {config.VenueAddress}", new Vector2(ImGui.GetContentRegionAvail().X, 0)))
             OpenAddress();
         DrawHoverTooltip(LifestreamNavigationTooltip);
+
+        var updateStatus = getUpdateStatus();
+        if (CyberdeckWidgets.DrawActionButton(
+                "CHECK FOR UPDATES",
+                updateStatus.IsBusy,
+                new Vector2(ImGui.GetContentRegionAvail().X, 0)))
+            checkForUpdates();
         ImGui.Spacing();
     }
 
@@ -1084,7 +1358,10 @@ internal sealed partial class CyberdeckWindow
     {
         var uiScale = GetUiScale();
         var updateStatus = getUpdateStatus();
-        var networkSignalCount = GetNetworkSignalCount();
+        var venueManager = IsVenueManager();
+        var networkTelemetry = venueManager
+            ? $"{GetNetworkSignalCount():00} SIGNALS"
+            : "LOCAL LINK";
         var spacing = ImGui.GetStyle().ItemSpacing.X;
         var useTwoColumns = width >= (260 * uiScale);
         var buttonWidth = useTwoColumns ? (width - spacing) / 2 : width;
@@ -1103,17 +1380,13 @@ internal sealed partial class CyberdeckWindow
         if (useTwoColumns)
             ImGui.SameLine();
         var networkPos = ImGui.GetCursorScreenPos();
-        if (DrawImageNavButton("Network", "network.png", buttonSize, $"{networkSignalCount:00} SIGNALS"))
+        if (DrawImageNavButton("Network", "network.png", buttonSize, networkTelemetry))
             SelectDeckView(DeckView.Network);
-        if (badgeCounts.TryGetValue(DeckView.Network, out var networkBadge) && networkBadge > 0)
+        if (venueManager && badgeCounts.TryGetValue(DeckView.Network, out var networkBadge) && networkBadge > 0)
             DrawTileBadge(networkPos, buttonSize, networkBadge, badgeColors.GetValueOrDefault(DeckView.Network, CyberdeckTheme.Palette.Error));
 
-        if (DrawDisabledImageNavButton("Services", "services.png", buttonSize))
-        {
-            intrusionWindowOpen = true;
-            focusIntrusionWindow = true;
-            SetTransientFeedback("UNAUTHORIZED PORT OPEN");
-        }
+        if (DrawImageNavButton("Services", "services.png", buttonSize, "03 ACTIVITIES"))
+            SelectDeckView(DeckView.Services);
         if (useTwoColumns)
             ImGui.SameLine();
         var settingsPos = ImGui.GetCursorScreenPos();
@@ -1143,10 +1416,11 @@ internal sealed partial class CyberdeckWindow
             DrawTileGlow(start, size, hovered, glitching, uiScale);
             var iconSize = FitTileIcon(wrap, size, uiScale, hasTelemetry: true);
             var iconPos = new Vector2(start.X + (size.X - iconSize.X) / 2, start.Y + (12 * uiScale));
+            var iconTint = ImGui.GetColorU32(CyberdeckTheme.Palette.Cyan);
             if (glitching)
-                DrawGlitchedImage(wrap.Handle, iconPos, iconSize, ImGui.GetColorU32(Vector4.One), uiScale, reduceMotion: false);
+                DrawGlitchedImage(wrap.Handle, iconPos, iconSize, iconTint, uiScale, reduceMotion: false);
             else
-                ImGui.GetWindowDrawList().AddImage(wrap.Handle, iconPos, iconPos + iconSize);
+                ImGui.GetWindowDrawList().AddImage(wrap.Handle, iconPos, iconPos + iconSize, Vector2.Zero, Vector2.One, iconTint);
             if (glitching)
                 DrawHoverGlitchOverlay(start, size, uiScale);
 
@@ -1276,204 +1550,6 @@ internal sealed partial class CyberdeckWindow
         return new string(characters);
     }
 
-    private bool DrawDisabledImageNavButton(string label, string imageName, Vector2 size)
-    {
-        ImGui.BeginGroup();
-        var wrap = GetTextureWrap(imageName);
-        var start = ImGui.GetCursorScreenPos();
-        var drawList = ImGui.GetWindowDrawList();
-        var uiScale = GetUiScale();
-        const string offlineLabel = "OFFLINE";
-        var offlineSize = ImGui.CalcTextSize(offlineLabel);
-        var offlinePadding = new Vector2(6, 3) * uiScale;
-        var offlineMax = start + new Vector2(size.X - (8 * uiScale), (8 * uiScale) + offlineSize.Y + (offlinePadding.Y * 2));
-        var offlineMin = offlineMax - offlineSize - (offlinePadding * 2);
-        var offlineTextPosition = offlineMin + offlinePadding;
-
-        // Submit the small secret target before the decorative tile. Keep its horizontal
-        // bounds exact so neither neighboring glyph in OFFLINE can activate the port.
-        var secondFPosition = offlineTextPosition + new Vector2(ImGui.CalcTextSize("OF").X, 0);
-        var secondFSize = ImGui.CalcTextSize("F");
-        var verticalPadding = 4 * uiScale;
-        ImGui.SetCursorScreenPos(secondFPosition - new Vector2(0, verticalPadding));
-        var secretActivated = ImGui.InvisibleButton(
-            "##services_offline_second_f",
-            new Vector2(secondFSize.X, secondFSize.Y + (verticalPadding * 2)));
-        var secondFHovered = ImGui.IsItemHovered();
-        ImGui.SetCursorScreenPos(start);
-        ImGui.Dummy(size);
-
-        drawList.AddRectFilled(
-            start,
-            start + size,
-            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Panel, 0.76f)),
-            5 * uiScale);
-        DrawTileGlow(start, size, hovered: false, glitching: false, uiScale: uiScale);
-
-        var textWidth = ImGui.CalcTextSize(label).X;
-        var textPos = new Vector2(start.X + MathF.Max(0, (size.X - textWidth) / 2), start.Y + size.Y - (25 * uiScale));
-        var disabledColor = ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.TextMuted, 0.60f));
-
-        if (wrap is not null)
-        {
-            var iconSize = FitTileIcon(wrap, size, uiScale);
-            var iconPos = new Vector2(start.X + (size.X - iconSize.X) / 2, start.Y + (12 * uiScale));
-            DrawGlitchedImage(wrap.Handle, iconPos, iconSize, disabledColor, uiScale, config.ReduceMotion);
-        }
-
-        drawList.AddText(textPos, disabledColor, label);
-        DrawGlitchOverlay(start, size, textPos, label, uiScale, config.ReduceMotion);
-
-        drawList.AddRectFilled(offlineMin, offlineMax, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Error, 0.14f)), 3 * uiScale);
-        drawList.AddRect(offlineMin, offlineMax, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Error, 0.66f)), 3 * uiScale);
-        var now = Environment.TickCount64;
-        var hintProgress = GetServicesHintProgress(now);
-        var hintBlinking = IsServicesSecondFBlinking(now, hintProgress);
-        var errorColor = ImGui.GetColorU32(CyberdeckTheme.Palette.Error);
-        var secondFColor = secondFHovered
-            ? ImGui.GetColorU32(CyberdeckTheme.Palette.Magenta)
-            : hintBlinking
-                ? ImGui.GetColorU32(CyberdeckTheme.Palette.Cyan)
-                : errorColor;
-        drawList.AddText(offlineTextPosition, errorColor, "OF");
-        drawList.AddText(secondFPosition, secondFColor, "F");
-        drawList.AddText(secondFPosition + new Vector2(secondFSize.X, 0), errorColor, "LINE");
-
-        if (secondFHovered)
-        {
-            drawList.AddLine(
-                secondFPosition + new Vector2(0, secondFSize.Y + uiScale),
-                secondFPosition + new Vector2(secondFSize.X, secondFSize.Y + uiScale),
-                ImGui.GetColorU32(CyberdeckTheme.Palette.Magenta),
-                MathF.Max(1, uiScale));
-        }
-
-        if (hintProgress >= 0)
-            DrawServicesDiscoveryHint(drawList, secondFPosition, secondFSize, uiScale, hintProgress);
-        ImGui.EndGroup();
-        return secretActivated;
-    }
-
-    private bool IsServicesSecondFBlinking(long now, float cursorHintProgress)
-    {
-        if (config.ReduceMotion)
-        {
-            servicesBlinkUntil = 0;
-            nextServicesBlinkAt = 0;
-            return false;
-        }
-
-        if (cursorHintProgress is >= 0.24f and <= 0.84f &&
-            ((int)(cursorHintProgress * 22) & 1) == 0)
-            return true;
-
-        if (nextServicesBlinkAt == 0)
-            nextServicesBlinkAt = now + Random.Shared.Next(1400, 3501);
-
-        if (now >= nextServicesBlinkAt)
-        {
-            servicesBlinkUntil = now + Random.Shared.Next(360, 721);
-            nextServicesBlinkAt = servicesBlinkUntil + Random.Shared.Next(2500, 6501);
-        }
-
-        return now < servicesBlinkUntil && ((now / 95) & 1) == 0;
-    }
-
-    private float GetServicesHintProgress(long now)
-    {
-        const long durationMs = 2200;
-        if (config.ReduceMotion)
-        {
-            servicesHintStartedAt = 0;
-            nextServicesHintAt = 0;
-            return -1;
-        }
-
-        if (servicesHintStartedAt == 0)
-        {
-            if (nextServicesHintAt == 0)
-                nextServicesHintAt = now + Random.Shared.Next(3500, 7501);
-
-            if (now < nextServicesHintAt)
-                return -1;
-
-            servicesHintStartedAt = now;
-        }
-
-        var elapsed = now - servicesHintStartedAt;
-        if (elapsed < durationMs)
-            return Math.Clamp(elapsed / (float)durationMs, 0, 1);
-
-        servicesHintStartedAt = 0;
-        nextServicesHintAt = now + Random.Shared.Next(14000, 30001);
-        return -1;
-    }
-
-    private static void DrawServicesDiscoveryHint(
-        ImDrawListPtr drawList,
-        Vector2 secondFPosition,
-        Vector2 secondFSize,
-        float uiScale,
-        float progress)
-    {
-        var movement = SmoothStep(Math.Clamp((progress - 0.05f) / 0.48f, 0, 1));
-        var fadeIn = Math.Clamp(progress / 0.12f, 0, 1);
-        var fadeOut = Math.Clamp((1 - progress) / 0.16f, 0, 1);
-        var alpha = MathF.Min(fadeIn, fadeOut);
-        var clickPoint = secondFPosition + new Vector2(secondFSize.X * 0.62f, secondFSize.Y * 0.62f);
-        var cursorStart = clickPoint + new Vector2(38, 27) * uiScale;
-        var cursorPosition = Vector2.Lerp(cursorStart, clickPoint, movement);
-
-        DrawCyberCursorShape(
-            drawList,
-            cursorPosition + new Vector2(1.5f, 1.5f) * uiScale,
-            uiScale,
-            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Magenta, 0.42f * alpha)));
-        DrawCyberCursorShape(
-            drawList,
-            cursorPosition,
-            uiScale,
-            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.95f * alpha)));
-
-        var clickProgress = (progress - 0.53f) / 0.18f;
-        if (clickProgress is >= 0 and <= 1)
-        {
-            var ringAlpha = 1 - clickProgress;
-            var radius = (3 + (13 * clickProgress)) * uiScale;
-            drawList.AddCircle(
-                clickPoint,
-                radius,
-                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.88f * ringAlpha)),
-                18,
-                MathF.Max(1, 1.5f * uiScale));
-            drawList.AddCircle(
-                clickPoint,
-                radius + (2 * uiScale),
-                ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Magenta, 0.52f * ringAlpha)),
-                18,
-                MathF.Max(1, uiScale));
-        }
-    }
-
-    private static void DrawCyberCursorShape(
-        ImDrawListPtr drawList,
-        Vector2 point,
-        float uiScale,
-        uint color)
-    {
-        var lower = point + new Vector2(1.5f, 17) * uiScale;
-        var notch = point + new Vector2(6, 12) * uiScale;
-        drawList.AddTriangleFilled(point, lower, notch, color);
-        drawList.AddLine(
-            notch,
-            point + new Vector2(11, 20) * uiScale,
-            color,
-            MathF.Max(2, 3.5f * uiScale));
-    }
-
-    private static float SmoothStep(float value)
-        => value * value * (3 - (2 * value));
-
     private static void DrawGlitchedImage(ImTextureID textureHandle, Vector2 iconPos, Vector2 iconSize, uint baseColor, float uiScale, bool reduceMotion)
     {
         var drawList = ImGui.GetWindowDrawList();
@@ -1487,24 +1563,9 @@ internal sealed partial class CyberdeckWindow
         var shift = MathF.Sin(t * 1.05f) * 2.8f * uiScale;
         var jitter = MathF.Sin(t * 1.65f) > 0.78f ? 2.0f * uiScale : 0.0f;
 
-        drawList.AddImage(textureHandle, iconPos + new Vector2(-shift - jitter, 0), iconPos + iconSize + new Vector2(-shift - jitter, 0), Vector2.Zero, Vector2.One, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Error, 0.20f)));
+        drawList.AddImage(textureHandle, iconPos + new Vector2(-shift - jitter, 0), iconPos + iconSize + new Vector2(-shift - jitter, 0), Vector2.Zero, Vector2.One, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Magenta, 0.20f)));
         drawList.AddImage(textureHandle, iconPos + new Vector2(shift + jitter, 0), iconPos + iconSize + new Vector2(shift + jitter, 0), Vector2.Zero, Vector2.One, ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.22f)));
         drawList.AddImage(textureHandle, iconPos, iconPos + iconSize, Vector2.Zero, Vector2.One, baseColor);
-    }
-
-    private static void DrawGlitchOverlay(Vector2 start, Vector2 size, Vector2 textPos, string label, float uiScale, bool reduceMotion)
-    {
-        if (reduceMotion)
-            return;
-
-        var drawList = ImGui.GetWindowDrawList();
-        var t = (float)ImGui.GetTime();
-        var pulse = 0.62f + (MathF.Sin(t * 7.0f) * 0.22f);
-        var cyan = ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.42f * pulse));
-        var red = ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Error, 0.38f * pulse));
-
-        drawList.AddText(textPos + new Vector2(-2.5f, -0.5f) * uiScale, red, label);
-        drawList.AddText(textPos + new Vector2(2.5f, 0.5f) * uiScale, cyan, label);
     }
 
     private void DrawWifiView()
@@ -1515,13 +1576,12 @@ internal sealed partial class CyberdeckWindow
 
         DrawTerminalLine("Lightless");
         DrawCopyableTerminalLine("Id", LightlessSyncshellId, "lightless_id");
-        DrawCopyableTerminalLine("Pwd", LightlessSyncshellId, "lightless_pwd");
-        ImGui.TextDisabled("same as id");
+        ImGui.TextDisabled("No password required");
         ImGui.Spacing();
 
         DrawTerminalLine("PlayerSync");
         DrawCopyableTerminalLine("Id", PlayerSyncSyncshellId, "playersync_id");
-        ImGui.TextDisabled("can join without password");
+        ImGui.TextDisabled("No password required");
         ImGui.Spacing();
         DrawNeonSeparator();
         ImGui.Spacing();
@@ -1530,6 +1590,646 @@ internal sealed partial class CyberdeckWindow
         ImGui.Spacing();
         if (ImGui.Button("Discord"))
             OpenDiscord();
+    }
+
+    private void DrawServicesView()
+    {
+        DrawSettingsGroupHeader("TAROT");
+        DrawMutedWrapped("Quick local readings and live readings with The Grid's tarot reader.");
+        ImGui.Spacing();
+
+        var uiScale = GetUiScale();
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var useTwoColumns = availableWidth >= (280 * uiScale);
+        var cardWidth = useTwoColumns
+            ? MathF.Max(1, (availableWidth - spacing) / 2)
+            : availableWidth;
+        var cardSize = new Vector2(cardWidth, 232 * uiScale);
+
+        var openArcana = DrawServiceLauncherCard(
+            "ARCANA CAST",
+            "Tarot reading",
+            config.TarotHost ? "HOST CONSOLE" : "SELF-GUIDED / LIVE",
+            "tarot.png",
+            CyberdeckTheme.Palette.Magenta,
+            cardSize,
+            portrait: false);
+
+        if (openArcana)
+        {
+            if (config.TarotHost)
+                OpenTarotDebug();
+            else
+                OpenTarotRequestWindow();
+        }
+
+        ImGui.Spacing();
+        ImGui.Spacing();
+        DrawNeonSeparator();
+        ImGui.Spacing();
+        DrawSettingsGroupHeader("STAFF DIRECTORY");
+        DrawMutedWrapped("Staff profiles, portfolios, and music links.");
+        ImGui.Spacing();
+
+        if (DrawServiceLauncherCard(
+            "VISUAL CAPTURE",
+            "Photographer profiles",
+            GetStaffDirectoryStatus("photography"),
+            "photo.png",
+            CyberdeckTheme.Palette.Cyan,
+            cardSize,
+            portrait: false))
+        {
+            OpenStaffDirectory("VISUAL CAPTURE", "photography");
+        }
+
+        StartNextCardInSection(1);
+
+        if (DrawServiceLauncherCard(
+            "RESIDENT DJS",
+            "Profiles and music",
+            GetStaffDirectoryStatus("dj"),
+            "dj.png",
+            CyberdeckTheme.Palette.Magenta,
+            cardSize,
+            portrait: false))
+        {
+            OpenStaffDirectory("RESIDENT DJS", "dj");
+        }
+
+        StartNextCardInSection(2);
+
+        if (DrawServiceLauncherCard(
+            "BAR STAFF",
+            "Bartender profiles",
+            GetStaffDirectoryStatus("bar"),
+            "bar.png",
+            CyberdeckTheme.Palette.Amber,
+            cardSize,
+            portrait: false))
+        {
+            OpenStaffDirectory("BAR STAFF", "bar");
+        }
+
+        ImGui.Spacing();
+        ImGui.Spacing();
+        DrawNeonSeparator();
+        ImGui.Spacing();
+        DrawSettingsGroupHeader("HACKING ACTIVITIES");
+        DrawMutedWrapped("Local challenges available through the Cyberdeck.");
+        ImGui.Spacing();
+
+        if (DrawServiceLauncherCard(
+            "BREACH PROTOCOL",
+            "Code matrix",
+            "3 DIFFICULTIES",
+            "hack.png",
+            CyberdeckTheme.Palette.Cyan,
+            cardSize,
+            portrait: false))
+            OpenIntrusionGame();
+
+        StartNextCardInSection(1);
+
+        if (DrawServiceLauncherCard(
+            "CIPHER VAULT",
+            "Cryptography challenge",
+            "ENCRYPTED ARCHIVE",
+            "vault.png",
+            CyberdeckTheme.Palette.Amber,
+            cardSize,
+            portrait: false))
+            OpenCipherVault();
+
+        void StartNextCardInSection(int index)
+        {
+            if (useTwoColumns && index % 2 == 1)
+                ImGui.SameLine();
+            else
+                ImGui.Spacing();
+        }
+    }
+
+    private bool DrawServiceLauncherCard(
+        string title,
+        string description,
+        string status,
+        string imageName,
+        Vector4 accent,
+        Vector2 size,
+        bool portrait,
+        string actionLabel = "OPEN")
+    {
+        var uiScale = GetUiScale();
+        var start = ImGui.GetCursorScreenPos();
+        var max = start + size;
+        var drawList = ImGui.GetWindowDrawList();
+        var clicked = ImGui.InvisibleButton($"##service_{title}", size);
+        var hovered = ImGui.IsItemHovered();
+        var active = ImGui.IsItemActive();
+
+        drawList.AddRectFilled(
+            start,
+            max,
+            ImGui.GetColorU32(active
+                ? CyberdeckTheme.WithAlpha(accent, 0.18f)
+                : hovered
+                    ? CyberdeckTheme.WithAlpha(accent, 0.10f)
+                    : CyberdeckTheme.Palette.Panel),
+            5 * uiScale);
+        drawList.AddRect(
+            start,
+            max,
+            ImGui.GetColorU32(hovered
+                ? CyberdeckTheme.WithAlpha(accent, 0.82f)
+                : CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.TextMuted, 0.28f)),
+            5 * uiScale,
+            ImDrawFlags.None,
+            MathF.Max(1, uiScale));
+
+        var topLineInset = 10 * uiScale;
+        drawList.AddLine(
+            start + new Vector2(topLineInset, 1 * uiScale),
+            new Vector2(max.X - topLineInset, start.Y + (1 * uiScale)),
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(accent, hovered ? 0.95f : 0.52f)),
+            MathF.Max(1, (hovered ? 2 : 1) * uiScale));
+
+        var imageZoneMin = start + new Vector2(1 * uiScale);
+        var imageZoneMax = new Vector2(max.X - (1 * uiScale), start.Y + (122 * uiScale));
+        drawList.AddRectFilled(
+            imageZoneMin,
+            imageZoneMax,
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(accent, hovered ? 0.055f : 0.025f)),
+            4 * uiScale,
+            ImDrawFlags.RoundCornersTop);
+
+        var texture = GetTextureWrap(imageName);
+        if (texture is not null)
+        {
+            var imageLimit = portrait
+                ? new Vector2(54, 106) * uiScale
+                : new Vector2(88, 88) * uiScale;
+            var scale = MathF.Min(
+                imageLimit.X / MathF.Max(1, texture.Width),
+                imageLimit.Y / MathF.Max(1, texture.Height));
+            var imageSize = new Vector2(texture.Width * scale, texture.Height * scale);
+            var imageMin = new Vector2(
+                start.X + ((size.X - imageSize.X) * 0.5f),
+                imageZoneMin.Y + ((imageZoneMax.Y - imageZoneMin.Y - imageSize.Y) * 0.5f));
+            drawList.AddImage(
+                texture.Handle,
+                imageMin,
+                imageMin + imageSize,
+                Vector2.Zero,
+                Vector2.One,
+                ImGui.GetColorU32(accent));
+        }
+
+        var textWidth = MathF.Max(1, size.X - (14 * uiScale));
+        DrawCenteredServiceText(title, start.Y + (137 * uiScale), accent);
+        DrawCenteredServiceText(description, start.Y + (164 * uiScale), CyberdeckTheme.Palette.Text);
+        DrawCenteredServiceText(status, start.Y + (190 * uiScale), CyberdeckTheme.Palette.TextMuted);
+        DrawCenteredServiceText(hovered ? $"{actionLabel}  >" : actionLabel, start.Y + (214 * uiScale), accent);
+
+        return clicked;
+
+        void DrawCenteredServiceText(string value, float y, Vector4 color)
+        {
+            var displayed = EllipsizeToWidth(value, textWidth);
+            var textSize = ImGui.CalcTextSize(displayed);
+            drawList.AddText(
+                new Vector2(start.X + MathF.Max(0, (size.X - textSize.X) * 0.5f), y),
+                ImGui.GetColorU32(color),
+                displayed);
+        }
+    }
+
+    private void ReloadStaffProfiles()
+    {
+        staffProfiles = StaffProfileCatalog.Load(
+            textureLoadSource,
+            out staffProfilesSourcePath,
+            out staffProfilesLoadError);
+    }
+
+    private string GetStaffDirectoryStatus(string category)
+    {
+        var count = staffProfiles.Count(profile =>
+            string.Equals(profile.Category, category, StringComparison.OrdinalIgnoreCase));
+        return count == 0 ? "COMING SOON" : $"{count:00} {(count == 1 ? "PROFILE" : "PROFILES")}";
+    }
+
+    private void OpenStaffDirectory(string title, string category)
+    {
+        ReloadStaffProfiles();
+        staffDirectoryTitle = title;
+        staffDirectoryCategory = category;
+        staffDirectoryWindowOpen = true;
+        focusStaffDirectoryWindow = true;
+    }
+
+    private void DrawStaffDirectoryWindow()
+    {
+        var uiScale = GetUiScale();
+        using var fontScale = CyberdeckTheme.PushFontScale(uiScale);
+        using var theme = CyberdeckTheme.Push(uiScale);
+        ImGui.SetNextWindowSize(new Vector2(720, 650) * uiScale, ImGuiCond.FirstUseEver);
+        var (minimumSize, maximumSize) = CyberdeckTheme.ResolveWindowConstraints(
+            uiScale,
+            new Vector2(540, 500),
+            new Vector2(980, 900));
+        ImGui.SetNextWindowSizeConstraints(minimumSize, maximumSize);
+        if (focusStaffDirectoryWindow)
+        {
+            ImGui.SetNextWindowFocus();
+            focusStaffDirectoryWindow = false;
+        }
+
+        if (!ImGui.Begin($"{staffDirectoryTitle}###grid_staff_directory", ref staffDirectoryWindowOpen))
+        {
+            ImGui.End();
+            return;
+        }
+
+        ImGui.TextColored(CyberdeckTheme.Palette.Cyan, staffDirectoryTitle);
+        ImGui.SameLine();
+        var reloadWidth = 126 * uiScale;
+        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), ImGui.GetWindowContentRegionMax().X - reloadWidth));
+        if (ImGui.SmallButton("RELOAD PROFILES"))
+            ReloadStaffProfiles();
+        DrawHoverTooltip(staffProfilesSourcePath);
+        ImGui.Spacing();
+        DrawNeonSeparator();
+        ImGui.Spacing();
+
+        if (!string.IsNullOrWhiteSpace(staffProfilesLoadError))
+        {
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, staffProfilesLoadError);
+            ImGui.Spacing();
+        }
+
+        var profiles = staffProfiles
+            .Where(profile => string.Equals(profile.Category, staffDirectoryCategory, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (profiles.Length == 0)
+        {
+            DrawMutedWrapped("No profiles are published in this directory yet.");
+        }
+        else
+        {
+            for (var index = 0; index < profiles.Length; index++)
+            {
+                if (index > 0)
+                {
+                    ImGui.Spacing();
+                    DrawNeonSeparator();
+                    ImGui.Spacing();
+                }
+
+                DrawStaffProfile(profiles[index]);
+            }
+        }
+
+        DrawStaffRequestConfirmation();
+        ImGui.End();
+    }
+
+    private void DrawStaffProfile(StaffProfile profile)
+    {
+        var uiScale = GetUiScale();
+        if (!ImGui.BeginTable(
+                $"staff_profile_{profile.Id}",
+                2,
+                ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.BordersInnerV))
+            return;
+
+        ImGui.TableSetupColumn("IMAGE", ImGuiTableColumnFlags.WidthFixed, 210 * uiScale);
+        ImGui.TableSetupColumn("PROFILE", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableNextRow();
+        ImGui.TableSetColumnIndex(0);
+
+        var texture = GetTextureWrap(profile.Image);
+        if (texture is not null)
+        {
+            var scale = MathF.Min(
+                (190 * uiScale) / MathF.Max(1, texture.Width),
+                (352 * uiScale) / MathF.Max(1, texture.Height));
+            ImGui.Image(texture.Handle, new Vector2(texture.Width * scale, texture.Height * scale));
+        }
+        else
+        {
+            ImGui.Dummy(new Vector2(190, 352) * uiScale);
+            ImGui.TextColored(CyberdeckTheme.Palette.Error, "PROFILE IMAGE NOT FOUND");
+        }
+
+        ImGui.TableSetColumnIndex(1);
+        ImGui.TextColored(CyberdeckTheme.Palette.Magenta, profile.Name.ToUpperInvariant());
+        ImGui.Spacing();
+        if (!string.IsNullOrWhiteSpace(profile.Optional?.Pronunciation))
+            DrawStaffProfileField("PRONUNCIATION", profile.Optional.Pronunciation);
+        DrawStaffProfileField("CHARACTER", profile.CharacterName);
+        DrawStaffProfileField("AGE", profile.Age);
+        if (!string.IsNullOrWhiteSpace(profile.Optional?.Pronouns))
+            DrawStaffProfileField("PRONOUNS", profile.Optional.Pronouns);
+        if (!string.IsNullOrWhiteSpace(profile.Optional?.Race))
+            DrawStaffProfileField("RACE", profile.Optional.Race);
+        DrawStaffProfileField("AFFILIATION", profile.Affiliation);
+        DrawStaffProfileField("OCCUPATION", profile.Occupation);
+        if (!string.IsNullOrWhiteSpace(profile.Optional?.Availability))
+            DrawStaffProfileField("AVAILABLE", profile.Optional.Availability);
+        ImGui.Spacing();
+        ImGui.TextWrapped(profile.Bio);
+        if (!string.IsNullOrWhiteSpace(profile.Optional?.Quote))
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(CyberdeckTheme.Palette.TextMuted, $"“{profile.Optional.Quote}”");
+        }
+        ImGui.Spacing();
+
+        var atGrid = getNetworkStats().IsActive;
+        var present = atGrid && IsPlayerPresent(profile.CharacterName);
+        var coolingDown = staffRequestLastSentAt.TryGetValue(profile.Id, out var lastSentAt) &&
+                          Environment.TickCount64 - lastSentAt < 30_000;
+        var requestLabel = string.IsNullOrWhiteSpace(profile.RequestLabel)
+            ? "SEND REQUEST"
+            : profile.RequestLabel.ToUpperInvariant();
+        ImGui.BeginDisabled(!atGrid || !present || coolingDown || string.IsNullOrWhiteSpace(profile.RequestMessage));
+        using (CyberdeckTheme.PushAccentButton())
+        {
+            if (ImGui.Button($"{requestLabel}##request_{profile.Id}", new Vector2(ImGui.GetContentRegionAvail().X, 38 * uiScale)))
+            {
+                pendingStaffRequestProfile = profile;
+                ImGui.OpenPopup("CONFIRM STAFF REQUEST");
+            }
+        }
+        ImGui.EndDisabled();
+
+        if (!atGrid)
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "Available while you are at The Grid.");
+        else if (!present)
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, $"{profile.Name} is not currently at The Grid.");
+
+        if (staffRequestFeedback.TryGetValue(profile.Id, out var feedback))
+            ImGui.TextColored(feedback.Success ? CyberdeckTheme.Palette.Success : CyberdeckTheme.Palette.Error, feedback.Message);
+
+        ImGui.EndTable();
+    }
+
+    private static void DrawStaffProfileField(string label, string value)
+    {
+        ImGui.TextDisabled(label);
+        ImGui.SameLine();
+        ImGui.TextWrapped(string.IsNullOrWhiteSpace(value) ? "—" : value);
+    }
+
+    private void DrawStaffRequestConfirmation()
+    {
+        if (!ImGui.BeginPopupModal("CONFIRM STAFF REQUEST", ImGuiWindowFlags.AlwaysAutoResize))
+            return;
+
+        var profile = pendingStaffRequestProfile;
+        if (profile is null)
+        {
+            ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+            return;
+        }
+
+        var atGrid = getNetworkStats().IsActive;
+        var present = atGrid && IsPlayerPresent(profile.CharacterName);
+        ImGui.TextUnformatted($"Send a request to {profile.Name}?");
+        ImGui.TextWrapped($"This sends a private message to {profile.CharacterName}.");
+        ImGui.Spacing();
+        if (!present)
+        {
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, $"{profile.Name} is no longer present.");
+            ImGui.Spacing();
+        }
+
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var buttonWidth = MathF.Max(110 * GetUiScale(), (ImGui.GetContentRegionAvail().X - spacing) / 2);
+        ImGui.BeginDisabled(!atGrid || !present);
+        using (CyberdeckTheme.PushAccentButton())
+        {
+            if (ImGui.Button("SEND REQUEST", new Vector2(buttonWidth, 0)))
+            {
+                SendStaffRequest(profile);
+                pendingStaffRequestProfile = null;
+                ImGui.CloseCurrentPopup();
+            }
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.Button("CANCEL", new Vector2(buttonWidth, 0)))
+        {
+            pendingStaffRequestProfile = null;
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
+    }
+
+    private void SendStaffRequest(StaffProfile profile)
+    {
+        if (!getNetworkStats().IsActive)
+        {
+            staffRequestFeedback[profile.Id] = (false, "Requests are available only while you are at The Grid.");
+            return;
+        }
+
+        if (!IsPlayerPresent(profile.CharacterName))
+        {
+            staffRequestFeedback[profile.Id] = (false, $"{profile.Name} is not currently at The Grid.");
+            return;
+        }
+
+        if (TarotTellSender.TrySendMessage(profile.CharacterName, profile.RequestMessage, out var error))
+        {
+            staffRequestLastSentAt[profile.Id] = Environment.TickCount64;
+            staffRequestFeedback[profile.Id] = (true, $"Request sent to {profile.Name}.");
+            return;
+        }
+
+        staffRequestFeedback[profile.Id] = (false, error);
+    }
+
+    private void OpenTarotRequestWindow()
+    {
+        tarotRequestWindowOpen = true;
+        focusTarotRequestWindow = true;
+    }
+
+    private void DrawTarotRequestWindow()
+    {
+        var uiScale = GetUiScale();
+        using var fontScale = CyberdeckTheme.PushFontScale(uiScale);
+        using var theme = CyberdeckTheme.Push(uiScale);
+        ImGui.SetNextWindowSize(new Vector2(420, 370) * uiScale, ImGuiCond.FirstUseEver);
+        var (minimumSize, maximumSize) = CyberdeckTheme.ResolveWindowConstraints(
+            uiScale,
+            new Vector2(340, 300),
+            new Vector2(620, 520));
+        ImGui.SetNextWindowSizeConstraints(minimumSize, maximumSize);
+        if (focusTarotRequestWindow)
+        {
+            ImGui.SetNextWindowFocus();
+            focusTarotRequestWindow = false;
+        }
+
+        if (!ImGui.Begin("ARCANA CAST // TAROT READING###grid_tarot_request", ref tarotRequestWindowOpen, ImGuiWindowFlags.NoScrollbar))
+        {
+            ImGui.End();
+            return;
+        }
+
+        ImGui.TextColored(CyberdeckTheme.Palette.Magenta, "ARCANA CAST");
+        ImGui.TextWrapped("Choose a quick private reading, or request a live reading when the tarot reader is at The Grid.");
+        ImGui.Spacing();
+
+        DrawSettingsGroupHeader("SELF-GUIDED READING");
+        DrawMutedWrapped("Choose a local reading. No private messages are sent.");
+        ImGui.Spacing();
+        using (CyberdeckTheme.PushAccentButton())
+        {
+            if (ImGui.Button("THREE-CARD READING", new Vector2(ImGui.GetContentRegionAvail().X, 38 * uiScale)))
+            {
+                OpenTarotAiReading();
+                tarotRequestWindowOpen = false;
+            }
+        }
+        ImGui.Spacing();
+        using (CyberdeckTheme.PushAccentButton())
+        {
+            if (ImGui.Button("YES / NO READING", new Vector2(ImGui.GetContentRegionAvail().X, 38 * uiScale)))
+            {
+                OpenTarotYesNoReading();
+                tarotRequestWindowOpen = false;
+            }
+        }
+
+        ImGui.Spacing();
+        DrawNeonSeparator();
+        ImGui.Spacing();
+        DrawSettingsGroupHeader("LIVE TAROT READING");
+        ImGui.Spacing();
+        ImGui.TextDisabled("Reader");
+        ImGui.SameLine();
+        ImGui.TextUnformatted(TarotReaderRecipient);
+        ImGui.Spacing();
+        DrawNeonSeparator();
+        ImGui.Spacing();
+
+        var requestCoolingDown = tarotRequestLastSentAt > 0 &&
+                                 Environment.TickCount64 - tarotRequestLastSentAt < 30_000;
+        var atGrid = getNetworkStats().IsActive;
+        var readerPresent = atGrid && IsTarotReaderPresent();
+        ImGui.BeginDisabled(requestCoolingDown || !atGrid || !readerPresent);
+        using (CyberdeckTheme.PushAccentButton())
+        {
+            if (ImGui.Button("REQUEST A TAROT READING", new Vector2(ImGui.GetContentRegionAvail().X, 38 * uiScale)))
+                ImGui.OpenPopup("CONFIRM TAROT REQUEST");
+        }
+        ImGui.EndDisabled();
+
+        if (!atGrid)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "Available while you are at The Grid.");
+        }
+        else if (!readerPresent)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, "Virginia John is not currently at The Grid.");
+        }
+
+        if (ImGui.BeginPopupModal("CONFIRM TAROT REQUEST", ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            ImGui.TextUnformatted("Request a tarot reading?");
+            ImGui.TextWrapped($"This sends a private message to {TarotReaderRecipient}.");
+            ImGui.Spacing();
+            var popupSpacing = ImGui.GetStyle().ItemSpacing.X;
+            var popupButtonWidth = MathF.Max(110 * uiScale, (ImGui.GetContentRegionAvail().X - popupSpacing) / 2);
+            if (!readerPresent)
+            {
+                ImGui.TextColored(CyberdeckTheme.Palette.Amber, "The reader is no longer present.");
+                ImGui.Spacing();
+            }
+            ImGui.BeginDisabled(!atGrid || !readerPresent);
+            using (CyberdeckTheme.PushAccentButton())
+            {
+                if (ImGui.Button("SEND REQUEST", new Vector2(popupButtonWidth, 0)))
+                {
+                    SendTarotReadingRequest();
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+            ImGui.EndDisabled();
+            ImGui.SameLine();
+            if (ImGui.Button("CANCEL", new Vector2(popupButtonWidth, 0)))
+                ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+        }
+
+        if (!string.IsNullOrWhiteSpace(tarotRequestFeedback))
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(
+                tarotRequestSucceeded ? CyberdeckTheme.Palette.Success : CyberdeckTheme.Palette.Error,
+                tarotRequestFeedback);
+        }
+
+        ImGui.End();
+    }
+
+    private void SendTarotReadingRequest()
+    {
+        if (!getNetworkStats().IsActive)
+        {
+            tarotRequestSucceeded = false;
+            tarotRequestFeedback = "Requests are available only while you are at The Grid.";
+            return;
+        }
+
+        if (!IsTarotReaderPresent())
+        {
+            tarotRequestSucceeded = false;
+            tarotRequestFeedback = "Virginia John is not currently at The Grid.";
+            return;
+        }
+
+        if (TarotTellSender.TrySendMessage(TarotReaderRecipient, TarotReadingRequestMessage, out var error))
+        {
+            tarotRequestSucceeded = true;
+            tarotRequestLastSentAt = Environment.TickCount64;
+            tarotRequestFeedback = "Request sent to Virginia John.";
+            return;
+        }
+
+        tarotRequestSucceeded = false;
+        tarotRequestFeedback = error;
+    }
+
+    private static bool IsTarotReaderPresent()
+        => IsPlayerPresent(TarotReaderRecipient);
+
+    private static bool IsPlayerPresent(string identity)
+    {
+        try
+        {
+            var local = NetworkGuestScanner.CaptureLocal();
+            if (local is not null &&
+                string.Equals(local.Identity, identity, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return NetworkGuestScanner.Capture().Any(guest =>
+                string.Equals(guest.Identity, identity, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Could not check whether {Identity} is present.", identity);
+            return false;
+        }
     }
 
     private void DrawMapView()
@@ -1660,87 +2360,392 @@ internal sealed partial class CyberdeckWindow
 
     private void DrawNetworkView()
     {
-        var players = PluginService.Objects
-            .OfType<IPlayerCharacter>()
-            .Where(IsNetworkPlayer)
-            .GroupBy(GetPlayerTellName, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .OrderBy(GetPlayerTellName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var guests = NetworkGuestScanner.Capture();
+        var localPlayer = NetworkGuestScanner.CaptureLocal();
+        var visiblePeople = localPlayer is null
+            ? guests
+            : guests.Prepend(localPlayer).ToList();
+        if (IsVenueManager(localPlayer))
+        {
+            var stats = getNetworkStats();
+            var sessionLabel = stats.IsActive
+                ? $"VENUE SESSION // ACTIVE // {FormatNetworkDuration(stats.StartedAt)}"
+                : "VENUE SESSION // INACTIVE";
+            ImGui.PushStyleColor(
+                ImGuiCol.Text,
+                stats.IsActive ? CyberdeckTheme.Palette.Success : CyberdeckTheme.Palette.TextMuted);
+            var showVenueSession = ImGui.CollapsingHeader($"{sessionLabel}###network_venue_session");
+            ImGui.PopStyleColor();
+            if (showVenueSession)
+            {
+                DrawMutedWrapped(stats.IsActive
+                    ? "Counts represent everyone client-visible at the configured Grid venue, including you."
+                    : "Live signals are shown below, but statistics are recorded only at the configured Grid venue.");
+                ImGui.Spacing();
+                DrawNetworkMetrics(stats, visiblePeople);
+                ImGui.Spacing();
+                DrawNetworkTraffic(stats);
+                DrawNetworkHistory();
+            }
+            DrawNeonSeparator();
+            ImGui.Spacing();
+        }
 
-        ImGui.TextUnformatted($"Local players detected: {players.Count}");
-        ImGui.TextDisabled("Client-visible players in this instance.");
-        DrawMutedWrapped("<!> alert // ★ friend // weapon and minion icons show visible status");
-        DrawNeonSeparator();
-        ImGui.Spacing();
-
-        if (players.Count == 0)
+        ImGui.TextColored(CyberdeckTheme.Palette.Cyan, "LOCAL NETWORK");
+        if (guests.Count == 0 && localPlayer is null)
         {
             ImGui.TextWrapped("No local player signals detected.");
             return;
         }
 
-        if (!ImGui.BeginTable("network_players", 4, ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
+        var uiScale = GetUiScale();
+        if (!ImGui.BeginTable("network_players", 3, ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
             return;
 
-        var uiScale = GetUiScale();
-        ImGui.TableSetupColumn("##alert", ImGuiTableColumnFlags.WidthFixed, 24 * uiScale);
-        ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("##weapon", ImGuiTableColumnFlags.WidthFixed, 24 * uiScale);
-        ImGui.TableSetupColumn("##minion", ImGuiTableColumnFlags.WidthFixed, 24 * uiScale);
+        ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthStretch, 2.0f);
+        ImGui.TableSetupColumn("World", ImGuiTableColumnFlags.WidthStretch, 1.0f);
+        ImGui.TableSetupColumn("Status", ImGuiTableColumnFlags.WidthFixed, 82 * uiScale);
+        ImGui.TableHeadersRow();
 
-        foreach (var player in players)
-            DrawNetworkPlayerRow(player, IsFriend(player));
+        if (localPlayer is not null)
+            DrawNetworkPlayerRow(localPlayer, isLocal: true);
+        foreach (var guest in guests)
+            DrawNetworkPlayerRow(guest, isLocal: false);
 
         ImGui.EndTable();
     }
 
-    private void DrawNetworkPlayerRow(IPlayerCharacter player, bool isFriend)
+    private void DrawNetworkMetrics(NetworkStatsSnapshot stats, IReadOnlyList<NetworkGuestObservation> people)
     {
-        var tellName = GetPlayerTellName(player);
-        var status = GetNetworkPlayerStatus(player);
+        var worlds = people
+            .Where(guest => guest.HomeWorld != "Unknown World")
+            .Select(guest => guest.HomeWorld)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        var dataCenters = people
+            .Where(guest => guest.DataCenter != "Unknown DC")
+            .Select(guest => guest.DataCenter)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+
+        var compact = ImGui.GetContentRegionAvail().X < (460 * GetUiScale());
+        var columns = compact ? 2 : 4;
+        if (!ImGui.BeginTable("network_metrics", columns, ImGuiTableFlags.Borders | ImGuiTableFlags.SizingStretchSame))
+            return;
+
+        ImGui.TableNextRow();
+        DrawNetworkMetricCell("VISIBLE", people.Count.ToString("00"));
+        DrawNetworkMetricCell("SESSION PEAK", stats.IsActive ? stats.PeakGuests.ToString("00") : "--");
+        if (compact)
+            ImGui.TableNextRow();
+        DrawNetworkMetricCell("HOME WORLDS", worlds.ToString("00"));
+        DrawNetworkMetricCell("DATA CENTERS", dataCenters.ToString("00"));
+        ImGui.EndTable();
+    }
+
+    private static void DrawNetworkMetricCell(string label, string value)
+    {
+        ImGui.TableNextColumn();
+        var available = ImGui.GetContentRegionAvail().X;
+        var valueSize = ImGui.CalcTextSize(value);
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0, (available - valueSize.X) * 0.5f));
+        ImGui.TextColored(CyberdeckTheme.Palette.Cyan, value);
+        var labelSize = ImGui.CalcTextSize(label);
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0, (available - labelSize.X) * 0.5f));
+        ImGui.TextDisabled(label);
+    }
+
+    private static string FormatNetworkDuration(DateTimeOffset? startedAt)
+    {
+        if (startedAt is null)
+            return "00:00";
+        var elapsed = DateTimeOffset.UtcNow - startedAt.Value;
+        return elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}"
+            : $"{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+    }
+
+    private void DrawNetworkTraffic(NetworkStatsSnapshot stats)
+    {
+        if (!ImGui.CollapsingHeader("TRAFFIC HISTORY"))
+            return;
+
+        var allBuckets = config.NetworkSessionHistory
+            .SelectMany(summary => summary.OccupancyBuckets ?? [])
+            .Concat(stats.OccupancyBuckets)
+            .Where(bucket => bucket.SampleCount > 0)
+            .OrderBy(bucket => bucket.StartedAtUnixMs)
+            .ToList();
+
+        ImGui.TextColored(CyberdeckTheme.Palette.TextMuted, "TRAFFIC // 10-MINUTE WINDOWS");
+        if (allBuckets.Count == 0)
+        {
+            ImGui.TextDisabled(stats.IsActive
+                ? "Collecting the first traffic window..."
+                : "No venue traffic recorded yet.");
+            return;
+        }
+
+        var nowUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (stats.IsActive && stats.OccupancyBuckets.Count > 0)
+        {
+            var current = stats.OccupancyBuckets[^1];
+            var currentStart = DateTimeOffset.FromUnixTimeMilliseconds(current.StartedAtUnixMs).ToLocalTime();
+            ImGui.TextColored(
+                CyberdeckTheme.Palette.Cyan,
+                $"CURRENT WINDOW // {currentStart:HH:mm}-{currentStart.AddMinutes(10):HH:mm}");
+            ImGui.TextDisabled($"Usually {FormatPeopleCount(current.AverageGuests)} // peak {FormatPeopleCount(current.PeakGuests)}");
+        }
+        else
+        {
+            var completedBuckets = allBuckets
+                .Where(bucket => bucket.StartedAtUnixMs + (10 * 60 * 1000) <= nowUnixMs)
+                .ToList();
+            var primeSource = completedBuckets.Count > 0 ? completedBuckets : allBuckets;
+            var prime = primeSource
+                .GroupBy(bucket =>
+                {
+                    var local = DateTimeOffset.FromUnixTimeMilliseconds(bucket.StartedAtUnixMs).ToLocalTime();
+                    return (local.Hour * 6) + (local.Minute / 10);
+                })
+                .Select(group => new
+                {
+                    Slot = group.Key,
+                    SampleTotal = group.Sum(bucket => bucket.SampleTotal),
+                    SampleCount = group.Sum(bucket => bucket.SampleCount),
+                    Peak = group.Max(bucket => bucket.PeakGuests),
+                })
+                .Where(group => group.SampleCount > 0)
+                .OrderByDescending(group => group.SampleTotal / (double)group.SampleCount)
+                .ThenByDescending(group => group.Peak)
+                .First();
+
+            var primeAverage = prime.SampleTotal / (double)prime.SampleCount;
+            ImGui.TextColored(
+                CyberdeckTheme.Palette.Cyan,
+                $"PRIME OBSERVED // {FormatNetworkTrafficSlot(prime.Slot)}-{FormatNetworkTrafficSlot((prime.Slot + 1) % 144)}");
+            ImGui.TextDisabled($"Usually {FormatPeopleCount(primeAverage)} // peak {FormatPeopleCount(prime.Peak)}");
+        }
+
+        IReadOnlyList<NetworkOccupancyBucket> graphBuckets;
+        if (stats.IsActive && stats.OccupancyBuckets.Count > 0)
+        {
+            graphBuckets = stats.OccupancyBuckets;
+        }
+        else
+        {
+            graphBuckets = config.NetworkSessionHistory
+                .OrderByDescending(summary => summary.EndedAtUnixMs)
+                .Select(summary => (IReadOnlyList<NetworkOccupancyBucket>)(summary.OccupancyBuckets ?? []))
+                .FirstOrDefault(candidate => candidate.Count > 0) ?? allBuckets;
+        }
+
+        DrawNetworkTrafficGraph(graphBuckets, stats.IsActive, nowUnixMs);
+    }
+
+    private void DrawNetworkTrafficGraph(
+        IReadOnlyList<NetworkOccupancyBucket> sourceBuckets,
+        bool sessionActive,
+        long nowUnixMs)
+    {
+        var uiScale = GetUiScale();
+        var availableWidth = MathF.Max(120 * uiScale, ImGui.GetContentRegionAvail().X);
+        var graphHeight = 132 * uiScale;
+        var graphMin = ImGui.GetCursorScreenPos();
+        var graphMax = graphMin + new Vector2(availableWidth, graphHeight);
+        ImGui.InvisibleButton("##network_traffic_graph", new Vector2(availableWidth, graphHeight));
+
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.AddRectFilled(
+            graphMin,
+            graphMax,
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Panel, 0.92f)),
+            3 * uiScale);
+        drawList.AddRect(
+            graphMin,
+            graphMax,
+            ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Border, 0.72f)),
+            3 * uiScale);
+
+        var plotMin = graphMin + new Vector2(31, 8) * uiScale;
+        var plotMax = graphMax - new Vector2(7, 22) * uiScale;
+        var plotWidth = MathF.Max(1, plotMax.X - plotMin.X);
+        var plotHeight = MathF.Max(1, plotMax.Y - plotMin.Y);
+        var maximumBars = Math.Max(6, Math.Min(48, (int)(plotWidth / MathF.Max(4, 6 * uiScale))));
+        var buckets = sourceBuckets.TakeLast(maximumBars).ToList();
+        var yMaximum = Math.Max(1, buckets.Max(bucket => Math.Max(bucket.PeakGuests, (int)Math.Ceiling(bucket.AverageGuests))));
+
+        var axisColor = ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.TextMuted, 0.72f));
+        var gridColor = ImGui.GetColorU32(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Border, 0.34f));
+        for (var division = 0; division <= 2; division++)
+        {
+            var progress = division / 2f;
+            var y = plotMax.Y - (plotHeight * progress);
+            drawList.AddLine(new Vector2(plotMin.X, y), new Vector2(plotMax.X, y), gridColor, MathF.Max(1, uiScale));
+            var value = (int)MathF.Round(yMaximum * progress);
+            var label = value.ToString();
+            var labelSize = ImGui.CalcTextSize(label);
+            drawList.AddText(
+                new Vector2(plotMin.X - labelSize.X - (5 * uiScale), y - (labelSize.Y * 0.5f)),
+                axisColor,
+                label);
+        }
+
+        drawList.AddLine(plotMin, new Vector2(plotMin.X, plotMax.Y), axisColor, MathF.Max(1, uiScale));
+        drawList.AddLine(new Vector2(plotMin.X, plotMax.Y), plotMax, axisColor, MathF.Max(1, uiScale));
+
+        var gap = MathF.Max(1, uiScale);
+        var barWidth = MathF.Max(2, (plotWidth - (gap * Math.Max(0, buckets.Count - 1))) / Math.Max(1, buckets.Count));
+        var mouse = ImGui.GetIO().MousePos;
+        var highestAverage = buckets.Max(bucket => bucket.AverageGuests);
+        for (var index = 0; index < buckets.Count; index++)
+        {
+            var bucket = buckets[index];
+            var barLeft = plotMin.X + (index * (barWidth + gap));
+            var barRight = MathF.Min(plotMax.X, barLeft + barWidth);
+            var barTop = plotMax.Y - (float)(bucket.AverageGuests / yMaximum * plotHeight);
+            var barMin = new Vector2(barLeft, barTop);
+            var barMax = new Vector2(barRight, plotMax.Y);
+            var isLive = sessionActive && bucket.StartedAtUnixMs + (10 * 60 * 1000) > nowUnixMs;
+            var isPeak = Math.Abs(bucket.AverageGuests - highestAverage) < 0.001;
+            var hovered = mouse.X >= barMin.X && mouse.X <= barMax.X && mouse.Y >= plotMin.Y && mouse.Y <= plotMax.Y;
+            var color = hovered
+                ? CyberdeckTheme.Palette.Text
+                : isLive
+                    ? CyberdeckTheme.Palette.Amber
+                    : isPeak
+                        ? CyberdeckTheme.Palette.Magenta
+                        : CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Cyan, 0.76f);
+            drawList.AddRectFilled(barMin, barMax, ImGui.GetColorU32(color));
+
+            if (!hovered)
+                continue;
+
+            var started = DateTimeOffset.FromUnixTimeMilliseconds(bucket.StartedAtUnixMs).ToLocalTime();
+            ImGui.SetTooltip(
+                $"{started:HH:mm}-{started.AddMinutes(10):HH:mm}\n" +
+                $"Usually {FormatPeopleCount(bucket.AverageGuests)}\n" +
+                $"Peak {FormatPeopleCount(bucket.PeakGuests)}" +
+                (isLive ? "\nLive window" : string.Empty));
+        }
+
+        var firstStart = DateTimeOffset.FromUnixTimeMilliseconds(buckets[0].StartedAtUnixMs).ToLocalTime();
+        var finalEnd = DateTimeOffset.FromUnixTimeMilliseconds(buckets[^1].StartedAtUnixMs).ToLocalTime().AddMinutes(10);
+        var firstLabel = firstStart.ToString("HH:mm");
+        var finalLabel = finalEnd.ToString("HH:mm");
+        var finalLabelSize = ImGui.CalcTextSize(finalLabel);
+        drawList.AddText(new Vector2(plotMin.X, plotMax.Y + (4 * uiScale)), axisColor, firstLabel);
+        drawList.AddText(new Vector2(plotMax.X - finalLabelSize.X, plotMax.Y + (4 * uiScale)), axisColor, finalLabel);
+    }
+
+    private static string FormatNetworkTrafficSlot(int slot)
+        => $"{slot / 6:00}:{(slot % 6) * 10:00}";
+
+    private static string FormatPeopleCount(double value)
+    {
+        var rounded = Math.Max(0, (int)Math.Round(value, MidpointRounding.AwayFromZero));
+        return $"{rounded} {(rounded == 1 ? "person" : "people")}";
+    }
+
+    private void DrawNetworkHistory()
+    {
+        if (config.NetworkSessionHistory.Count == 0 ||
+            !ImGui.CollapsingHeader("SESSION HISTORY"))
+            return;
+
+        DrawMutedWrapped("Anonymous venue summaries retained for 90 days. Guest names are never saved.");
+        foreach (var summary in config.NetworkSessionHistory
+                     .OrderByDescending(item => item.EndedAtUnixMs)
+                     .Take(8))
+        {
+            var started = DateTimeOffset.FromUnixTimeMilliseconds(summary.StartedAtUnixMs).ToLocalTime();
+            var ended = DateTimeOffset.FromUnixTimeMilliseconds(summary.EndedAtUnixMs).ToLocalTime();
+            var duration = ended - started;
+            var durationText = duration.TotalHours >= 1
+                ? $"{(int)duration.TotalHours:00}:{duration.Minutes:00}"
+                : $"{Math.Max(0, duration.Minutes):00}:{Math.Max(0, duration.Seconds):00}";
+            ImGui.TextUnformatted($"{ended:MMM dd HH:mm} // {durationText} // {summary.UniqueGuests:00} unique // peak {summary.PeakGuests:00}");
+            ImGui.TextDisabled($"Usually {FormatPeopleCount(summary.AverageGuests)} // {summary.WorldsRepresented:00} worlds // {summary.DataCentersRepresented:00} data centers");
+        }
+        if (ImGui.SmallButton("Clear History"))
+        {
+            config.NetworkSessionHistory.Clear();
+            config.Save();
+            SetTransientFeedback("NETWORK HISTORY CLEARED");
+        }
+        ImGui.Spacing();
+    }
+
+    private void DrawNetworkPlayerRow(NetworkGuestObservation guest, bool isLocal)
+    {
 
         ImGui.TableNextRow();
         ImGui.TableSetColumnIndex(0);
-        if (status.HasAlert)
+        if (isLocal)
         {
-            var pulse = config.ReduceMotion
-                ? 1.0f
-                : 0.72f + MathF.Sin((float)ImGui.GetTime() * 6.0f) * 0.28f;
-            ImGui.TextColored(CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Error, pulse), "<!>");
-            DrawHoverTooltip("Player has weapon/offhand drawn and/or visible minion present");
+            ImGui.PushStyleColor(ImGuiCol.Text, CyberdeckTheme.Palette.Cyan);
         }
-
-        ImGui.TableSetColumnIndex(1);
-        if (isFriend)
+        else if (guest.IsFriend)
         {
             var glow = config.ReduceMotion
                 ? 1.0f
                 : 0.80f + MathF.Sin((float)ImGui.GetTime() * 3.0f) * 0.20f;
             ImGui.PushStyleColor(ImGuiCol.Text, CyberdeckTheme.WithAlpha(CyberdeckTheme.Palette.Amber, glow));
         }
-        if (ImGui.Selectable(tellName, false, ImGuiSelectableFlags.SpanAllColumns))
-            PluginService.Targets.Target = player;
-        if (isFriend)
+        var playerLabel = isLocal
+            ? $"YOU // {guest.Player.Name.TextValue}"
+            : guest.IsFriend
+                ? $"★ {guest.Player.Name.TextValue}"
+                : guest.Player.Name.TextValue;
+        if (ImGui.Selectable($"{playerLabel}##network_{guest.Identity}"))
+            PluginService.Targets.Target = guest.Player;
+        if (isLocal)
+        {
+            ImGui.PopStyleColor();
+            DrawHoverTooltip("Local player // host // excluded from guest statistics");
+        }
+        else if (guest.IsFriend)
         {
             ImGui.PopStyleColor();
             DrawHoverTooltip("★ Friend");
         }
 
+        ImGui.TableSetColumnIndex(1);
+        ImGui.TextUnformatted(guest.HomeWorld);
+
         ImGui.TableSetColumnIndex(2);
-        if (status.HasWeapon)
-            DrawNetworkStatusIcon("weapon.png", "Weapon", GetWeaponTooltip(status));
-
-        ImGui.TableSetColumnIndex(3);
-        if (!string.IsNullOrWhiteSpace(status.MinionName))
-            DrawNetworkStatusIcon("minion.png", "Minion", $"Visible minion present: {status.MinionName}");
+        var hasStatus = false;
+        if (guest.HasWeapon)
+        {
+            DrawNetworkStatusIcon(
+                "weapon.png",
+                "Weapon",
+                guest.OffhandOut ? "Weapon/offhand drawn" : "Weapon drawn",
+                CyberdeckTheme.Palette.Amber);
+            hasStatus = true;
+        }
+        if (!string.IsNullOrWhiteSpace(guest.MinionName))
+        {
+            if (hasStatus)
+                ImGui.SameLine();
+            DrawNetworkStatusIcon(
+                "minion.png",
+                "Minion",
+                $"Visible minion: {guest.MinionName}",
+                CyberdeckTheme.Palette.Cyan);
+            hasStatus = true;
+        }
+        if (guest.IsPartyMember)
+        {
+            if (hasStatus)
+                ImGui.SameLine();
+            ImGui.TextColored(CyberdeckTheme.Palette.Success, "P");
+            DrawHoverTooltip("Party member");
+            hasStatus = true;
+        }
+        if (!hasStatus)
+            ImGui.TextDisabled("—");
     }
-
-    private static bool IsFriend(IPlayerCharacter player)
-        => player.StatusFlags.HasFlag(StatusFlags.Friend);
-
-    private static bool IsNetworkPlayer(IPlayerCharacter player)
-        => player.ObjectKind == ObjectKind.Pc && !string.IsNullOrWhiteSpace(player.Name.TextValue);
 
     private static bool IsVenueMannequinInRange(ModMapping mapping)
     {
@@ -1772,56 +2777,16 @@ internal sealed partial class CyberdeckWindow
                 normalizedTarget.Contains(normalizedObject, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static NetworkPlayerStatus GetNetworkPlayerStatus(IPlayerCharacter player)
-        => new(
-            IsWeaponDisplayed(player),
-            player.StatusFlags.HasFlag(StatusFlags.WeaponOut),
-            player.StatusFlags.HasFlag(StatusFlags.OffhandOut),
-            GetVisibleMinionName(player));
-
-    private static unsafe bool? IsWeaponDisplayed(IPlayerCharacter player)
-    {
-        if (player.Address == IntPtr.Zero)
-            return null;
-
-        try
-        {
-            var character = (NativeCharacter*)player.Address;
-            return !character->DrawData.IsWeaponHidden;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static string GetWeaponTooltip(NetworkPlayerStatus status)
-    {
-        if (status.WeaponDisplayed == true)
-        {
-            if (status.WeaponOut && status.OffhandOut)
-                return "Weapon displayed; weapon and offhand drawn";
-            if (status.WeaponOut)
-                return "Weapon displayed and drawn";
-            if (status.OffhandOut)
-                return "Weapon displayed; offhand drawn";
-
-            return "Weapon displayed";
-        }
-
-        return (status.WeaponOut, status.OffhandOut) switch
-        {
-            (true, true) => "Weapon and offhand drawn",
-            (false, true) => "Offhand drawn",
-            _ => "Weapon drawn",
-        };
-    }
-
-    private void DrawNetworkStatusIcon(string imageName, string fallbackText, string tooltip)
+    private void DrawNetworkStatusIcon(string imageName, string fallbackText, string tooltip, Vector4 tint)
     {
         var wrap = GetTextureWrap(imageName);
         if (wrap is not null)
-            ImGui.Image(wrap.Handle, new Vector2(18, 18) * GetUiScale());
+        {
+            var maxSize = 18 * GetUiScale();
+            var scale = MathF.Min(maxSize / MathF.Max(1, wrap.Width), maxSize / MathF.Max(1, wrap.Height));
+            var size = new Vector2(wrap.Width * scale, wrap.Height * scale);
+            ImGui.Image(wrap.Handle, size, Vector2.Zero, Vector2.One, tint);
+        }
         else
             ImGui.TextUnformatted(fallbackText);
 
@@ -2336,6 +3301,19 @@ internal sealed partial class CyberdeckWindow
         DrawNeonSeparator();
         ImGui.Spacing();
 
+        DrawSettingsGroupHeader("SERVICES");
+        var tarotHost = config.TarotHost;
+        if (ImGui.Checkbox("Tarot Host", ref tarotHost))
+        {
+            config.TarotHost = tarotHost;
+            config.Save();
+        }
+        DrawMutedWrapped("Enables the Arcana Cast reader console. Leave this off to request readings as a guest.");
+
+        ImGui.Spacing();
+        DrawNeonSeparator();
+        ImGui.Spacing();
+
         DrawSettingsGroupHeader("INTERFACE");
         DrawInterfaceSettings();
     }
@@ -2735,41 +3713,33 @@ internal sealed partial class CyberdeckWindow
                     ? $"Update to v{availableVersion}"
                     : status.Phase == UpdateOperationPhase.Error
                         ? "Try Again"
-                        : "Check and Update";
+                        : "Check for Updates";
         var actionsDisabled = status.IsBusy || !penumbraAvailable;
-        var spacing = ImGui.GetStyle().ItemSpacing.X;
         var availableWidth = ImGui.GetContentRegionAvail().X;
-        var stackActions = availableWidth < (320 * GetUiScale());
-        var actionWidth = stackActions
-            ? availableWidth
-            : MathF.Max(1, (availableWidth - spacing) / 2);
 
         using (CyberdeckTheme.PushAccentButton())
         {
-            if (CyberdeckWidgets.DrawActionButton(primaryLabel, actionsDisabled, new Vector2(actionWidth, 0)))
+            if (CyberdeckWidgets.DrawActionButton(primaryLabel, actionsDisabled, new Vector2(availableWidth, 0)))
             {
                 if (status.Operation == UpdateOperationKind.Assignment &&
                     status.Phase is UpdateOperationPhase.Error or UpdateOperationPhase.NeedsAttention)
                     assignAll();
                 else if (status.Operation == UpdateOperationKind.Repair && status.Phase == UpdateOperationPhase.Error)
                     queueReconcileForce();
+                else if (!needsInstall &&
+                         availableVersion is null &&
+                         status.Phase != UpdateOperationPhase.Error)
+                    checkForUpdates();
                 else
                     queueReconcile();
             }
         }
 
-        if (stackActions)
-            ImGui.Spacing();
-        else
-            ImGui.SameLine();
-        if (CyberdeckWidgets.DrawActionButton("Check for Updates", actionsDisabled, new Vector2(actionWidth, 0)))
-            checkForUpdates();
-        DrawHoverTooltip(config.FullAuto
-            ? "Check now; available updates will install automatically"
-            : "Check whether an update is available without installing it");
-
         ImGui.Spacing();
-        if (CyberdeckWidgets.DrawActionButton("Repair Installation...", actionsDisabled))
+        if (CyberdeckWidgets.DrawActionButton(
+                "Repair Installation...",
+                actionsDisabled,
+                new Vector2(ImGui.GetContentRegionAvail().X, 0)))
             ImGui.OpenPopup("confirm_reinstall");
 
         if (ImGui.BeginPopup("confirm_reinstall"))
@@ -2777,9 +3747,11 @@ internal sealed partial class CyberdeckWindow
             ImGui.TextColored(CyberdeckTheme.Palette.Amber, "Repair installation");
             ImGui.TextWrapped("This downloads and installs the latest venue mod again. Use it when files are missing or the mod is not working correctly.");
             ImGui.Spacing();
+            var popupSpacing = ImGui.GetStyle().ItemSpacing.X;
+            var popupButtonWidth = MathF.Max(100, (ImGui.GetContentRegionAvail().X - popupSpacing) / 2);
             using (CyberdeckTheme.PushAccentButton())
             {
-                if (CyberdeckWidgets.DrawActionButton("Repair", status.IsBusy))
+                if (CyberdeckWidgets.DrawActionButton("Repair", status.IsBusy, new Vector2(popupButtonWidth, 0)))
                 {
                     queueReconcileForce();
                     ImGui.CloseCurrentPopup();
@@ -2787,7 +3759,7 @@ internal sealed partial class CyberdeckWindow
             }
 
             ImGui.SameLine();
-            if (ImGui.Button("Cancel"))
+            if (ImGui.Button("Cancel", new Vector2(popupButtonWidth, 0)))
                 ImGui.CloseCurrentPopup();
             ImGui.EndPopup();
         }
@@ -2814,6 +3786,33 @@ internal sealed partial class CyberdeckWindow
 
     private void DrawInterfaceSettings()
     {
+        ImGui.TextUnformatted("Theme");
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+        if (ImGui.BeginCombo("##cyberdeck_theme", CyberdeckTheme.GetThemeName(config.Theme)))
+        {
+            foreach (var theme in ThemeOptions)
+            {
+                var selected = config.Theme == theme;
+                if (ImGui.Selectable(CyberdeckTheme.GetThemeName(theme), selected))
+                {
+                    if (theme == CyberdeckThemeId.Custom && config.Theme != CyberdeckThemeId.Custom)
+                        customThemeSource = config.Theme;
+                    config.Theme = theme;
+                    ApplyConfiguredTheme();
+                    config.Save();
+                }
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+        DrawThemePreview(config.Theme);
+        DrawMutedWrapped(CyberdeckTheme.GetThemeDescription(config.Theme));
+
+        if (config.Theme == CyberdeckThemeId.Custom)
+            DrawCustomThemeEditor();
+
+        ImGui.Spacing();
         var effectiveScale = GetUiScale();
         var scaleLabel = config.UiScale <= 0
             ? $"UI Scale: Auto ({effectiveScale:0.##}x)"
@@ -2845,14 +3844,17 @@ internal sealed partial class CyberdeckWindow
         if (ImGui.Button("Restore Window Size"))
             ImGui.SetWindowSize("The Grid Cyberdeck", GetInitialWindowSize(GetUiScale()));
 
-        ImGui.Spacing();
-        var networkAlert = config.NetworkAlertBadge;
-        if (ImGui.Checkbox("Network alert badge", ref networkAlert))
+        if (IsVenueManager())
         {
-            config.NetworkAlertBadge = networkAlert;
-            config.Save();
+            ImGui.Spacing();
+            var networkAlert = config.NetworkAlertBadge;
+            if (ImGui.Checkbox("Network alert badge", ref networkAlert))
+            {
+                config.NetworkAlertBadge = networkAlert;
+                config.Save();
+            }
+            DrawHoverTooltip("Show the number of visible guests with drawn weapons on the Network tile");
         }
-        DrawHoverTooltip("Show player count with weapons/minions on the Network tile");
 
         var animationsEnabled = !config.ReduceMotion;
         if (ImGui.Checkbox("Animations & ambient FX", ref animationsEnabled))
@@ -2871,6 +3873,108 @@ internal sealed partial class CyberdeckWindow
         }
         DrawMutedWrapped("Opens automatically when you enter the venue address.");
 
+    }
+
+    private static void DrawThemePreview(CyberdeckThemeId theme)
+    {
+        var preview = theme == CyberdeckThemeId.Custom
+            ? (
+                Background: CyberdeckTheme.Palette.Background,
+                Primary: CyberdeckTheme.Palette.Cyan,
+                Secondary: CyberdeckTheme.Palette.Magenta,
+                Text: CyberdeckTheme.Palette.Text)
+            : CyberdeckTheme.GetThemePreview(theme);
+        ReadOnlySpan<Vector4> colors =
+        [
+            preview.Background,
+            preview.Primary,
+            preview.Secondary,
+            preview.Text,
+        ];
+        var start = ImGui.GetCursorScreenPos();
+        var spacing = MathF.Max(2, ImGui.GetStyle().ItemInnerSpacing.X * 0.5f);
+        var width = MathF.Max(24, (ImGui.GetContentRegionAvail().X - (spacing * (colors.Length - 1))) / colors.Length);
+        var height = MathF.Max(7, ImGui.GetFrameHeight() * 0.28f);
+        var drawList = ImGui.GetWindowDrawList();
+        for (var index = 0; index < colors.Length; index++)
+        {
+            var min = start + new Vector2(index * (width + spacing), 0);
+            drawList.AddRectFilled(min, min + new Vector2(width, height), ImGui.GetColorU32(colors[index]), 1);
+        }
+        ImGui.Dummy(new Vector2(ImGui.GetContentRegionAvail().X, height));
+    }
+
+    private void DrawCustomThemeEditor()
+    {
+        ImGui.Spacing();
+        var background = config.CustomThemeBackground;
+        var primary = config.CustomThemePrimary;
+        var secondary = config.CustomThemeSecondary;
+        var text = config.CustomThemeText;
+        var changed = false;
+        changed |= DrawCustomThemeColor("Background", ref background);
+        changed |= DrawCustomThemeColor("Primary", ref primary);
+        changed |= DrawCustomThemeColor("Secondary", ref secondary);
+        changed |= DrawCustomThemeColor("Text", ref text);
+
+        if (changed)
+        {
+            config.CustomThemeBackground = background;
+            config.CustomThemePrimary = primary;
+            config.CustomThemeSecondary = secondary;
+            config.CustomThemeText = text;
+            ApplyConfiguredTheme();
+            config.Save();
+        }
+
+        ImGui.Spacing();
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var width = MathF.Max(100, (ImGui.GetContentRegionAvail().X - spacing) / 2);
+        var source = customThemeSource == CyberdeckThemeId.Custom
+            ? CyberdeckThemeId.Grid
+            : customThemeSource;
+        if (ImGui.Button($"Start from {CyberdeckTheme.GetThemeName(source)}##custom_theme_copy", new Vector2(width, 0)))
+            CopyPresetToCustom(source);
+        ImGui.SameLine();
+        if (ImGui.Button("Reset##custom_theme_reset", new Vector2(width, 0)))
+            CopyPresetToCustom(CyberdeckThemeId.Grid);
+    }
+
+    private static bool DrawCustomThemeColor(string label, ref Vector4 value)
+    {
+        var rgb = new Vector3(value.X, value.Y, value.Z);
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+        if (!ImGui.ColorEdit3(label, ref rgb, ImGuiColorEditFlags.NoInputs))
+            return false;
+
+        value = new Vector4(rgb, 1f);
+        return true;
+    }
+
+    private void CopyPresetToCustom(CyberdeckThemeId source)
+    {
+        var preview = CyberdeckTheme.GetThemePreview(source);
+        config.CustomThemeBackground = preview.Background;
+        config.CustomThemePrimary = preview.Primary;
+        config.CustomThemeSecondary = preview.Secondary;
+        config.CustomThemeText = preview.Text;
+        ApplyConfiguredTheme();
+        config.Save();
+    }
+
+    private void ApplyConfiguredTheme()
+    {
+        if (config.Theme == CyberdeckThemeId.Custom)
+        {
+            CyberdeckTheme.SetCustomTheme(
+                config.CustomThemeBackground,
+                config.CustomThemePrimary,
+                config.CustomThemeSecondary,
+                config.CustomThemeText);
+            return;
+        }
+
+        CyberdeckTheme.SetTheme(config.Theme);
     }
 
     private void SetManualUiScale(float uiScale)
@@ -3004,14 +4108,6 @@ internal sealed partial class CyberdeckWindow
         return $"{name}@{world}";
     }
 
-    private static string? GetVisibleMinionName(IPlayerCharacter player)
-    {
-        if (player.CurrentMount is not null)
-            return null;
-
-        return player.CurrentMinion?.ValueNullable?.Singular.ExtractText();
-    }
-
     private static string GetWorldName(IPlayerCharacter player)
     {
         var homeWorld = player.HomeWorld.ValueNullable?.Name.ExtractText();
@@ -3129,13 +4225,11 @@ internal sealed partial class CyberdeckWindow
             // Silently ignore badge computation failures
         }
 
-        if (config.NetworkAlertBadge)
+        if (config.NetworkAlertBadge && IsVenueManager())
         {
             try
             {
-                var flagged = PluginService.Objects
-                    .OfType<IPlayerCharacter>()
-                    .Count(player => IsNetworkPlayer(player) && GetNetworkPlayerStatus(player).HasAlert);
+                var flagged = NetworkGuestScanner.Capture().Count(guest => guest.HasWeapon);
 
                 if (flagged > 0)
                 {
@@ -3205,6 +4299,7 @@ internal sealed partial class CyberdeckWindow
         Wifi,
         Menu,
         Network,
+        Services,
         Settings,
     }
 
@@ -3222,12 +4317,6 @@ internal sealed partial class CyberdeckWindow
         Healthy,
         Attention,
         Fault,
-    }
-
-    private readonly record struct NetworkPlayerStatus(bool? WeaponDisplayed, bool WeaponOut, bool OffhandOut, string? MinionName)
-    {
-        public bool HasWeapon => WeaponDisplayed == true || WeaponOut || OffhandOut;
-        public bool HasAlert => HasWeapon || !string.IsNullOrWhiteSpace(MinionName);
     }
 
     private sealed record DrinkMenuItem(string Name, string Price, string ImageName, string Ingredients, string Description, string Taste);

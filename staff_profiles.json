@@ -1,0 +1,35 @@
+[
+  {
+    "id": "iris-voss",
+    "category": "photography",
+    "name": "Iris Voss",
+    "characterName": "Damona Dawnfeather@Raiden",
+    "age": "<redacted>",
+    "affiliation": "<redacted>",
+    "occupation": "Ē̸̚͝͠r̸̐̉̄͛r̷͔͑̎̾ô̴̓͗͐r̶̋̉͒̓  . . . / / / . . . Photography",
+    "bio": "Rumored to formally be Corpo.. or still is.",
+    "image": "iris_voss.png",
+    "requestLabel": "REQUEST A PHOTOSHOOT",
+    "requestMessage": "Hello, I'd like to request a photoshoot."
+  },
+  {
+    "id": "sovereign-tanno",
+    "category": "photography",
+    "name": "Sovereign \"Tanno\"",
+    "characterName": "Vidir Sovbheire@Raiden",
+    "age": "Far older than she cares to admit; appears mid-to-late 20s",
+    "affiliation": "The Grid",
+    "occupation": "Photographer",
+    "bio": "A laid-back, carefree voidkin with a streak of pure chaos. Tanno can shift from hyper gremlin to quiet observer, but genuinely cares about helping others and capturing the moments that do not last.",
+    "image": "tanno.png",
+    "requestLabel": "REQUEST A PHOTOSHOOT",
+    "requestMessage": "Hello, I'd like to request a photoshoot.",
+    "optional": {
+      "pronunciation": "Tan-oh",
+      "pronouns": "She/Her",
+      "race": "Eldritch voidkin",
+      "availability": "Venue nights and scheduled clients",
+      "quote": "Time is fleeting, and so are people, with pain a constant promise by the very cosmos. Enjoy what you can for as long as you can, then gracefully accept it when it is no more."
+    }
+  }
+]

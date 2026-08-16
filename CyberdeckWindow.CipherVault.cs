@@ -63,6 +63,7 @@ internal sealed partial class CyberdeckWindow
     private void DrawCipherVaultWindow()
     {
         var uiScale = GetUiScale();
+        using var fontScale = CyberdeckTheme.PushFontScale(uiScale);
         using var theme = CyberdeckTheme.Push(uiScale);
         ImGui.SetNextWindowSize(new Vector2(680, 700) * uiScale, ImGuiCond.FirstUseEver);
         var (minimumSize, maximumSize) = CyberdeckTheme.ResolveWindowConstraints(
@@ -84,7 +85,6 @@ internal sealed partial class CyberdeckWindow
             return;
         }
 
-        ImGui.SetWindowFontScale(uiScale);
         if (ImGui.BeginChild("cipher_vault_body", Vector2.Zero, true))
         {
             ResolveCipherUnlockTask();
@@ -95,7 +95,6 @@ internal sealed partial class CyberdeckWindow
         }
         ImGui.EndChild();
         DrawCipherTraceFx();
-        ImGui.SetWindowFontScale(1f);
         ImGui.End();
 
         if (!cipherVaultWindowOpen)

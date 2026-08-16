@@ -12,8 +12,14 @@
 
   <ItemGroup>
     <Content Include="GridNrootUpdate.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="staff_profiles.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="tarot_yes_no.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="grid.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="img\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="img\buttons\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="img\drinks\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="img\profile_pics\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="img\tarot\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <Target Name="PackagePlugin" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
@@ -21,14 +27,28 @@
       <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).dll" />
       <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).json" />
       <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).deps.json" />
+      <PluginPackageFiles Include="$(OutputPath)staff_profiles.json" />
+      <PluginPackageFiles Include="$(OutputPath)tarot_yes_no.json" />
       <PluginPackageImageFiles Include="$(OutputPath)img\*.png" />
+      <PluginPackageButtonImageFiles Include="$(OutputPath)img\buttons\*.png" />
+      <PluginPackageDrinkImageFiles Include="$(OutputPath)img\drinks\*.png" />
+      <PluginPackageProfileImageFiles Include="$(OutputPath)img\profile_pics\*.png" />
+      <PluginPackageTarotImageFiles Include="$(OutputPath)img\tarot\*.png" />
     </ItemGroup>
     <RemoveDir Directories="$(OutputPath)package" />
     <MakeDir Directories="$(OutputPath)package" />
     <MakeDir Directories="$(OutputPath)package\img" />
+    <MakeDir Directories="$(OutputPath)package\img\buttons" />
+    <MakeDir Directories="$(OutputPath)package\img\drinks" />
+    <MakeDir Directories="$(OutputPath)package\img\profile_pics" />
+    <MakeDir Directories="$(OutputPath)package\img\tarot" />
     <MakeDir Directories="$(OutputPath)dist" />
     <Copy SourceFiles="@(PluginPackageFiles)" DestinationFolder="$(OutputPath)package" />
     <Copy SourceFiles="@(PluginPackageImageFiles)" DestinationFolder="$(OutputPath)package\img" />
+    <Copy SourceFiles="@(PluginPackageButtonImageFiles)" DestinationFolder="$(OutputPath)package\img\buttons" />
+    <Copy SourceFiles="@(PluginPackageDrinkImageFiles)" DestinationFolder="$(OutputPath)package\img\drinks" />
+    <Copy SourceFiles="@(PluginPackageProfileImageFiles)" DestinationFolder="$(OutputPath)package\img\profile_pics" />
+    <Copy SourceFiles="@(PluginPackageTarotImageFiles)" DestinationFolder="$(OutputPath)package\img\tarot" />
     <ZipDirectory SourceDirectory="$(OutputPath)package" DestinationFile="$(OutputPath)dist\$(AssemblyName)-$(Version).zip" Overwrite="true" />
   </Target>
 </Project>

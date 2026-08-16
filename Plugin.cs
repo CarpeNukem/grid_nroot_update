@@ -11,6 +11,8 @@ using Dalamud.Interface.Textures;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.Command;
+using Dalamud.Game.Text.SeStringHandling;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using Dalamud.Utility;
@@ -51,6 +53,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly GitHubReleaseClient github = new();
     private readonly SemaphoreSlim operationGate = new(1, 1);
     private readonly UpdateUiStateStore updateUiState = new();
+    private readonly NetworkStatsTracker networkStatsTracker;
     private readonly PenumbraIpc penumbra;
     private readonly CyberdeckWindow cyberdeckWindow;
     private readonly object modAddedLock = new();
@@ -72,6 +75,7 @@ public sealed class Plugin : IDalamudPlugin
     private TaskCompletionSource<string>? pendingModAdded;
     private bool? cachedPenumbraAvailable;
     private long lastPenumbraAvailableCheckTick;
+    private long nextNetworkStatsSampleAt;
     private volatile bool disposed;
 
     public Plugin(IDalamudPluginInterface pluginInterface)
@@ -87,6 +91,7 @@ public sealed class Plugin : IDalamudPlugin
             string.IsNullOrWhiteSpace(primaryMapping.LastAppliedVersion) ? "none" : NormalizeVersionForComparison(primaryMapping.LastAppliedVersion));
         Config.Save();
         updateUiState.Initialize(primaryMapping.LastAppliedVersion);
+        networkStatsTracker = new NetworkStatsTracker(Config);
 
         penumbra = new PenumbraIpc(pluginInterface);
         var (textures, textureLoadSource) = LoadTextures();
@@ -102,7 +107,8 @@ public sealed class Plugin : IDalamudPlugin
             () => RunUpdateCheck(silent: false),
             OnAutoOpenSettingChanged,
             IsPenumbraAvailable,
-            () => UpdateStatus);
+            () => UpdateStatus,
+            () => networkStatsTracker.Snapshot);
 
         foreach (var commandName in CommandNames)
         {
@@ -114,8 +120,10 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         PluginService.ClientState.Login += OnLogin;
+        PluginService.ClientState.Logout += OnLogout;
         PluginService.ClientState.TerritoryChanged += OnTerritoryChanged;
         PluginService.Framework.Update += OnFrameworkUpdate;
+        PluginService.Chat.ChatMessage += OnChatMessage;
         pluginInterface.UiBuilder.Draw += DrawUi;
         pluginInterface.UiBuilder.OpenMainUi += OpenMainUi;
         pluginInterface.UiBuilder.OpenConfigUi += OpenConfigUi;
@@ -146,6 +154,9 @@ public sealed class Plugin : IDalamudPlugin
         PluginService.Framework.Update -= OnFrameworkUpdate;
         PluginService.ClientState.TerritoryChanged -= OnTerritoryChanged;
         PluginService.ClientState.Login -= OnLogin;
+        PluginService.ClientState.Logout -= OnLogout;
+        networkStatsTracker.FinalizeSession(DateTimeOffset.UtcNow);
+        PluginService.Chat.ChatMessage -= OnChatMessage;
         if (modAddedSubscribed)
             penumbra.UnsubscribeModAdded(OnPenumbraModAdded);
         if (penumbraStateSubscribed)
@@ -221,14 +232,74 @@ public sealed class Plugin : IDalamudPlugin
                 cyberdeckWindow.DebugClearCipherVault('C');
                 PluginService.Chat.Print("DEBUG: Vault C-clear queued. Authenticate if the archive is sealed.", "TheGrid");
                 break;
+            case "tarot":
+                cyberdeckWindow.OpenTarotDebug();
+                PluginService.Chat.Print("DEBUG: Tarot link window opened.", "TheGrid");
+                break;
+            case "tarot-invite":
+                cyberdeckWindow.StartTarotCustomerLoopback();
+                PluginService.Chat.Print("DEBUG: Local Tarot invitation injected. Use YES or NO in the Cyberdeck.", "TheGrid");
+                break;
+            case "tarot-host":
+                cyberdeckWindow.StartTarotHostLoopback();
+                PluginService.Chat.Print("DEBUG: Local Tarot host session started. No second player or tells required.", "TheGrid");
+                break;
+            case "tarot-next":
+                PluginService.Chat.Print($"DEBUG: {cyberdeckWindow.AdvanceTarotCustomerLoopback()}", "TheGrid");
+                break;
+            case "tarot-reset":
+                cyberdeckWindow.ResetTarotLoopback();
+                PluginService.Chat.Print("DEBUG: Local Tarot session reset.", "TheGrid");
+                break;
             default:
                 PluginService.Chat.PrintError(
-                    "Debug usage: /grid debug blackice-clear | vault-s-clear | vault-a-clear | vault-b-clear | vault-c-clear",
+                    "Debug usage: /grid debug tarot-invite | tarot-next | tarot-host | tarot-reset | tarot | blackice-clear | vault-s-clear | vault-a-clear | vault-b-clear | vault-c-clear",
                     "TheGrid");
                 break;
         }
     }
 #endif
+
+    private void OnChatMessage(Dalamud.Game.Chat.IHandleableChatMessage message)
+    {
+        if (message.LogKind != Dalamud.Game.Text.XivChatType.TellIncoming)
+            return;
+
+        var text = message.Message.TextValue;
+        if (!text.Contains(TarotPacket.Marker, StringComparison.Ordinal))
+            return;
+
+        var sender = GetTarotTellSender(message.Sender);
+        if (cyberdeckWindow.TryReceiveTarotTell(sender, text))
+            PluginService.Log.Debug("Received GRID-TAROT packet from {Sender}.", sender);
+    }
+
+    private static string GetTarotTellSender(SeString sender)
+    {
+        try
+        {
+            var player = sender.Payloads.OfType<PlayerPayload>().FirstOrDefault();
+            if (player is not null)
+            {
+                var playerName = player.PlayerName.Trim();
+                var world = player.World.ValueNullable?.Name.ExtractText();
+                if (!string.IsNullOrWhiteSpace(playerName) && !string.IsNullOrWhiteSpace(world))
+                    return $"{playerName}@{world.Trim()}";
+                if (!string.IsNullOrWhiteSpace(playerName))
+                    return playerName;
+            }
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Could not extract the structured sender from a GRID-TAROT tell.");
+        }
+
+        var rendered = sender.TextValue.Trim();
+        var nameStart = 0;
+        while (nameStart < rendered.Length && !char.IsLetter(rendered[nameStart]))
+            nameStart++;
+        return nameStart < rendered.Length ? rendered[nameStart..].Trim() : rendered;
+    }
 
     private void OpenMainUi()
         => cyberdeckWindow.IsOpen = true;
@@ -309,6 +380,9 @@ public sealed class Plugin : IDalamudPlugin
         QueueVenueAutoOpenCheck();
     }
 
+    private void OnLogout(int _, int __)
+        => networkStatsTracker.FinalizeSession(DateTimeOffset.UtcNow);
+
     private void OnTerritoryChanged(uint _)
     {
         venueUpdateCheckDoneThisZone = false;
@@ -349,6 +423,73 @@ public sealed class Plugin : IDalamudPlugin
 
         if (startReconcile)
             _ = Task.Run(() => ReconcileAsync(forceDownload));
+
+        var nowTick = Environment.TickCount64;
+        if (nowTick >= nextNetworkStatsSampleAt)
+        {
+            nextNetworkStatsSampleAt = nowTick + 1000;
+            try
+            {
+                var presence = GetVenuePresence();
+                var people = presence == VenuePresence.Confirmed
+                    ? NetworkGuestScanner.Capture()
+                    : [];
+                if (presence == VenuePresence.Confirmed && NetworkGuestScanner.CaptureLocal() is { } localPlayer)
+                    people.Insert(0, localPlayer);
+                networkStatsTracker.Update(presence, people, DateTimeOffset.UtcNow);
+            }
+            catch (Exception ex)
+            {
+                PluginService.Log.Debug(ex, "Could not sample Grid venue network statistics.");
+            }
+        }
+    }
+
+    private VenuePresence GetVenuePresence()
+    {
+        if (!PluginService.ClientState.IsLoggedIn ||
+            !TryParseVenueAddress(Config.VenueAddress, out var expected))
+            return VenuePresence.Unknown;
+
+        // Keep venue telemetry aligned with the existing arrival/update workflow.
+        // Indoor housing data can be incomplete, while a recognized venue mannequin
+        // in the object table is direct evidence that the player reached The Grid.
+        if (IsTargetNpcPresent(Config.GetPrimaryMapping().NpcName))
+            return VenuePresence.Confirmed;
+
+        var currentMaybe = TryGetCurrentHousingAddress();
+        if (currentMaybe is null)
+        {
+            var currentDistrict = TryGetCurrentHousingDistrict();
+            if (!string.IsNullOrWhiteSpace(expected.DistrictName) &&
+                !string.IsNullOrWhiteSpace(currentDistrict) &&
+                !string.Equals(expected.DistrictName, currentDistrict, StringComparison.OrdinalIgnoreCase))
+                return VenuePresence.Elsewhere;
+
+            return VenuePresence.Unknown;
+        }
+
+        var current = currentMaybe.Value;
+        if (!string.IsNullOrWhiteSpace(expected.WorldName) &&
+            !string.IsNullOrWhiteSpace(current.WorldName) &&
+            !string.Equals(expected.WorldName, current.WorldName, StringComparison.OrdinalIgnoreCase))
+            return VenuePresence.Elsewhere;
+        if (!string.IsNullOrWhiteSpace(expected.DistrictName) &&
+            !string.IsNullOrWhiteSpace(current.DistrictName) &&
+            !string.Equals(expected.DistrictName, current.DistrictName, StringComparison.OrdinalIgnoreCase))
+            return VenuePresence.Elsewhere;
+        if (expected.Ward is not null && current.Ward is not null && expected.Ward != current.Ward)
+            return VenuePresence.Elsewhere;
+        if (expected.Plot is not null && current.Plot is not null && expected.Plot != current.Plot)
+            return VenuePresence.Elsewhere;
+
+        var addressComplete = (string.IsNullOrWhiteSpace(expected.WorldName) || !string.IsNullOrWhiteSpace(current.WorldName)) &&
+                              (string.IsNullOrWhiteSpace(expected.DistrictName) || !string.IsNullOrWhiteSpace(current.DistrictName)) &&
+                              (expected.Ward is null || current.Ward is not null) &&
+                              (expected.Plot is null || current.Plot is not null);
+        return addressComplete
+            ? VenuePresence.Confirmed
+            : VenuePresence.Unknown;
     }
 
     private void RunUpdateCheck(bool silent)
@@ -622,7 +763,7 @@ public sealed class Plugin : IDalamudPlugin
             if (!Directory.Exists(imageDirectory))
                 continue;
 
-            foreach (var path in Directory.EnumerateFiles(imageDirectory, "*.png"))
+            foreach (var path in Directory.EnumerateFiles(imageDirectory, "*.png", SearchOption.AllDirectories))
                 LoadTextureIfExists(loaded, path);
 
             source = imageDirectory;
