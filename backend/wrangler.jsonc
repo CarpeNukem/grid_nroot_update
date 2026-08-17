@@ -1,0 +1,48 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "grid-cyberdeck-api",
+	"main": "src/index.ts",
+	// Highest date supported by the workerd bundled with wrangler 4.123.0.
+	// Raise it together with the wrangler version, never ahead of it.
+	"compatibility_date": "2025-10-11",
+
+	// Lets the admin page be imported as a string and served with headers this
+	// Worker controls, rather than needing a separate static-assets deployment.
+	"rules": [{ "type": "Text", "globs": ["**/*.html"], "fallthrough": false }],
+
+	// Structured request logs. See src/observability/log.ts.
+	"observability": {
+		"enabled": true
+	},
+
+	// Non-secret configuration only. Secrets belong in .dev.vars (local, git-ignored)
+	// or `wrangler secret put` (deployed). See .dev.vars.example.
+	"vars": {
+		"ENVIRONMENT": "development",
+		"SCHEMA_VERSION": "1",
+		// The Worker serves R2 objects itself from /media, so this works locally
+		// with no public bucket. Point it at a CDN origin later if one is added.
+		"PUBLIC_MEDIA_BASE_URL": "http://127.0.0.1:8787/media",
+		// Exact origin of the Pages admin site. Admin CORS is never a wildcard.
+		"ADMIN_ALLOWED_ORIGIN": "http://127.0.0.1:8788"
+	},
+
+	// Local development bindings. `database_id` is a placeholder: `wrangler dev` and
+	// the test pool use a local SQLite file and ignore it. A real id is only needed
+	// for `--remote`, and must not be committed.
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "grid-cyberdeck-dev",
+			"database_id": "00000000-0000-0000-0000-000000000000",
+			"migrations_dir": "migrations"
+		}
+	],
+
+	"r2_buckets": [
+		{
+			"binding": "MEDIA",
+			"bucket_name": "grid-cyberdeck-media-dev"
+		}
+	]
+}

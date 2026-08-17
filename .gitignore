@@ -14,3 +14,17 @@ obj/
 
 # Plugin cache/output
 cache/
+
+# Cloudflare backend (backend/)
+node_modules/
+backend/.wrangler/
+backend/dist/
+# Local secrets. Only .dev.vars.example is committed.
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Binary media fixtures are generated locally, not committed: they are derived
+# from whatever source file was used to make them.
+backend/test/fixtures/*.mp4
+backend/test/fixtures/*.gif

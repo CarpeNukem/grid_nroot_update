@@ -1,0 +1,16 @@
+# Copy to `.dev.vars` for local development. `.dev.vars` is git-ignored and must
+# never be committed. Deployed environments use `wrangler secret put <NAME>`.
+#
+# None of these are required for Phase 1 (the health route and public reads do
+# not authenticate). They are listed so the admin phase has a documented shape.
+
+# Cloudflare Access application audience tag, used to validate the admin JWT.
+# Obtained from the Access application, not from an API token.
+CF_ACCESS_AUD=
+
+# Access team domain, e.g. yourteam.cloudflareaccess.com
+CF_ACCESS_TEAM_DOMAIN=
+
+# Comma-separated allowlist of staff emails permitted through admin routes.
+# Access enforces this first; the Worker re-checks it as defence in depth.
+ADMIN_ALLOWED_EMAILS=
