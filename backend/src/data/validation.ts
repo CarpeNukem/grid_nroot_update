@@ -433,6 +433,34 @@ export function parseMenuItemInput(body: unknown, id?: string): MenuItemInput {
 	};
 }
 
+export interface PageInput {
+	readonly id: string;
+	readonly title: string;
+	readonly body: string;
+	readonly sortOrder: number;
+}
+
+const PAGE_FIELDS = ["id", "title", "body", "sortOrder"] as const;
+
+/**
+ * Validates a prose block.
+ *
+ * `body` is markdown and gets the long-text budget. Newlines and tabs survive
+ * the control-character check — they are the formatting — while the rest of the
+ * C0 range is still refused.
+ */
+export function parsePageInput(body: unknown, id?: string): PageInput {
+	const input = assertObject(body);
+	assertNoUnknownFields(input, PAGE_FIELDS);
+
+	return {
+		id: id ?? requiredSlug(input, "id"),
+		title: requiredText(input, "title", FIELD_LIMITS.title),
+		body: optionalText(input, "body", FIELD_LIMITS.longText),
+		sortOrder: optionalInt(input, "sortOrder", 0, FIELD_LIMITS.maxSortOrder, 0),
+	};
+}
+
 export interface NewsPostInput {
 	readonly id: string;
 	readonly title: string;

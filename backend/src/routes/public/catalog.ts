@@ -1,5 +1,6 @@
 import { listPublishedMenuItems, toPublicMenuItem } from "../../data/menu.js";
 import { listPublishedNewsPosts, toPublicNewsPost } from "../../data/news.js";
+import { listPublishedPages, toPublicPage } from "../../data/pages.js";
 import { listPublishedProfiles, toPublicProfile } from "../../data/profiles.js";
 import { SCHEMA_VERSION } from "../../data/schema.js";
 import { publicReadResponse } from "../../http.js";
@@ -45,10 +46,11 @@ export const catalogRoute: Route = {
 	pattern: "/v1/catalog",
 	handler: async (request, { env, requestId }) => {
 		const now = new Date().toISOString();
-		const [profileRows, menuRows, newsRows] = await Promise.all([
+		const [profileRows, menuRows, newsRows, pageRows] = await Promise.all([
 			listPublishedProfiles(env.DB),
 			listPublishedMenuItems(env.DB),
 			listPublishedNewsPosts(env.DB, now),
+			listPublishedPages(env.DB),
 		]);
 
 		const mediaRevision = await mediaRevisionFor([
@@ -61,11 +63,12 @@ export const catalogRoute: Route = {
 			request,
 			{
 				schemaVersion: SCHEMA_VERSION,
-				updatedAt: latestUpdatedAt([...profileRows, ...menuRows, ...newsRows]),
+				updatedAt: latestUpdatedAt([...profileRows, ...menuRows, ...newsRows, ...pageRows]),
 				mediaRevision,
 				profiles: profileRows.map((row) => toPublicProfile(row, env.PUBLIC_MEDIA_BASE_URL)),
 				menu: menuRows.map((row) => toPublicMenuItem(row, env.PUBLIC_MEDIA_BASE_URL)),
 				news: newsRows.map((row) => toPublicNewsPost(row, env.PUBLIC_MEDIA_BASE_URL)),
+				pages: pageRows.map(toPublicPage),
 			},
 			requestId,
 		);

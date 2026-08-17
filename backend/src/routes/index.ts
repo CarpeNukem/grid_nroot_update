@@ -6,6 +6,7 @@ import { catalogRoute } from "./public/catalog.js";
 import { mediaObjectRoute } from "./public/media.js";
 import { menuDetailRoute, menuListRoute } from "./public/menu.js";
 import { newsDetailRoute, newsListRoute } from "./public/news.js";
+import { pageDetailRoute, pageListRoute } from "./public/pages.js";
 import { profileDetailRoute, profileListRoute } from "./public/profiles.js";
 import type { Route } from "./router.js";
 
@@ -26,6 +27,8 @@ export const routes: readonly Route[] = [
 	menuDetailRoute,
 	newsListRoute,
 	newsDetailRoute,
+	pageListRoute,
+	pageDetailRoute,
 	mediaObjectRoute,
 
 	adminUiRoute,
