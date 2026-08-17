@@ -85,6 +85,9 @@ internal sealed partial class CyberdeckWindow
     private readonly Func<bool> isPenumbraAvailable;
     private readonly Func<UpdateUiSnapshot> getUpdateStatus;
     private readonly Func<NetworkStatsSnapshot> getNetworkStats;
+    private readonly Func<NewsSnapshot> getNews;
+    private readonly Action refreshNews;
+    private readonly RemoteAssetCache remoteAssets;
 
     private DeckView selectedView = DeckView.Home;
     private float mapZoom = DefaultMapZoom;
@@ -151,8 +154,14 @@ internal sealed partial class CyberdeckWindow
         Action<bool> autoOpenChanged,
         Func<bool> isPenumbraAvailable,
         Func<UpdateUiSnapshot> getUpdateStatus,
-        Func<NetworkStatsSnapshot> getNetworkStats)
+        Func<NetworkStatsSnapshot> getNetworkStats,
+        Func<NewsSnapshot> getNews,
+        Action refreshNews,
+        RemoteAssetCache remoteAssets)
     {
+        this.getNews = getNews;
+        this.refreshNews = refreshNews;
+        this.remoteAssets = remoteAssets;
         this.config = config;
         this.penumbra = penumbra;
         this.textures = textures;
@@ -185,6 +194,8 @@ internal sealed partial class CyberdeckWindow
             DrawIntrusionWindow();
         if (cipherVaultWindowOpen)
             DrawCipherVaultWindow();
+        if (flyerWindowOpen)
+            DrawFlyerWindow();
         if (tarotRequestWindowOpen)
             DrawTarotRequestWindow();
         if (tarotAiWindowOpen)
@@ -705,6 +716,7 @@ internal sealed partial class CyberdeckWindow
         DrawDeckHeader();
         DrawNeonSeparator();
         ImGui.Spacing();
+        DrawNewsBanner(ImGui.GetContentRegionAvail().X);
         DrawDeckButtons(ImGui.GetContentRegionAvail().X);
     }
 
@@ -735,6 +747,9 @@ internal sealed partial class CyberdeckWindow
                 break;
             case DeckView.Menu:
                 DrawMenuView();
+                break;
+            case DeckView.News:
+                DrawNewsView();
                 break;
             case DeckView.Network:
                 DrawNetworkView();
@@ -854,6 +869,7 @@ internal sealed partial class CyberdeckWindow
             DeckView.Map => "Address",
             DeckView.Wifi => "Wi-Fi",
             DeckView.Menu => "Menu",
+            DeckView.News => "Broadcast",
             DeckView.Network => "Network",
             DeckView.Services => "Services",
             DeckView.Settings => "Settings",
@@ -1389,13 +1405,29 @@ internal sealed partial class CyberdeckWindow
             SelectDeckView(DeckView.Services);
         if (useTwoColumns)
             ImGui.SameLine();
-        var settingsPos = ImGui.GetCursorScreenPos();
+        var settingsPosition = ImGui.GetCursorScreenPos();
         if (DrawImageNavButton("Settings", "settings.png", buttonSize, GetSettingsTelemetry(updateStatus)))
             SelectDeckView(DeckView.Settings);
         if (updateStatus.IsBusy)
-            DrawTileActivityBadge(settingsPos, buttonSize, GetUpdateStatusColor(updateStatus));
-        else if (badgeCounts.TryGetValue(DeckView.Settings, out var settingsBadge) && settingsBadge > 0)
-            DrawTileBadge(settingsPos, buttonSize, settingsBadge, badgeColors.GetValueOrDefault(DeckView.Settings, CyberdeckTheme.Palette.Amber));
+            DrawTileActivityBadge(settingsPosition, buttonSize, GetUpdateStatusColor(updateStatus));
+        else if (badgeCounts.TryGetValue(DeckView.Settings, out var settingsCount) && settingsCount > 0)
+            DrawTileBadge(settingsPosition, buttonSize, settingsCount, badgeColors.GetValueOrDefault(DeckView.Settings, CyberdeckTheme.Palette.Amber));
+
+        // A seventh tile would leave a dangling half-row, so Broadcast spans the
+        // full width. It appears only when there is something to read, which
+        // keeps the grid exactly as it was whenever the relay is unreachable.
+        var news = getNews();
+        if (news.HasPosts)
+        {
+            var newsSize = new Vector2(width, buttonHeight);
+            var newsPosition = ImGui.GetCursorScreenPos();
+            if (DrawImageNavButton("Broadcast", "broadcast.png", newsSize, GetNewsTelemetry(news)))
+                SelectDeckView(DeckView.News);
+
+            var unread = CountUnreadNews(news);
+            if (unread > 0)
+                DrawTileBadge(newsPosition, newsSize, unread, CyberdeckTheme.Palette.Magenta);
+        }
     }
 
     private bool DrawImageNavButton(string label, string imageName, Vector2 size, string telemetry)
@@ -1923,6 +1955,18 @@ internal sealed partial class CyberdeckWindow
             ImGui.TextColored(CyberdeckTheme.Palette.Error, "PROFILE IMAGE NOT FOUND");
         }
 
+        // A brand mark sits under the portrait, at a fraction of its size: it
+        // identifies the person, it does not replace their photo.
+        var logo = string.IsNullOrWhiteSpace(profile.Logo) ? null : GetTextureWrap(profile.Logo);
+        if (logo is not null)
+        {
+            ImGui.Spacing();
+            var logoScale = MathF.Min(
+                (190 * uiScale) / MathF.Max(1, logo.Width),
+                (72 * uiScale) / MathF.Max(1, logo.Height));
+            ImGui.Image(logo.Handle, new Vector2(logo.Width * logoScale, logo.Height * logoScale));
+        }
+
         ImGui.TableSetColumnIndex(1);
         ImGui.TextColored(CyberdeckTheme.Palette.Magenta, profile.Name.ToUpperInvariant());
         ImGui.Spacing();
@@ -1943,7 +1987,9 @@ internal sealed partial class CyberdeckWindow
         if (!string.IsNullOrWhiteSpace(profile.Optional?.Quote))
         {
             ImGui.Spacing();
-            ImGui.TextColored(CyberdeckTheme.Palette.TextMuted, $"“{profile.Optional.Quote}”");
+            ImGui.PushStyleColor(ImGuiCol.Text, CyberdeckTheme.Palette.TextMuted);
+            ImGui.TextWrapped($"“{profile.Optional.Quote}”");
+            ImGui.PopStyleColor();
         }
         ImGui.Spacing();
 
@@ -3873,6 +3919,7 @@ internal sealed partial class CyberdeckWindow
         }
         DrawMutedWrapped("Opens automatically when you enter the venue address.");
 
+        DrawBroadcastSettings();
     }
 
     private static void DrawThemePreview(CyberdeckThemeId theme)
@@ -4298,6 +4345,7 @@ internal sealed partial class CyberdeckWindow
         Map,
         Wifi,
         Menu,
+        News,
         Network,
         Services,
         Settings,
