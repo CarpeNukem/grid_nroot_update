@@ -20,6 +20,12 @@ internal sealed class StaffProfile
 
     /// <summary>Optional brand mark shown under the portrait, e.g. a resident DJ logo.</summary>
     public string Logo { get; set; } = string.Empty;
+
+    /// <summary>Remote portrait, when the profile came from the relay.</summary>
+    public string ImageUrl { get; set; } = string.Empty;
+
+    /// <summary>Remote brand mark, when the profile came from the relay.</summary>
+    public string LogoUrl { get; set; } = string.Empty;
     public string RequestLabel { get; set; } = string.Empty;
     public string RequestMessage { get; set; } = string.Empty;
     public StaffProfileOptional? Optional { get; set; }

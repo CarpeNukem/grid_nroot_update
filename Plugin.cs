@@ -54,7 +54,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly SemaphoreSlim operationGate = new(1, 1);
     private readonly UpdateUiStateStore updateUiState = new();
     private readonly NetworkStatsTracker networkStatsTracker;
-    private readonly NewsService newsService;
+    private readonly CatalogService catalogService;
     private readonly RemoteAssetCache remoteAssets;
     private readonly PenumbraIpc penumbra;
     private readonly CyberdeckWindow cyberdeckWindow;
@@ -94,7 +94,7 @@ public sealed class Plugin : IDalamudPlugin
         Config.Save();
         updateUiState.Initialize(primaryMapping.LastAppliedVersion);
         networkStatsTracker = new NetworkStatsTracker(Config);
-        newsService = new NewsService(Config, pluginInterface.ConfigDirectory.FullName);
+        catalogService = new CatalogService(Config, pluginInterface.ConfigDirectory.FullName);
         remoteAssets = new RemoteAssetCache(pluginInterface.ConfigDirectory.FullName);
 
         penumbra = new PenumbraIpc(pluginInterface);
@@ -113,12 +113,12 @@ public sealed class Plugin : IDalamudPlugin
             IsPenumbraAvailable,
             () => UpdateStatus,
             () => networkStatsTracker.Snapshot,
-            () => newsService.Snapshot,
-            newsService.RequestRefresh,
+            () => catalogService.Snapshot,
+            catalogService.RequestRefresh,
             remoteAssets);
 
         remoteAssets.LoadExisting();
-        newsService.Start();
+        catalogService.Start();
 
         foreach (var commandName in CommandNames)
         {
@@ -181,7 +181,7 @@ public sealed class Plugin : IDalamudPlugin
         foreach (var commandName in CommandNames)
             PluginService.Commands.RemoveHandler(commandName);
         github.Dispose();
-        newsService.Dispose();
+        catalogService.Dispose();
         remoteAssets.Dispose();
         zoneTickCts?.Dispose();
         lifetime.Dispose();

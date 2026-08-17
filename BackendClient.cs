@@ -38,11 +38,78 @@ internal sealed class NewsPost
         => Uri.TryCreate(Link, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps;
 }
 
-internal sealed class NewsFeed
+/// <summary>Anything the relay returns carries the wire schema version.</summary>
+internal interface ISchemaVersioned
+{
+    int SchemaVersion { get; }
+}
+
+internal sealed class NewsFeed : ISchemaVersioned
 {
     [JsonPropertyName("schemaVersion")] public int SchemaVersion { get; set; }
     [JsonPropertyName("updatedAt")] public string UpdatedAt { get; set; } = string.Empty;
     [JsonPropertyName("news")] public List<NewsPost> News { get; set; } = [];
+}
+
+internal sealed class RemoteProfileOptional
+{
+    [JsonPropertyName("pronunciation")] public string Pronunciation { get; set; } = string.Empty;
+    [JsonPropertyName("pronouns")] public string Pronouns { get; set; } = string.Empty;
+    [JsonPropertyName("race")] public string Race { get; set; } = string.Empty;
+    [JsonPropertyName("availability")] public string Availability { get; set; } = string.Empty;
+    [JsonPropertyName("quote")] public string Quote { get; set; } = string.Empty;
+}
+
+internal sealed class RemoteProfile
+{
+    [JsonPropertyName("id")] public string Id { get; set; } = string.Empty;
+    [JsonPropertyName("category")] public string Category { get; set; } = string.Empty;
+    [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
+    [JsonPropertyName("characterName")] public string CharacterName { get; set; } = string.Empty;
+    [JsonPropertyName("age")] public string Age { get; set; } = string.Empty;
+    [JsonPropertyName("affiliation")] public string Affiliation { get; set; } = string.Empty;
+    [JsonPropertyName("occupation")] public string Occupation { get; set; } = string.Empty;
+    [JsonPropertyName("bio")] public string Bio { get; set; } = string.Empty;
+    [JsonPropertyName("optional")] public RemoteProfileOptional? Optional { get; set; }
+    [JsonPropertyName("imageUrl")] public string ImageUrl { get; set; } = string.Empty;
+    [JsonPropertyName("bundledImage")] public string BundledImage { get; set; } = string.Empty;
+    [JsonPropertyName("logoUrl")] public string LogoUrl { get; set; } = string.Empty;
+    [JsonPropertyName("logoImage")] public string LogoImage { get; set; } = string.Empty;
+    [JsonPropertyName("requestLabel")] public string RequestLabel { get; set; } = string.Empty;
+    [JsonPropertyName("requestMessage")] public string RequestMessage { get; set; } = string.Empty;
+}
+
+internal sealed class RemoteMenuItem
+{
+    [JsonPropertyName("id")] public string Id { get; set; } = string.Empty;
+    [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
+    [JsonPropertyName("priceGil")] public int PriceGil { get; set; }
+    [JsonPropertyName("priceLabel")] public string PriceLabel { get; set; } = string.Empty;
+    [JsonPropertyName("ingredients")] public string Ingredients { get; set; } = string.Empty;
+    [JsonPropertyName("description")] public string Description { get; set; } = string.Empty;
+    [JsonPropertyName("taste")] public string Taste { get; set; } = string.Empty;
+    [JsonPropertyName("imageUrl")] public string ImageUrl { get; set; } = string.Empty;
+    [JsonPropertyName("bundledImage")] public string BundledImage { get; set; } = string.Empty;
+}
+
+internal sealed class RemotePage
+{
+    [JsonPropertyName("id")] public string Id { get; set; } = string.Empty;
+    [JsonPropertyName("title")] public string Title { get; set; } = string.Empty;
+    /// <summary>Markdown. Rendered as a subset; never as HTML.</summary>
+    [JsonPropertyName("body")] public string Body { get; set; } = string.Empty;
+}
+
+/// <summary>The whole published catalogue in one response.</summary>
+internal sealed class RemoteCatalogFeed : ISchemaVersioned
+{
+    [JsonPropertyName("schemaVersion")] public int SchemaVersion { get; set; }
+    [JsonPropertyName("updatedAt")] public string UpdatedAt { get; set; } = string.Empty;
+    [JsonPropertyName("mediaRevision")] public string MediaRevision { get; set; } = string.Empty;
+    [JsonPropertyName("profiles")] public List<RemoteProfile> Profiles { get; set; } = [];
+    [JsonPropertyName("menu")] public List<RemoteMenuItem> Menu { get; set; } = [];
+    [JsonPropertyName("news")] public List<NewsPost> News { get; set; } = [];
+    [JsonPropertyName("pages")] public List<RemotePage> Pages { get; set; } = [];
 }
 
 internal enum NewsFetchOutcome
@@ -55,6 +122,13 @@ internal enum NewsFetchOutcome
 internal readonly record struct NewsFetchResult(
     NewsFetchOutcome Outcome,
     NewsFeed? Feed,
+    string? ETag,
+    string? Error,
+    string? Detail = null);
+
+internal readonly record struct CatalogFetchResult(
+    NewsFetchOutcome Outcome,
+    RemoteCatalogFeed? Feed,
     string? ETag,
     string? Error,
     string? Detail = null);
@@ -96,10 +170,51 @@ internal sealed class BackendClient : IDisposable
     /// Fetches the announcement feed, sending <paramref name="etag"/> so an
     /// unchanged feed costs a 304 and no re-parse.
     /// </summary>
+    /// <summary>
+    /// Fetches the whole published catalogue — profiles, menu, and news — in one
+    /// request, which is what the Cyberdeck uses. One round trip that can answer
+    /// 304 is cheaper than three that each might not.
+    /// </summary>
+    public async Task<CatalogFetchResult> FetchCatalogAsync(string baseUrl, string? etag, CancellationToken cancellationToken)
+    {
+        var result = await FetchAsync<RemoteCatalogFeed>(baseUrl, "/v1/catalog", etag, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (result.Feed is { } feed)
+        {
+            feed.Profiles ??= [];
+            feed.Menu ??= [];
+            feed.News ??= [];
+            feed.Pages ??= [];
+        }
+
+        return new CatalogFetchResult(result.Outcome, result.Feed, result.ETag, result.Error, result.Detail);
+    }
+
     public async Task<NewsFetchResult> FetchNewsAsync(string baseUrl, string? etag, CancellationToken cancellationToken)
     {
-        if (!TryBuildNewsUri(baseUrl, out var uri))
-            return new NewsFetchResult(NewsFetchOutcome.Failed, null, null, "Backend address is not a valid URL.");
+        var result = await FetchAsync<NewsFeed>(baseUrl, "/v1/news", etag, cancellationToken).ConfigureAwait(false);
+        if (result.Feed is { } feed)
+            feed.News ??= [];
+
+        return new NewsFetchResult(result.Outcome, result.Feed, result.ETag, result.Error, result.Detail);
+    }
+
+    private readonly record struct FetchResult<T>(
+        NewsFetchOutcome Outcome,
+        T? Feed,
+        string? ETag,
+        string? Error,
+        string? Detail) where T : class;
+
+    private async Task<FetchResult<T>> FetchAsync<T>(
+        string baseUrl,
+        string path,
+        string? etag,
+        CancellationToken cancellationToken) where T : class, ISchemaVersioned
+    {
+        if (!TryBuildUri(baseUrl, path, out var uri))
+            return new FetchResult<T>(NewsFetchOutcome.Failed, null, null, "Backend address is not a valid URL.", null);
 
         try
         {
@@ -112,29 +227,28 @@ internal sealed class BackendClient : IDisposable
                 .ConfigureAwait(false);
 
             if (response.StatusCode == HttpStatusCode.NotModified)
-                return new NewsFetchResult(NewsFetchOutcome.NotModified, null, etag, null);
+                return new FetchResult<T>(NewsFetchOutcome.NotModified, null, etag, null, null);
 
             if (!response.IsSuccessStatusCode)
-                return new NewsFetchResult(NewsFetchOutcome.Failed, null, null, $"Backend returned {(int)response.StatusCode}.");
+                return new FetchResult<T>(NewsFetchOutcome.Failed, null, null, $"The relay returned {(int)response.StatusCode}.", null);
 
             if (response.Content.Headers.ContentLength is { } declared && declared > MaxResponseBytes)
-                return new NewsFetchResult(NewsFetchOutcome.Failed, null, null, "Announcement feed is too large.");
+                return new FetchResult<T>(NewsFetchOutcome.Failed, null, null, "That response is too large.", null);
 
             var payload = await ReadBoundedAsync(response, cancellationToken).ConfigureAwait(false);
             if (payload is null)
-                return new NewsFetchResult(NewsFetchOutcome.Failed, null, null, "Announcement feed is too large.");
+                return new FetchResult<T>(NewsFetchOutcome.Failed, null, null, "That response is too large.", null);
 
-            var feed = JsonSerializer.Deserialize<NewsFeed>(payload, JsonOptions);
+            var feed = JsonSerializer.Deserialize<T>(payload, JsonOptions);
             if (feed is null)
-                return new NewsFetchResult(NewsFetchOutcome.Failed, null, null, "Announcement feed was empty.");
+                return new FetchResult<T>(NewsFetchOutcome.Failed, null, null, "The relay sent an empty response.", null);
 
             // A newer schema may have changed the meaning of fields this build
             // reads, so it is refused rather than half-understood.
             if (feed.SchemaVersion > SupportedSchemaVersion)
-                return new NewsFetchResult(NewsFetchOutcome.Failed, null, null, $"Announcement feed uses unsupported format v{feed.SchemaVersion}.");
+                return new FetchResult<T>(NewsFetchOutcome.Failed, null, null, $"The relay uses unsupported format v{feed.SchemaVersion}.", null);
 
-            feed.News ??= [];
-            return new NewsFetchResult(NewsFetchOutcome.Updated, feed, response.Headers.ETag?.ToString(), null);
+            return new FetchResult<T>(NewsFetchOutcome.Updated, feed, response.Headers.ETag?.ToString(), null, null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -142,14 +256,14 @@ internal sealed class BackendClient : IDisposable
         }
         catch (OperationCanceledException)
         {
-            return new NewsFetchResult(NewsFetchOutcome.Failed, null, null, "The relay did not respond in time.");
+            return new FetchResult<T>(NewsFetchOutcome.Failed, null, null, "The relay did not respond in time.", null);
         }
         catch (Exception exception)
         {
             // `Error` is a sentence for the Cyberdeck; `Detail` carries the raw
             // failure for the caller to log. Keeping the logger out of this class
             // is what lets it be exercised outside the game.
-            return new NewsFetchResult(NewsFetchOutcome.Failed, null, null, Describe(exception), exception.Message);
+            return new FetchResult<T>(NewsFetchOutcome.Failed, null, null, Describe(exception), exception.Message);
         }
     }
 
@@ -203,13 +317,13 @@ internal sealed class BackendClient : IDisposable
         return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
     }
 
-    private static bool TryBuildNewsUri(string baseUrl, out Uri uri)
+    private static bool TryBuildUri(string baseUrl, string path, out Uri uri)
     {
         uri = null!;
         if (string.IsNullOrWhiteSpace(baseUrl))
             return false;
 
-        if (!Uri.TryCreate($"{baseUrl.TrimEnd('/')}/v1/news", UriKind.Absolute, out var parsed))
+        if (!Uri.TryCreate($"{baseUrl.TrimEnd('/')}{path}", UriKind.Absolute, out var parsed))
             return false;
 
         // http is tolerated only for a loopback development server.
