@@ -13,6 +13,13 @@ import {
 	upsertNewsPost,
 } from "../../data/news.js";
 import {
+	deletePage,
+	getPage,
+	listAllPages,
+	setPagePublished,
+	upsertPage,
+} from "../../data/pages.js";
+import {
 	deleteProfile,
 	getProfile,
 	listAllProfiles,
@@ -22,6 +29,7 @@ import {
 import {
 	parseMenuItemInput,
 	parseNewsPostInput,
+	parsePageInput,
 	parseProfileInput,
 } from "../../data/validation.js";
 import { ErrorCode } from "../../security/errors.js";
@@ -56,6 +64,17 @@ export const adminRoutes: readonly Route[] = [
 		upsert: upsertMenuItem,
 		remove: deleteMenuItem,
 		setPublished: setMenuItemPublished,
+	}),
+	...adminRoutesFor({
+		segment: "pages",
+		label: "page",
+		notFoundCode: ErrorCode.PAGE_NOT_FOUND,
+		parse: parsePageInput,
+		list: listAllPages,
+		get: getPage,
+		upsert: upsertPage,
+		remove: deletePage,
+		setPublished: setPagePublished,
 	}),
 	...adminRoutesFor({
 		segment: "news",
