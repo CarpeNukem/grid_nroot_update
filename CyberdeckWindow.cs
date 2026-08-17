@@ -85,7 +85,7 @@ internal sealed partial class CyberdeckWindow
     private readonly Func<bool> isPenumbraAvailable;
     private readonly Func<UpdateUiSnapshot> getUpdateStatus;
     private readonly Func<NetworkStatsSnapshot> getNetworkStats;
-    private readonly Func<NewsSnapshot> getNews;
+    private readonly Func<CatalogSnapshot> getCatalog;
     private readonly Action refreshNews;
     private readonly RemoteAssetCache remoteAssets;
 
@@ -155,11 +155,11 @@ internal sealed partial class CyberdeckWindow
         Func<bool> isPenumbraAvailable,
         Func<UpdateUiSnapshot> getUpdateStatus,
         Func<NetworkStatsSnapshot> getNetworkStats,
-        Func<NewsSnapshot> getNews,
+        Func<CatalogSnapshot> getCatalog,
         Action refreshNews,
         RemoteAssetCache remoteAssets)
     {
-        this.getNews = getNews;
+        this.getCatalog = getCatalog;
         this.refreshNews = refreshNews;
         this.remoteAssets = remoteAssets;
         this.config = config;
@@ -1384,7 +1384,7 @@ internal sealed partial class CyberdeckWindow
         var buttonHeight = (useTwoColumns ? 132f : 108f) * uiScale;
         var buttonSize = new Vector2(buttonWidth, buttonHeight);
 
-        if (DrawImageNavButton("Menu", "menu.png", buttonSize, $"{DrinkMenu.Length:00} ITEMS"))
+        if (DrawImageNavButton("Menu", "menu.png", buttonSize, $"{GetMenuEntries().Count:00} ITEMS"))
             SelectDeckView(DeckView.Menu);
         if (useTwoColumns)
             ImGui.SameLine();
@@ -1416,7 +1416,7 @@ internal sealed partial class CyberdeckWindow
         // A seventh tile would leave a dangling half-row, so Broadcast spans the
         // full width. It appears only when there is something to read, which
         // keeps the grid exactly as it was whenever the relay is unreachable.
-        var news = getNews();
+        var news = getCatalog();
         if (news.HasPosts)
         {
             var newsSize = new Vector2(width, buttonHeight);
@@ -1602,6 +1602,21 @@ internal sealed partial class CyberdeckWindow
 
     private void DrawWifiView()
     {
+        // A published page replaces this screen wholesale, so syncshell ids and
+        // house rules can change without a plugin release. The hardcoded version
+        // below is what shows until the relay supplies one.
+        if (GetPage("wifi") is { } page)
+        {
+            ImGui.TextUnformatted(string.IsNullOrWhiteSpace(page.Title) ? "Wi-Fi / Syncshell" : page.Title);
+            DrawNeonSeparator();
+            ImGui.Spacing();
+            DrawMarkdown(page.Body);
+            ImGui.Spacing();
+            if (ImGui.Button("Discord"))
+                OpenDiscord();
+            return;
+        }
+
         ImGui.TextUnformatted("Wi-Fi / Syncshell");
         DrawNeonSeparator();
         ImGui.Spacing();
@@ -1847,7 +1862,7 @@ internal sealed partial class CyberdeckWindow
 
     private string GetStaffDirectoryStatus(string category)
     {
-        var count = staffProfiles.Count(profile =>
+        var count = GetProfileEntries().Count(profile =>
             string.Equals(profile.Category, category, StringComparison.OrdinalIgnoreCase));
         return count == 0 ? "COMING SOON" : $"{count:00} {(count == 1 ? "PROFILE" : "PROFILES")}";
     }
@@ -1889,19 +1904,22 @@ internal sealed partial class CyberdeckWindow
         var reloadWidth = 126 * uiScale;
         ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), ImGui.GetWindowContentRegionMax().X - reloadWidth));
         if (ImGui.SmallButton("RELOAD PROFILES"))
+        {
             ReloadStaffProfiles();
-        DrawHoverTooltip(staffProfilesSourcePath);
+            refreshNews();
+        }
+        DrawHoverTooltip($"Source: {GetCatalogSourceLabel()} — {staffProfilesSourcePath}");
         ImGui.Spacing();
         DrawNeonSeparator();
         ImGui.Spacing();
 
-        if (!string.IsNullOrWhiteSpace(staffProfilesLoadError))
+        if (!string.IsNullOrWhiteSpace(staffProfilesLoadError) && !getCatalog().IsLoaded)
         {
             ImGui.TextColored(CyberdeckTheme.Palette.Amber, staffProfilesLoadError);
             ImGui.Spacing();
         }
 
-        var profiles = staffProfiles
+        var profiles = GetProfileEntries()
             .Where(profile => string.Equals(profile.Category, staffDirectoryCategory, StringComparison.OrdinalIgnoreCase))
             .ToArray();
         if (profiles.Length == 0)
@@ -1941,7 +1959,7 @@ internal sealed partial class CyberdeckWindow
         ImGui.TableNextRow();
         ImGui.TableSetColumnIndex(0);
 
-        var texture = GetTextureWrap(profile.Image);
+        var texture = ResolveArt(profile.ImageUrl, profile.Image);
         if (texture is not null)
         {
             var scale = MathF.Min(
@@ -1957,7 +1975,7 @@ internal sealed partial class CyberdeckWindow
 
         // A brand mark sits under the portrait, at a fraction of its size: it
         // identifies the person, it does not replace their photo.
-        var logo = string.IsNullOrWhiteSpace(profile.Logo) ? null : GetTextureWrap(profile.Logo);
+        var logo = ResolveArt(profile.LogoUrl, profile.Logo);
         if (logo is not null)
         {
             ImGui.Spacing();
@@ -2362,9 +2380,10 @@ internal sealed partial class CyberdeckWindow
         DrawNeonSeparator();
         ImGui.Spacing();
 
-        for (var i = 0; i < DrinkMenu.Length; i++)
+        var entries = GetMenuEntries();
+        for (var i = 0; i < entries.Count; i++)
         {
-            var item = DrinkMenu[i];
+            var item = entries[i];
             if (i > 0)
             {
                 ImGui.Spacing();
@@ -2373,7 +2392,7 @@ internal sealed partial class CyberdeckWindow
             }
 
             var narrowCard = ImGui.GetContentRegionAvail().X < (340 * GetUiScale());
-            var wrap = GetTextureWrap(item.ImageName);
+            var wrap = ResolveArt(item.ImageUrl, item.BundledImage);
             if (wrap is not null)
             {
                 ImGui.Image(wrap.Handle, GetTextureSize(wrap, GetUiScale()));
@@ -2387,7 +2406,7 @@ internal sealed partial class CyberdeckWindow
             ImGui.PushStyleColor(ImGuiCol.Text, CyberdeckTheme.Palette.Cyan);
             ImGui.TextWrapped(item.Name);
             ImGui.PopStyleColor();
-            ImGui.TextColored(CyberdeckTheme.Palette.Amber, $"{item.Price} gil");
+            ImGui.TextColored(CyberdeckTheme.Palette.Amber, $"{item.PriceLabel} gil");
             ImGui.SameLine();
             if (ImGui.SmallButton($"Copy##drink_{item.Name}"))
                 CopyToClipboard(item.Name, "DRINK NAME COPIED");

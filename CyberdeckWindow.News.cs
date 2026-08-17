@@ -30,13 +30,13 @@ internal sealed partial class CyberdeckWindow
     private bool focusFlyerWindow;
     private NewsPost? flyerWindowPost;
 
-    private int CountUnreadNews(NewsSnapshot news)
+    private int CountUnreadNews(CatalogSnapshot news)
     {
         var lastSeen = DateTimeOffset.FromUnixTimeMilliseconds(Math.Max(0, config.LastSeenNewsUnixMs));
         return news.Posts.Count(post => post.PublishedAtUtc > lastSeen);
     }
 
-    private void MarkNewsSeen(NewsSnapshot news)
+    private void MarkNewsSeen(CatalogSnapshot news)
     {
         if (!news.HasPosts)
             return;
@@ -50,7 +50,7 @@ internal sealed partial class CyberdeckWindow
         config.Save();
     }
 
-    private static string GetNewsTelemetry(NewsSnapshot news)
+    private static string GetNewsTelemetry(CatalogSnapshot news)
     {
         var next = news.Posts
             .Select(post => post.EventAtUtc)
@@ -113,7 +113,7 @@ internal sealed partial class CyberdeckWindow
     /// </summary>
     private void DrawNewsBanner(float width)
     {
-        var news = getNews();
+        var news = getCatalog();
         if (news.Banner is not { } post)
             return;
 
@@ -397,7 +397,7 @@ internal sealed partial class CyberdeckWindow
         }
         DrawMutedWrapped("Relay address. Must be https, unless it points at this machine for testing.");
 
-        var news = getNews();
+        var news = getCatalog();
         if (ImGui.SmallButton("CHECK NOW##broadcast_check"))
         {
             refreshNews();
@@ -432,7 +432,7 @@ internal sealed partial class CyberdeckWindow
     /// <summary>The full announcement feed.</summary>
     private void DrawNewsView()
     {
-        var news = getNews();
+        var news = getCatalog();
         MarkNewsSeen(news);
 
         ImGui.TextUnformatted("Broadcast");
@@ -454,7 +454,7 @@ internal sealed partial class CyberdeckWindow
             return;
         }
 
-        if (news.Source == NewsSource.Cache)
+        if (news.Source == CatalogSource.Cache)
             ImGui.TextDisabled("Showing the last broadcast received.");
 
         var width = ImGui.GetContentRegionAvail().X;

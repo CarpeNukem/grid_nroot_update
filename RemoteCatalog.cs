@@ -9,50 +9,68 @@ using System.Threading.Tasks;
 
 namespace GridNrootUpdate;
 
-internal enum NewsSource
+internal enum CatalogSource
 {
     None,
     Remote,
     Cache,
 }
 
-internal sealed record NewsSnapshot(
-    IReadOnlyList<NewsPost> Posts,
-    NewsSource Source,
+internal sealed record CatalogSnapshot(
+    IReadOnlyList<RemoteProfile> Profiles,
+    IReadOnlyList<RemoteMenuItem> Menu,
+    IReadOnlyList<NewsPost> News,
+    IReadOnlyList<RemotePage> Pages,
+    CatalogSource Source,
     DateTimeOffset? LastSync,
     string? LastError,
     bool IsRefreshing)
 {
-    public static readonly NewsSnapshot Empty = new([], NewsSource.None, null, null, false);
+    public static readonly CatalogSnapshot Empty =
+        new([], [], [], [], CatalogSource.None, null, null, false);
 
-    public bool HasPosts => Posts.Count > 0;
+    /// <summary>Announcements, under the name the broadcast UI reads them by.</summary>
+    public IReadOnlyList<NewsPost> Posts => News;
+
+    public bool HasPosts => News.Count > 0;
+
+    /// <summary>
+    /// True when the relay has actually delivered a catalogue.
+    ///
+    /// Only then do the remote profile and menu lists replace the bundled ones;
+    /// an empty list from a reachable relay is a real answer ("nothing is
+    /// published"), while never having reached it is not.
+    /// </summary>
+    public bool IsLoaded => Source != CatalogSource.None;
 
     /// <summary>The post promoted to the home banner, if any.</summary>
-    public NewsPost? Banner => Posts.FirstOrDefault(post => post.Pinned);
+    public NewsPost? Banner => News.FirstOrDefault(post => post.Pinned);
 
     public string SourceLabel => Source switch
     {
-        NewsSource.Remote => "remote",
-        NewsSource.Cache => "cached",
+        CatalogSource.Remote => "remote",
+        CatalogSource.Cache => "cached",
         _ => "none",
     };
 }
 
 /// <summary>
-/// Keeps the venue announcement feed up to date in the background.
+/// Keeps the published catalogue — profiles, drinks, and announcements — up to
+/// date in the background.
 ///
 /// The Cyberdeck reads <see cref="Snapshot"/> during draw and never waits on
 /// anything: fetching, parsing, and disk writes all happen on a background
 /// task. A failed refresh leaves the previous snapshot in place, so losing the
-/// backend degrades to stale announcements rather than an empty screen.
+/// relay degrades to stale content rather than an empty screen.
 ///
-/// Announcements are the one collection with no bundled fallback — there is no
-/// shipped announcements file the way there is for staff profiles — so "no
-/// data" is a normal state the UI has to handle by showing nothing at all.
+/// When a catalogue has been loaded it *replaces* the bundled profiles and
+/// drinks rather than merging with them, so what an editor sees in the admin
+/// tool is exactly what the deck shows. Bundled data is the fallback for having
+/// never reached the relay at all — not a floor that remote edits sit on top of.
 /// </summary>
-internal sealed class NewsService : IDisposable
+internal sealed class CatalogService : IDisposable
 {
-    private const string CacheFileName = "news_cache.json";
+    private const string CacheFileName = "catalog_cache.json";
     private static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(15);
 
@@ -68,17 +86,17 @@ internal sealed class NewsService : IDisposable
     private readonly SemaphoreSlim refreshSignal = new(0, 1);
     private readonly string cachePath;
 
-    private volatile NewsSnapshot snapshot = NewsSnapshot.Empty;
+    private volatile CatalogSnapshot snapshot = CatalogSnapshot.Empty;
     private string? etag;
     private Task? worker;
 
-    public NewsService(PluginConfig config, string configDirectory)
+    public CatalogService(PluginConfig config, string configDirectory)
     {
         this.config = config;
         cachePath = Path.Combine(configDirectory, CacheFileName);
     }
 
-    public NewsSnapshot Snapshot => snapshot;
+    public CatalogSnapshot Snapshot => snapshot;
 
     public void Start()
     {
@@ -122,7 +140,7 @@ internal sealed class NewsService : IDisposable
         }
         catch (Exception exception)
         {
-            PluginService.Log.Error(exception, "Announcement refresh loop stopped unexpectedly.");
+            PluginService.Log.Error(exception, "Catalogue refresh loop stopped unexpectedly.");
         }
     }
 
@@ -134,7 +152,7 @@ internal sealed class NewsService : IDisposable
         snapshot = snapshot with { IsRefreshing = true };
 
         var result = await client
-            .FetchNewsAsync(config.BackendBaseUrl, etag, cancellationToken)
+            .FetchCatalogAsync(config.BackendBaseUrl, etag, cancellationToken)
             .ConfigureAwait(false);
 
         switch (result.Outcome)
@@ -150,16 +168,28 @@ internal sealed class NewsService : IDisposable
 
             case NewsFetchOutcome.Updated when result.Feed is { } feed:
                 etag = result.ETag;
-                snapshot = new NewsSnapshot(feed.News, NewsSource.Remote, DateTimeOffset.UtcNow, null, false);
+                snapshot = new CatalogSnapshot(
+                    feed.Profiles,
+                    feed.Menu,
+                    feed.News,
+                    feed.Pages,
+                    CatalogSource.Remote,
+                    DateTimeOffset.UtcNow,
+                    null,
+                    false);
                 SaveCache(feed, result.ETag);
-                PluginService.Log.Debug("Announcements refreshed: {Count} post(s).", feed.News.Count);
+                PluginService.Log.Debug(
+                    "Catalogue refreshed: {Profiles} profile(s), {Menu} drink(s), {News} post(s).",
+                    feed.Profiles.Count,
+                    feed.Menu.Count,
+                    feed.News.Count);
                 break;
 
             default:
                 // Keep whatever is already on screen. Only the diagnostics change.
                 snapshot = snapshot with { LastError = result.Error, IsRefreshing = false };
                 PluginService.Log.Debug(
-                    "Announcement refresh failed: {Error} ({Detail})",
+                    "Catalogue refresh failed: {Error} ({Detail})",
                     result.Error ?? "unknown",
                     result.Detail ?? "no detail");
                 break;
@@ -173,18 +203,29 @@ internal sealed class NewsService : IDisposable
             if (!File.Exists(cachePath))
                 return;
 
-            var cached = JsonSerializer.Deserialize<CachedFeed>(File.ReadAllText(cachePath), JsonOptions);
+            var cached = JsonSerializer.Deserialize<CachedCatalog>(File.ReadAllText(cachePath), JsonOptions);
             if (cached?.Feed is null || cached.Feed.SchemaVersion > BackendClient.SupportedSchemaVersion)
                 return;
 
+            cached.Feed.Profiles ??= [];
+            cached.Feed.Menu ??= [];
             cached.Feed.News ??= [];
+            cached.Feed.Pages ??= [];
             etag = cached.ETag;
-            snapshot = new NewsSnapshot(cached.Feed.News, NewsSource.Cache, cached.FetchedAt, null, false);
+            snapshot = new CatalogSnapshot(
+                cached.Feed.Profiles,
+                cached.Feed.Menu,
+                cached.Feed.News,
+                cached.Feed.Pages,
+                CatalogSource.Cache,
+                cached.FetchedAt,
+                null,
+                false);
         }
         catch (Exception exception)
         {
             // A corrupt cache is discarded, never allowed to break startup.
-            PluginService.Log.Warning(exception, "Could not read the announcement cache; ignoring it.");
+            PluginService.Log.Warning(exception, "Could not read the catalogue cache; ignoring it.");
             etag = null;
         }
     }
@@ -196,7 +237,7 @@ internal sealed class NewsService : IDisposable
     /// interrupted write cannot leave a half-written cache that would be
     /// discarded on the next start.
     /// </summary>
-    private void SaveCache(NewsFeed feed, string? responseETag)
+    private void SaveCache(RemoteCatalogFeed feed, string? responseETag)
     {
         var temporaryPath = $"{cachePath}.{Guid.NewGuid():N}.tmp";
 
@@ -204,7 +245,7 @@ internal sealed class NewsService : IDisposable
         {
             Directory.CreateDirectory(Path.GetDirectoryName(cachePath)!);
             var payload = JsonSerializer.Serialize(
-                new CachedFeed { ETag = responseETag, FetchedAt = DateTimeOffset.UtcNow, Feed = feed },
+                new CachedCatalog { ETag = responseETag, FetchedAt = DateTimeOffset.UtcNow, Feed = feed },
                 JsonOptions);
 
             File.WriteAllText(temporaryPath, payload);
@@ -212,7 +253,7 @@ internal sealed class NewsService : IDisposable
         }
         catch (Exception exception)
         {
-            PluginService.Log.Warning(exception, "Could not write the announcement cache.");
+            PluginService.Log.Warning(exception, "Could not write the catalogue cache.");
 
             try
             {
@@ -243,10 +284,10 @@ internal sealed class NewsService : IDisposable
         client.Dispose();
     }
 
-    private sealed class CachedFeed
+    private sealed class CachedCatalog
     {
         [JsonPropertyName("etag")] public string? ETag { get; set; }
         [JsonPropertyName("fetchedAt")] public DateTimeOffset FetchedAt { get; set; }
-        [JsonPropertyName("feed")] public NewsFeed? Feed { get; set; }
+        [JsonPropertyName("feed")] public RemoteCatalogFeed? Feed { get; set; }
     }
 }
