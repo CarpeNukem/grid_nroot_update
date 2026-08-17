@@ -7,5 +7,10 @@ declare module "cloudflare:test" {
 		TEST_MIGRATIONS: D1Migration[];
 		/** Base64 of the real encoded files in test/fixtures. */
 		TEST_MEDIA_FIXTURES: Record<string, string>;
+		/** wrangler.jsonc, parsed at config time. */
+		TEST_WRANGLER_CONFIG: {
+			vars: Record<string, string>;
+			env?: Record<string, { vars: Record<string, string>; workers_dev?: boolean }>;
+		};
 	}
 }

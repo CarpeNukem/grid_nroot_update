@@ -18,7 +18,10 @@
 		"db:migrate:local": "wrangler d1 migrations apply grid-cyberdeck-dev --local",
 		"seed:build": "tsx scripts/import-seed.ts",
 		"seed:local": "npm run seed:build && wrangler d1 execute grid-cyberdeck-dev --local --file=.wrangler/seed.sql",
-		"check": "npm run format:check && npm run typecheck && npm test"
+		"check": "npm run format:check && npm run typecheck && npm test",
+		"predeploy": "tsx scripts/predeploy.ts",
+		"deploy:production": "npm run predeploy && wrangler deploy --env production",
+		"db:migrate:production": "wrangler d1 migrations apply grid-cyberdeck --env production --remote"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.0.0",

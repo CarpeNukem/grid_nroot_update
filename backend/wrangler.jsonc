@@ -44,5 +44,57 @@
 			"binding": "MEDIA",
 			"bucket_name": "grid-cyberdeck-media-dev"
 		}
-	]
+	],
+
+	// Deployed environments are declared explicitly so `wrangler deploy` alone
+	// cannot ship the development settings above. That matters more than it
+	// looks: with ENVIRONMENT set to "development" the Worker accepts an
+	// `x-dev-admin-email` header in place of a Cloudflare Access token, which is
+	// exactly right locally and an authentication bypass anywhere else.
+	//
+	// Deploy with:  npx wrangler deploy --env production
+	"env": {
+		"production": {
+			"name": "grid-cyberdeck-api",
+
+			// No workers.dev URL. Access protects the custom domain; a second
+			// hostname that Access does not cover would simply route around it.
+			"workers_dev": false,
+
+			// Binding the hostname needs nroot.io to be an active zone in the same
+			// Cloudflare account. The domain is registered but still on the
+			// registrar's nameservers, so this fails until it is moved across.
+			"routes": [{ "pattern": "api.nroot.io", "custom_domain": true }],
+
+			"vars": {
+				// The single most important line here. Anything other than
+				// "development" disables the local sign-in path entirely.
+				"ENVIRONMENT": "production",
+				"SCHEMA_VERSION": "1",
+				// The Worker serves R2 from its own /media path.
+				"PUBLIC_MEDIA_BASE_URL": "https://api.nroot.io/media",
+				// Same origin: the admin page is served by this Worker.
+				"ADMIN_ALLOWED_ORIGIN": "https://api.nroot.io"
+			},
+
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "grid-cyberdeck",
+					// TODO: from `wrangler d1 create grid-cyberdeck`. Not a
+					// credential — it is useless without account access — but
+					// decide deliberately whether to commit it.
+					"database_id": "REPLACE-ME",
+					"migrations_dir": "migrations"
+				}
+			],
+
+			"r2_buckets": [
+				{
+					"binding": "MEDIA",
+					"bucket_name": "grid-cyberdeck-media"
+				}
+			]
+		}
+	}
 }
