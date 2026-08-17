@@ -1,0 +1,56 @@
+[
+	{
+		"id": "above-the-grid",
+		"name": "Above The Grid",
+		"priceGil": 10000,
+		"bundledImage": "above_the_grid.png",
+		"ingredients": "gin, elderflower cordial, lemon, ChroManticore Ultraviolet",
+		"description": "A cold, luminous rooftop cocktail for those who have risen above the city's noise. Smooth, silver, and electric-blue, Above The Grid tastes like neon reflected through glass and rain from the top floor.",
+		"taste": "Cool, bright, and elegantly electric. Lemon cuts through soft elderflower first, followed by crisp gin botanicals and a smooth ultraviolet finish with a faint synthetic berry glow."
+	},
+	{
+		"id": "toxic-brat",
+		"name": "Toxic Brat (Rhas' Special)",
+		"priceGil": 15000,
+		"bundledImage": "toxic_brat.png",
+		"ingredients": "vodka, blackberry liqueur, lime, ChroManticore Lime, Ab-Synth rinse",
+		"description": "A dangerously sweet neon cocktail glowing in toxic pink and violet. Built with vodka, blackberry, lime, and an Ab-Synth™ rinse, Toxic Brat is playful, sharp, and made for nights that end in chaos.",
+		"taste": "Sweet, sharp, and dangerously smooth. Neon blackberry and toxic lime hit first with a candy-bright burst, followed by a cold absinthe edge and a clean vodka finish. Dark berry lingers underneath, sweet, electric, and almost addictive."
+	},
+	{
+		"id": "trust-issues",
+		"name": "Trust Issues",
+		"priceGil": 10000,
+		"bundledImage": "trust_issues.png",
+		"ingredients": "??? / zero alcohol",
+		"description": "Presented with far too much confidence for something this clear. Chilled, elegant, and treated like a house secret.",
+		"taste": "Clean, crisp, alarmingly honest. Notes of nothing, followed by a refreshing finish of betrayal."
+	},
+	{
+		"id": "chornobyl-vice",
+		"name": "Chornobyl Vice",
+		"priceGil": 5000,
+		"bundledImage": "chornobyl_vice.png",
+		"ingredients": "Cactus Juice, lychee syrup, pear nectar, lemon, Vatnajokull Sparkling / zero alcohol",
+		"description": "A neon-green rooftop temptation served with a tiny activation vial and radioactive glow, Chornobyl Vice looks like a containment breach but drinks smooth, floral, and dangerously gentle.",
+		"taste": "Soft, floral, fruity, and lightly sweet. Lychee and pear bloom first, followed by cool cactus freshness, a bright lemon cut, and a crisp sparkling finish that leaves a clean, almost mineral glow."
+	},
+	{
+		"id": "nine",
+		"name": "9",
+		"priceGil": 20000,
+		"bundledImage": "nine.png",
+		"ingredients": "vodka, gin, white rum, tequila, blue curacao, lime, lemon, syrup, Vatnajokull Sparkling",
+		"description": "The Grid's overloaded house anomaly: a glowing, chaotic cocktail built from exactly nine ingredients.",
+		"taste": "Bright, sharp, and dangerously drinkable. Citrus cuts through the layered spirits, blue curacao adds sweet orange, and soda gives a clean finish."
+	},
+	{
+		"id": "frostbite",
+		"name": "Frostbite",
+		"priceGil": 15000,
+		"bundledImage": "frostbite.png",
+		"ingredients": "ceruleum-infused vodka, blue curacao, synth-mint, synth-lime; reboot chaser: orange, ginger, cinnamon",
+		"description": "A neon-blue, ceruleum-infused cryo shot with a sharp mint-citrus bite. The unstable infusion activates on impact, triggering a brief system freeze before the reboot chaser brings you back online.",
+		"taste": "Sharp, cold, and electric. Sweet blue citrus hits first, then peppermint bite and a metallic ceruleum tingle. The reboot chaser follows warm with orange, ginger, and cinnamon heat. Note: By ordering Frostbite, you consent to a brief, non-lethal physical interaction as part of the serving ritual. The management assures you it is theatrical, consensual, and only emotionally questionable."
+	}
+]

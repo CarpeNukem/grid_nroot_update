@@ -1,0 +1,721 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Grid — Cyberdeck Admin</title>
+<style>
+:root {
+  --bg: #071017; --panel: #0d1b26; --raised: #12242f;
+  --line: #1d3a4a; --cyan: #31e6df; --magenta: #ff3eb5;
+  --amber: #ffb648; --text: #d5fbf7; --muted: #7fa3ad; --error: #ff5c6c;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+}
+header {
+  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+h1 { font-size: 15px; margin: 0; letter-spacing: .12em; color: var(--cyan); text-transform: uppercase; }
+h2 { font-size: 13px; margin: 0 0 10px; letter-spacing: .1em; color: var(--magenta); text-transform: uppercase; }
+nav { display: flex; gap: 6px; }
+button {
+  font: inherit; cursor: pointer; color: var(--text);
+  background: var(--raised); border: 1px solid var(--line);
+  border-radius: 4px; padding: 6px 12px;
+}
+button:hover { border-color: var(--cyan); }
+button[aria-selected="true"] { border-color: var(--cyan); color: var(--cyan); }
+button.danger:hover { border-color: var(--error); color: var(--error); }
+button.primary { border-color: var(--cyan); color: var(--cyan); }
+main { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px 20px; align-items: start; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px; }
+ul { list-style: none; margin: 0; padding: 0; max-height: 72vh; overflow-y: auto; }
+li { border-bottom: 1px solid var(--line); }
+li:last-child { border-bottom: 0; }
+li button { width: 100%; text-align: left; background: none; border: 0; border-radius: 0; padding: 9px 8px; }
+li button:hover { background: var(--raised); }
+li button[aria-current="true"] { background: var(--raised); box-shadow: inset 2px 0 0 var(--cyan); }
+.row { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.tag { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.tag.live { color: var(--cyan); }
+.tag.draft { color: var(--muted); }
+.tag.pinned { color: var(--magenta); }
+label { display: block; margin-bottom: 12px; }
+label > span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+input, textarea, select {
+  width: 100%; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 4px; padding: 7px 9px;
+}
+input:focus, textarea:focus, select:focus { outline: 1px solid var(--cyan); border-color: var(--cyan); }
+textarea { min-height: 74px; resize: vertical; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+@media (max-width: 620px) { .grid2 { grid-template-columns: 1fr; } }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.hint { font-size: 12px; color: var(--muted); margin: -6px 0 12px; }
+.notice { padding: 9px 12px; border-radius: 4px; margin-bottom: 12px; font-size: 13px; }
+.notice.error { background: rgba(255,92,108,.12); border: 1px solid var(--error); color: var(--error); }
+.notice.ok { background: rgba(49,230,223,.1); border: 1px solid var(--cyan); color: var(--cyan); }
+.media { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+.media img, .media video { max-width: 260px; max-height: 170px; border: 1px solid var(--line); border-radius: 4px; }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--amber); word-break: break-all; }
+.meta { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); margin-top: 14px; padding-top: 10px; }
+.empty { color: var(--muted); padding: 18px 4px; }
+.slotTitle { font-size: 12px; color: var(--amber); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.filters button { padding: 4px 9px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>The Grid // Cyberdeck Admin</h1>
+  <nav id="tabs"></nav>
+  <label style="margin:0 0 0 auto; min-width:230px">
+    <span>Signed in as (local development only)</span>
+    <input id="identity" type="email" placeholder="editor@thegrid.test" autocomplete="off">
+  </label>
+</header>
+
+<main>
+  <section class="panel">
+    <h2 id="listTitle">Records</h2>
+    <div id="filters" class="filters"></div>
+    <button id="newRecord" class="primary" style="width:100%; margin-bottom:10px">+ New</button>
+    <ul id="list"></ul>
+  </section>
+
+  <section class="panel">
+    <div id="notice"></div>
+    <h2 id="editorTitle">Editor</h2>
+    <form id="editor" autocomplete="off"></form>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+/*
+ * A deliberately dependency-free admin tool: one file, no build step, no
+ * framework. It talks to the same origin that served it, so there is no CORS
+ * involved and no token in browser storage — locally the identity header stands
+ * in for Cloudflare Access, which supplies the real one when deployed.
+ */
+
+/*
+ * The categories the deck's Services view asks for by name — see
+ * OpenStaffDirectory in CyberdeckWindow.cs. A profile whose category is not one
+ * of these will not appear anywhere in the plugin, which is why they are
+ * offered as a pick list rather than left to free typing.
+ */
+const PROFILE_CATEGORIES = ["photography", "dj", "bar"];
+
+let categoryFilter = "";
+
+const showsLogo = (record) => record.category === "dj" || Boolean(record.logoKey) || Boolean(record.logoImage);
+
+const COLLECTIONS = {
+  menu: {
+    label: "Menu",
+    titleField: "name",
+    fields: [
+      { name: "id", label: "ID (slug)", hint: "lowercase-with-hyphens; cannot change after creation" },
+      { name: "name", label: "Name" },
+      { name: "priceGil", label: "Price (gil)", type: "number" },
+      { name: "sortOrder", label: "Sort order", type: "number" },
+      { name: "ingredients", label: "Ingredients", type: "textarea" },
+      { name: "description", label: "Description", type: "textarea" },
+      { name: "taste", label: "Flavour profile", type: "textarea" },
+      { name: "bundledImage", label: "Bundled art filename", hint: "e.g. frostbite.png — art shipped inside the plugin" },
+    ],
+    media: [{ field: "imageKey", label: "Drink art" }],
+  },
+  profiles: {
+    label: "Profiles",
+    titleField: "name",
+    fields: [
+      { name: "id", label: "ID (slug)" },
+      { name: "category", label: "Category", options: PROFILE_CATEGORIES,
+        hint: "Decides which Services screen the profile appears under" },
+      { name: "name", label: "Display name" },
+      { name: "characterName", label: "Character name", hint: "Used for the in-game /tell" },
+      { name: "age", label: "Age" },
+      { name: "affiliation", label: "Affiliation" },
+      { name: "occupation", label: "Occupation" },
+      { name: "sortOrder", label: "Sort order", type: "number" },
+      { name: "bio", label: "Bio", type: "textarea" },
+      { name: "requestLabel", label: "Request button label" },
+      { name: "requestMessage", label: "Request message", type: "textarea" },
+      { name: "bundledImage", label: "Bundled portrait filename" },
+      { name: "logoImage", label: "Bundled logo filename", when: showsLogo,
+        hint: "Brand mark shown under the portrait. Resident DJs only." },
+      { name: "optional.pronunciation", label: "Pronunciation" },
+      { name: "optional.pronouns", label: "Pronouns" },
+      { name: "optional.race", label: "Race" },
+      { name: "optional.availability", label: "Availability" },
+      { name: "optional.quote", label: "Quote", type: "textarea" },
+    ],
+    media: [
+      { field: "imageKey", label: "Portrait" },
+      { field: "logoKey", label: "Logo / brand mark", when: showsLogo },
+    ],
+  },
+  news: {
+    label: "News",
+    titleField: "title",
+    fields: [
+      { name: "id", label: "ID (slug)" },
+      { name: "title", label: "Title" },
+      { name: "publishedAt", label: "Goes live", hint: "Date, ISO timestamp, or a Discord <t:...> stamp" },
+      { name: "eventAt", label: "Event date", hint: "Optional. Paste a Discord timestamp straight in." },
+      { name: "pinned", label: "Pin to the deck home screen", type: "checkbox" },
+      { name: "summary", label: "Summary", type: "textarea" },
+      { name: "body", label: "Body", type: "textarea" },
+      { name: "link", label: "Link", hint: "https only" },
+      { name: "linkLabel", label: "Link button label" },
+      { name: "flyerImage", label: "Bundled flyer filename" },
+    ],
+    media: [{ field: "flyerKey", label: "Flyer" }],
+  },
+};
+
+let collection = "news";
+let records = [];
+let selectedId = null;
+let draft = null;
+
+const $ = (id) => document.getElementById(id);
+const identity = () => $("identity").value.trim();
+
+function authHeaders(extra = {}) {
+  const email = identity();
+  return email ? { ...extra, "x-dev-admin-email": email } : extra;
+}
+
+function say(message, kind = "ok") {
+  $("notice").innerHTML = "";
+  if (!message) return;
+  const box = document.createElement("div");
+  box.className = `notice ${kind}`;
+  box.textContent = message;
+  $("notice").append(box);
+}
+
+/** Every response goes through here so the API's error envelope is what users see. */
+async function api(path, options = {}) {
+  const response = await fetch(path, { ...options, headers: authHeaders(options.headers) });
+  const isJson = (response.headers.get("content-type") || "").includes("json");
+  const body = isJson ? await response.json() : null;
+
+  if (!response.ok) {
+    const detail = body && body.error ? body.error.message : `Request failed (${response.status}).`;
+    throw new Error(response.status === 401 ? "Not signed in. Enter an authorised email above." : detail);
+  }
+
+  return body;
+}
+
+const get = (record, path) =>
+  path.split(".").reduce((value, key) => (value == null ? undefined : value[key]), record);
+
+function set(record, path, value) {
+  const keys = path.split(".");
+  const last = keys.pop();
+  let target = record;
+  for (const key of keys) {
+    if (typeof target[key] !== "object" || target[key] === null) target[key] = {};
+    target = target[key];
+  }
+  target[last] = value;
+}
+
+function renderTabs() {
+  $("tabs").innerHTML = "";
+  for (const [key, config] of Object.entries(COLLECTIONS)) {
+    const button = document.createElement("button");
+    button.textContent = config.label;
+    button.setAttribute("aria-selected", String(key === collection));
+    button.onclick = () => { collection = key; selectedId = null; draft = null; load(); };
+    $("tabs").append(button);
+  }
+}
+
+function renderList() {
+  const config = COLLECTIONS[collection];
+  renderFilters();
+
+  const visible = collection === "profiles" && categoryFilter
+    ? records.filter((record) => record.category === categoryFilter)
+    : records;
+
+  $("listTitle").textContent = `${config.label} (${visible.length}${
+    visible.length !== records.length ? ` of ${records.length}` : ""})`;
+  $("list").innerHTML = "";
+
+  if (visible.length === 0) {
+    const empty = document.createElement("li");
+    empty.innerHTML = '<div class="empty">Nothing here yet.</div>';
+    $("list").append(empty);
+    return;
+  }
+
+  for (const record of visible) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.setAttribute("aria-current", String(record.id === selectedId));
+
+    const title = record[config.titleField] || record.id;
+    const state = record.published ? '<span class="tag live">live</span>' : '<span class="tag draft">draft</span>';
+    const pinned = record.pinned ? ' <span class="tag pinned">pinned</span>' : "";
+    const category = record.category ? ` &middot; ${escapeHtml(record.category)}` : "";
+    button.innerHTML = `<div class="row"><span>${escapeHtml(title)}</span>${state}</div>
+      <div class="tag draft">${escapeHtml(record.id)}${category}${pinned}</div>`;
+    button.onclick = () => { selectedId = record.id; draft = null; renderList(); renderEditor(); };
+
+    item.append(button);
+    $("list").append(item);
+  }
+}
+
+/**
+ * Category chips for the profile list.
+ *
+ * The deck shows photographers, DJs, and bar staff on separate screens, so the
+ * one flat list stops being usable as soon as there is more than one category.
+ */
+function renderFilters() {
+  const bar = $("filters");
+  bar.innerHTML = "";
+  if (collection !== "profiles") return;
+
+  const counts = new Map();
+  for (const record of records) {
+    counts.set(record.category, (counts.get(record.category) ?? 0) + 1);
+  }
+
+  const known = [...new Set([...PROFILE_CATEGORIES, ...counts.keys()])].filter(Boolean);
+  for (const [value, label] of [["", `All (${records.length})`],
+    ...known.map((category) => [category, `${category} (${counts.get(category) ?? 0})`])]) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.textContent = label;
+    chip.setAttribute("aria-selected", String(categoryFilter === value));
+    chip.onclick = () => { categoryFilter = value; renderList(); };
+    bar.append(chip);
+  }
+}
+
+const escapeHtml = (value) =>
+  String(value).replace(/[&<>"']/g, (character) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+
+function currentRecord() {
+  if (draft) return draft;
+  return records.find((record) => record.id === selectedId) || null;
+}
+
+/** Maps a storage row back to the shape the write endpoints accept. */
+function toEditable(record) {
+  if (!record) return null;
+  const editable = {
+    id: record.id,
+    sortOrder: record.sort_order ?? 0,
+    bundledImage: record.bundled_image ?? "",
+    imageKey: record.image_key ?? "",
+    flyerKey: record.image_key ?? "",
+    flyerImage: record.bundled_image ?? "",
+    logoKey: record.logo_key ?? "",
+    logoImage: record.logo_bundled ?? "",
+    pinned: record.pinned === 1,
+  };
+
+  for (const [key, value] of Object.entries(record)) {
+    const camel = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+    if (!(camel in editable)) editable[camel] = value;
+  }
+
+  if (record.optional_json) {
+    try { editable.optional = JSON.parse(record.optional_json); } catch { editable.optional = {}; }
+  }
+
+  if (record.price_gil !== undefined) editable.priceGil = record.price_gil;
+  if (record.published_at) editable.publishedAt = record.published_at;
+  if (record.event_at) editable.eventAt = record.event_at;
+  if (record.link_label !== undefined) editable.linkLabel = record.link_label;
+  return editable;
+}
+
+function renderEditor() {
+  const config = COLLECTIONS[collection];
+  const raw = currentRecord();
+  const form = $("editor");
+  form.innerHTML = "";
+
+  if (!raw) {
+    $("editorTitle").textContent = "Editor";
+    form.innerHTML = '<div class="empty">Select a record, or create a new one.</div>';
+    return;
+  }
+
+  const isNew = raw.__new === true;
+  // Already in editable shape (a redraw in progress) — converting again would
+  // wipe every field that only exists under its snake_case name.
+  const record = isNew || raw.__editable === true ? raw : toEditable(raw);
+  $("editorTitle").textContent = isNew ? `New ${config.label.toLowerCase().replace(/s$/, "")}` : record.id;
+
+  const grid = document.createElement("div");
+  grid.className = "grid2";
+
+  for (const field of config.fields) {
+    if (field.when && !field.when(record)) continue;
+
+    const label = document.createElement("label");
+    const span = document.createElement("span");
+    span.textContent = field.label;
+    label.append(span);
+
+    const isWide = field.type === "textarea";
+    if (isWide) label.style.gridColumn = "1 / -1";
+
+    let input;
+    if (field.options) {
+      input = document.createElement("select");
+      for (const option of field.options) {
+        input.append(new Option(option, option));
+      }
+    } else if (field.type === "textarea") {
+      input = document.createElement("textarea");
+    } else if (field.type === "checkbox") {
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.style.width = "auto";
+    } else {
+      input = document.createElement("input");
+      input.type = field.type === "number" ? "number" : "text";
+    }
+
+    input.name = field.name;
+    input.disabled = field.name === "id" && !isNew;
+
+    if (field.type === "checkbox") input.checked = Boolean(get(record, field.name));
+    else input.value = get(record, field.name) ?? "";
+
+    label.append(input);
+
+    if (field.name === "category") {
+      input.onchange = () => {
+        const config = COLLECTIONS[collection];
+        const collected = collectForm(config);
+        draft = { ...record, ...collected, __new: record.__new === true, __editable: true };
+        renderEditor();
+      };
+    }
+    if (field.hint) {
+      const hint = document.createElement("div");
+      hint.className = "hint";
+      hint.textContent = field.hint;
+      label.append(hint);
+    }
+
+    grid.append(label);
+  }
+
+  form.append(grid);
+  form.append(mediaSection(record, config, isNew));
+  form.append(actions(record, isNew));
+
+  if (!isNew) {
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = `Updated ${raw.updated_at || "—"}${raw.updated_by ? ` by ${raw.updated_by}` : ""}`;
+    form.append(meta);
+  }
+}
+
+function mediaSection(record, config, isNew) {
+  const wrapper = document.createElement("div");
+  wrapper.style.marginTop = "6px";
+
+  const heading = document.createElement("h2");
+  heading.textContent = "Media";
+  wrapper.append(heading);
+
+  if (isNew) {
+    const note = document.createElement("div");
+    note.className = "hint";
+    note.textContent = "Save the record first, then upload its images.";
+    wrapper.append(note);
+    return wrapper;
+  }
+
+  // One block per slot, so a profile can carry a portrait and a logo without
+  // either one having to stand in for the other.
+  for (const slot of config.media) {
+    if (slot.when && !slot.when(record)) continue;
+    wrapper.append(mediaSlot(record, slot));
+  }
+
+  return wrapper;
+}
+
+function mediaSlot(record, slot) {
+  const section = document.createElement("div");
+  section.style.marginBottom = "18px";
+
+  const title = document.createElement("div");
+  title.className = "slotTitle";
+  title.textContent = slot.label;
+  section.append(title);
+
+  const box = document.createElement("div");
+  box.className = "media";
+
+  const key = record[slot.field] || "";
+  if (key) {
+    const url = "/media/" + key;
+    const preview = key.endsWith(".mp4")
+      ? Object.assign(document.createElement("video"), { src: url, controls: true, muted: true })
+      : Object.assign(document.createElement("img"), { src: url, alt: "" });
+    box.append(preview);
+  }
+
+  const controls = document.createElement("div");
+  controls.style.flex = "1 1 240px";
+
+  const file = document.createElement("input");
+  file.type = "file";
+  file.accept = "image/png,image/jpeg,image/webp,image/gif,video/mp4";
+  controls.append(file);
+
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.style.marginTop = "8px";
+  hint.textContent = "PNG, JPEG, WebP, GIF, or soundless MP4. Video with an audio track is rejected.";
+  controls.append(hint);
+
+  if (key) {
+    const current = document.createElement("div");
+    const code = document.createElement("code");
+    code.textContent = key;
+    current.append(code);
+    controls.append(current);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Remove";
+    remove.style.marginTop = "8px";
+    remove.onclick = async () => {
+      if (!confirm("Delete this " + slot.label.toLowerCase() + " from storage?")) return;
+      try {
+        await api("/v1/admin/media/" + key, { method: "DELETE" });
+        await save(record, { [slot.field]: "" }, slot.label + " removed.");
+      } catch (error) { say(error.message, "error"); }
+    };
+    controls.append(remove);
+  }
+
+  const upload = document.createElement("button");
+  upload.type = "button";
+  upload.className = "primary";
+  upload.textContent = key ? "Replace" : "Upload";
+  upload.style.marginTop = "8px";
+  if (key) upload.style.marginLeft = "8px";
+  upload.onclick = async () => {
+    const chosen = file.files && file.files[0];
+    if (!chosen) { say("Choose a file first.", "error"); return; }
+
+    try {
+      upload.disabled = true;
+      upload.textContent = "Uploading...";
+      const result = await api("/v1/admin/media/" + collection + "/" + record.id, {
+        method: "POST",
+        body: chosen,
+      });
+      const size = result.width + "x" + result.height + (result.animated ? " (animated)" : "");
+      await save(record, { [slot.field]: result.key }, slot.label + ": " + size + ".");
+    } catch (error) {
+      say(error.message, "error");
+    } finally {
+      upload.disabled = false;
+      upload.textContent = key ? "Replace" : "Upload";
+    }
+  };
+  controls.append(upload);
+
+  box.append(controls);
+  section.append(box);
+  return section;
+}
+
+function actions(record, isNew) {
+  const bar = document.createElement("div");
+  bar.className = "actions";
+
+  const saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.className = "primary";
+  saveButton.textContent = isNew ? "Create" : "Save";
+  saveButton.onclick = () => save(record, {}, isNew ? "Created." : "Saved.");
+  bar.append(saveButton);
+
+  if (!isNew) {
+    const isLive = (records.find((entry) => entry.id === record.id) || {}).published === 1;
+
+    const publish = document.createElement("button");
+    publish.type = "button";
+    publish.textContent = isLive ? "Unpublish" : "Publish";
+    publish.onclick = async () => {
+      try {
+        await api(`/v1/admin/${collection}/${record.id}/publish`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ published: !isLive }),
+        });
+        say(isLive ? "Unpublished." : "Published — now visible in the deck.");
+        await load();
+      } catch (error) { say(error.message, "error"); }
+    };
+    bar.append(publish);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Delete";
+    remove.onclick = async () => {
+      if (!confirm(`Delete "${record.id}"? This cannot be undone.`)) return;
+      try {
+        await api(`/v1/admin/${collection}/${record.id}`, { method: "DELETE" });
+        selectedId = null;
+        say("Deleted.");
+        await load();
+      } catch (error) { say(error.message, "error"); }
+    };
+    bar.append(remove);
+  }
+
+  return bar;
+}
+
+/** Collects the form, merges any overrides, and writes. Publishing is never implied. */
+function collectForm(config) {
+  const payload = {};
+  const form = $("editor");
+
+  for (const field of config.fields) {
+    const input = form.elements[field.name];
+    if (!input) continue;
+
+    let value;
+    if (field.type === "checkbox") value = input.checked;
+    else if (field.type === "number") value = input.value === "" ? 0 : Number(input.value);
+    else value = input.value;
+
+    // Empty optional text is simply omitted rather than sent as "".
+    if (value === "" && field.name !== "id") continue;
+    set(payload, field.name, value);
+  }
+
+  return payload;
+}
+
+async function save(record, overrides, successMessage) {
+  const config = COLLECTIONS[collection];
+  const payload = collectForm(config);
+
+  // `id` comes from the form, which is the only place a new record's id exists.
+  // Overwriting it from `record` here would send an empty id on every create.
+  const isNew = record.__new === true;
+  if (!isNew) payload.id = record.id;
+  delete payload.__editable;
+  delete payload.__new;
+
+  for (const slot of config.media) {
+    if (slot.when && !slot.when(record)) continue;
+    if (record[slot.field]) payload[slot.field] = record[slot.field];
+  }
+  Object.assign(payload, overrides);
+
+  const path = isNew ? `/v1/admin/${collection}` : `/v1/admin/${collection}/${record.id}`;
+  if (!isNew) delete payload.id;
+
+  try {
+    await api(path, {
+      method: isNew ? "POST" : "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    selectedId = record.id;
+    draft = null;
+    say(successMessage);
+    await load();
+  } catch (error) {
+    say(error.message, "error");
+  }
+}
+
+async function load() {
+  renderTabs();
+  try {
+    const body = await api(`/v1/admin/${collection}`);
+    records = body.items || [];
+    renderList();
+    renderEditor();
+  } catch (error) {
+    records = [];
+    renderList();
+    say(error.message, "error");
+  }
+}
+
+$("newRecord").onclick = () => {
+  const defaults = { __new: true, id: "", sortOrder: 0, pinned: false };
+  if (collection === "news") defaults.publishedAt = new Date().toISOString().slice(0, 10);
+  draft = defaults;
+  selectedId = null;
+  renderList();
+  renderEditor();
+};
+
+/*
+ * Remembering the identity is a convenience, not a requirement. Storage throws
+ * outright in some contexts — a file:// origin, a sandboxed frame, blocked
+ * cookies — and an exception here would stop the whole page bootstrapping,
+ * which is how you end up with a rendered shell and no tabs.
+ */
+const remembered = {
+  read() {
+    try { return localStorage.getItem("grid-admin-identity") || ""; } catch { return ""; }
+  },
+  write(value) {
+    try { localStorage.setItem("grid-admin-identity", value); } catch { /* not fatal */ }
+  },
+};
+
+$("identity").oninput = () => {
+  remembered.write(identity());
+  load();
+};
+
+function boot() {
+  $("identity").value = remembered.read();
+
+  // Relative API paths only resolve against an http(s) origin. Opening the file
+  // directly renders the shell but can never reach the Worker, so say so
+  // instead of failing silently.
+  if (!location.protocol.startsWith("http")) {
+    renderTabs();
+    say("Open this page from the Worker (http://127.0.0.1:8787/admin), not as a file.", "error");
+    return;
+  }
+
+  load();
+}
+
+boot();
+</script>
+</body>
+</html>
