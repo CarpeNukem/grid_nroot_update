@@ -15,6 +15,19 @@ public sealed class PluginConfig : IPluginConfiguration
     public bool ReduceMotion { get; set; } = false;
     public bool FullAuto { get; set; } = true;
     public bool FirstRunCompleted { get; set; } = false;
+
+    // Venue announcement feed. Off by default: until a backend is deployed there
+    // is nothing to reach, and the Cyberdeck must behave identically without it.
+    public bool BackendEnabled { get; set; } = false;
+    public string BackendBaseUrl { get; set; } = "http://127.0.0.1:8787";
+
+    // Remembers whether the home banner is folded away, per install.
+    public bool NewsBannerCollapsed { get; set; } = false;
+
+    // Publication time of the newest announcement the player has actually seen,
+    // used for the unread badge. A timestamp rather than an id, so a pinned post
+    // sitting at the top of the feed does not distort the count.
+    public long LastSeenNewsUnixMs { get; set; }
     public float UiScale { get; set; } = 0;
     public CyberdeckThemeId Theme { get; set; } = CyberdeckThemeId.Grid;
     public Vector4 CustomThemeBackground { get; set; } = new(0x07 / 255f, 0x10 / 255f, 0x17 / 255f, 1f);

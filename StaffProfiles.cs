@@ -17,6 +17,9 @@ internal sealed class StaffProfile
     public string Occupation { get; set; } = string.Empty;
     public string Bio { get; set; } = string.Empty;
     public string Image { get; set; } = string.Empty;
+
+    /// <summary>Optional brand mark shown under the portrait, e.g. a resident DJ logo.</summary>
+    public string Logo { get; set; } = string.Empty;
     public string RequestLabel { get; set; } = string.Empty;
     public string RequestMessage { get; set; } = string.Empty;
     public StaffProfileOptional? Optional { get; set; }
