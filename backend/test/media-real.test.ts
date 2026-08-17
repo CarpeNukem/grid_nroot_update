@@ -28,9 +28,10 @@ const fixture = (name: string): Uint8Array => {
  * so a fresh clone still runs green; the synthetic MP4 tests in media.test.ts
  * cover the parser either way.
  */
-const hasFixtures = env.TEST_MEDIA_FIXTURES.silent === undefined
-	? Object.keys(env.TEST_MEDIA_FIXTURES).length >= 2
-	: true;
+const hasFixtures =
+	env.TEST_MEDIA_FIXTURES.silent === undefined
+		? Object.keys(env.TEST_MEDIA_FIXTURES).length >= 2
+		: true;
 
 describe.skipIf(!hasFixtures)("real encoded media", () => {
 	it("reads track dimensions from a real MP4", () => {

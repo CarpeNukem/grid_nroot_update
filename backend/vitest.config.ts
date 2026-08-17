@@ -19,6 +19,15 @@ const mediaFixtures = Object.fromEntries(
 		.filter((entry) => entry !== undefined),
 );
 
+/*
+ * The wrangler config, parsed here so a test can assert on it. workerd has no
+ * filesystem, so it cannot read the file itself.
+ */
+const wranglerConfig = JSON.parse(
+	// JSONC is not JSON: strip whole-line comments before parsing.
+	readFileSync(join(import.meta.dirname, "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""),
+);
+
 // Migrations are read once at config time and handed to each test worker as a
 // binding, so the suite exercises the same SQL that `wrangler d1 migrations
 // apply` runs. A broken migration fails the tests rather than production.
@@ -44,6 +53,7 @@ export default defineWorkersConfig({
 						// ENVIRONMENT === "development", which production never sets.
 						ADMIN_ALLOWED_EMAILS: "editor@thegrid.test, other@thegrid.test",
 						TEST_MEDIA_FIXTURES: mediaFixtures,
+						TEST_WRANGLER_CONFIG: wranglerConfig,
 					},
 				},
 			},
