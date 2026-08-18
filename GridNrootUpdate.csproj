@@ -20,6 +20,10 @@
     <Content Include="img\drinks\*.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="img\profile_pics\*.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="img\tarot\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <!-- WAV rather than the source MP3: playback uses the Win32 waveform API,
+         which cannot decode MP3, and converting at packaging time avoids
+         shipping an audio decoder for a one-second chime. -->
+    <Content Include="snd\*.wav" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <Target Name="PackagePlugin" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
@@ -34,6 +38,7 @@
       <PluginPackageDrinkImageFiles Include="$(OutputPath)img\drinks\*.png" />
       <PluginPackageProfileImageFiles Include="$(OutputPath)img\profile_pics\*.png" />
       <PluginPackageTarotImageFiles Include="$(OutputPath)img\tarot\*.png" />
+      <PluginPackageSoundFiles Include="$(OutputPath)snd\*.wav" />
     </ItemGroup>
     <RemoveDir Directories="$(OutputPath)package" />
     <MakeDir Directories="$(OutputPath)package" />
@@ -42,6 +47,7 @@
     <MakeDir Directories="$(OutputPath)package\img\drinks" />
     <MakeDir Directories="$(OutputPath)package\img\profile_pics" />
     <MakeDir Directories="$(OutputPath)package\img\tarot" />
+    <MakeDir Directories="$(OutputPath)package\snd" />
     <MakeDir Directories="$(OutputPath)dist" />
     <Copy SourceFiles="@(PluginPackageFiles)" DestinationFolder="$(OutputPath)package" />
     <Copy SourceFiles="@(PluginPackageImageFiles)" DestinationFolder="$(OutputPath)package\img" />
@@ -49,6 +55,7 @@
     <Copy SourceFiles="@(PluginPackageDrinkImageFiles)" DestinationFolder="$(OutputPath)package\img\drinks" />
     <Copy SourceFiles="@(PluginPackageProfileImageFiles)" DestinationFolder="$(OutputPath)package\img\profile_pics" />
     <Copy SourceFiles="@(PluginPackageTarotImageFiles)" DestinationFolder="$(OutputPath)package\img\tarot" />
+    <Copy SourceFiles="@(PluginPackageSoundFiles)" DestinationFolder="$(OutputPath)package\snd" />
     <ZipDirectory SourceDirectory="$(OutputPath)package" DestinationFile="$(OutputPath)dist\$(AssemblyName)-$(Version).zip" Overwrite="true" />
   </Target>
 </Project>
