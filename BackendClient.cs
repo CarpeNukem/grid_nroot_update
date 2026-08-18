@@ -75,6 +75,7 @@ internal sealed class RemoteProfile
     [JsonPropertyName("bundledImage")] public string BundledImage { get; set; } = string.Empty;
     [JsonPropertyName("logoUrl")] public string LogoUrl { get; set; } = string.Empty;
     [JsonPropertyName("logoImage")] public string LogoImage { get; set; } = string.Empty;
+    [JsonPropertyName("genres")] public string Genres { get; set; } = string.Empty;
     [JsonPropertyName("requestLabel")] public string RequestLabel { get; set; } = string.Empty;
     [JsonPropertyName("requestMessage")] public string RequestMessage { get; set; } = string.Empty;
 }

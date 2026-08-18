@@ -115,7 +115,11 @@ internal static unsafe class TarotTellSender
 
     private static bool TryNormalizeRecipient(string value, out string recipient, out string error)
     {
-        recipient = value.Trim();
+        // Character names use a plain apostrophe, but text copied out of a
+        // browser or Discord often carries the typographic one. Folding it here
+        // means a pasted name like Rhas J’ae works instead of being rejected as
+        // "unsupported characters".
+        recipient = value.Trim().Replace('‘', '\'').Replace('’', '\'');
         error = string.Empty;
         if (recipient.Length is < 3 or > 64)
         {

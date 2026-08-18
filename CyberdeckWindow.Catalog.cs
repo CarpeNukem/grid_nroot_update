@@ -85,6 +85,7 @@ internal sealed partial class CyberdeckWindow
                 Image = profile.BundledImage,
                 ImageUrl = profile.ImageUrl,
                 Logo = profile.LogoImage,
+                Genres = profile.Genres,
                 LogoUrl = profile.LogoUrl,
                 RequestLabel = profile.RequestLabel,
                 RequestMessage = profile.RequestMessage,
