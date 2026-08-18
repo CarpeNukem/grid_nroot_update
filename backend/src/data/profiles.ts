@@ -15,7 +15,7 @@ import type { ProfileInput } from "./validation.js";
  */
 
 const COLUMNS = `id, category, name, character_name, age, affiliation, occupation, bio,
-	optional_json, image_key, bundled_image, logo_key, logo_bundled,
+	optional_json, image_key, bundled_image, logo_key, logo_bundled, genres,
 	request_label, request_message,
 	published, sort_order, created_at, updated_at, updated_by`;
 
@@ -64,6 +64,7 @@ export function toPublicProfile(row: ProfileRow, mediaBaseUrl: string): PublicPr
 		bundledImage: row.bundled_image,
 		...(logoUrl === undefined ? {} : { logoUrl }),
 		logoImage: row.logo_bundled,
+		...(row.genres.length === 0 ? {} : { genres: row.genres }),
 		requestLabel: row.request_label,
 		requestMessage: row.request_message,
 	};
@@ -133,10 +134,10 @@ export async function upsertProfile(
 		.prepare(
 			`INSERT INTO profiles (
 				id, category, name, character_name, age, affiliation, occupation, bio,
-				optional_json, image_key, bundled_image, logo_key, logo_bundled,
+				optional_json, image_key, bundled_image, logo_key, logo_bundled, genres,
 				request_label, request_message,
 				sort_order, created_at, updated_at, updated_by
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				category = excluded.category,
 				name = excluded.name,
@@ -150,6 +151,7 @@ export async function upsertProfile(
 				bundled_image = excluded.bundled_image,
 				logo_key = excluded.logo_key,
 				logo_bundled = excluded.logo_bundled,
+				genres = excluded.genres,
 				request_label = excluded.request_label,
 				request_message = excluded.request_message,
 				sort_order = excluded.sort_order,
@@ -170,6 +172,7 @@ export async function upsertProfile(
 			input.bundledImage,
 			input.logoKey,
 			input.logoImage,
+			input.genres,
 			input.requestLabel,
 			input.requestMessage,
 			input.sortOrder,

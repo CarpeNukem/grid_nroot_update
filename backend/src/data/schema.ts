@@ -34,6 +34,8 @@ export interface ProfileRow {
 	readonly logo_key: string;
 	/** Bundled logo filename, used when there is no R2 object. */
 	readonly logo_bundled: string;
+	/** Free text describing what a DJ plays. Empty for everyone else. */
+	readonly genres: string;
 	readonly request_label: string;
 	readonly request_message: string;
 	readonly published: 0 | 1;
@@ -71,6 +73,8 @@ export interface PublicProfile {
 	readonly logoUrl?: string;
 	/** Bundled logo filename, used when there is no R2 object. */
 	readonly logoImage: string;
+	/** Present only when set; the deck shows it under the name for DJs. */
+	readonly genres?: string;
 	readonly requestLabel: string;
 	readonly requestMessage: string;
 }
