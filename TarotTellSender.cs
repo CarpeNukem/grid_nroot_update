@@ -10,6 +10,17 @@ internal static unsafe class TarotTellSender
 {
     private const int MaximumChatBytes = 500;
 
+    /// <summary>
+    /// Marks every tell this plugin sends.
+    ///
+    /// Applied at the single point all outgoing messages pass through, so a new
+    /// kind of message cannot be added without carrying it. Receiving decks use
+    /// it to recognise venue traffic and chime; it is deliberately distinct from
+    /// the tarot packet marker, which is "[GRID-TAROT/3|" and has no space, so
+    /// the two can never be confused for one another.
+    /// </summary>
+    public const string MessagePrefix = "[GRID] ";
+
     public static bool TrySend(string recipient, string serializedPacket, out string error)
         => TrySend(recipient, string.Empty, serializedPacket, out error);
 
@@ -38,7 +49,11 @@ internal static unsafe class TarotTellSender
         var payload = string.IsNullOrWhiteSpace(normalizedMessage)
             ? canonicalPacket
             : $"{normalizedMessage} {canonicalPacket}";
-        return TrySubmitTell(normalizedRecipient, payload, out error);
+
+        // No venue prefix on packets. They already announce themselves with
+        // "[GRID-TAROT/3|", and prepending anything risks the parser on the
+        // other deck — which may be an older build than this one.
+        return TrySubmitTell(normalizedRecipient, payload, prefix: false, out error);
     }
 
     public static bool TrySendMessage(string recipient, string message, out string error)
@@ -54,10 +69,10 @@ internal static unsafe class TarotTellSender
             return false;
         }
 
-        return TrySubmitTell(normalizedRecipient, normalizedMessage, out error);
+        return TrySubmitTell(normalizedRecipient, normalizedMessage, prefix: true, out error);
     }
 
-    private static bool TrySubmitTell(string normalizedRecipient, string payload, out string error)
+    private static bool TrySubmitTell(string normalizedRecipient, string payload, bool prefix, out string error)
     {
         error = string.Empty;
         if (!PluginService.ClientState.IsLoggedIn)
@@ -72,7 +87,14 @@ internal static unsafe class TarotTellSender
             return false;
         }
 
-        var command = $"/tell {normalizedRecipient} {payload}";
+        // Prefixed here rather than at each call site, so a new kind of plain
+        // message cannot be added without it. Already-prefixed text is left
+        // alone in case a caller composed one itself.
+        var prefixed = !prefix || payload.StartsWith(MessagePrefix, StringComparison.Ordinal)
+            ? payload
+            : $"{MessagePrefix}{payload}";
+
+        var command = $"/tell {normalizedRecipient} {prefixed}";
         var bytes = Encoding.UTF8.GetBytes(command);
         if (bytes.Length > MaximumChatBytes)
         {

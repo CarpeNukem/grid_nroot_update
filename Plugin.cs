@@ -278,6 +278,17 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         var text = message.Message.TextValue;
+
+        // Deck traffic announces itself two ways: plain messages carry the venue
+        // prefix, tarot carries its own packet marker. Both chime — the prefix
+        // is not added to packets, so checking for it alone would miss them.
+        var isVenueTraffic =
+            text.Contains(TarotTellSender.MessagePrefix, StringComparison.Ordinal) ||
+            text.Contains(TarotPacket.Marker, StringComparison.Ordinal);
+
+        if (Config.MessageToneEnabled && isVenueTraffic)
+            VenueSounds.PlayMessageTone();
+
         if (!text.Contains(TarotPacket.Marker, StringComparison.Ordinal))
             return;
 
