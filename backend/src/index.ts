@@ -4,6 +4,7 @@ import { routes } from "./routes/index.js";
 import { matchRoute } from "./routes/router.js";
 import { ApiError, internalErrorBody, methodNotAllowed, notFound } from "./security/errors.js";
 import { CACHE_CONTROL, corsHeadersFor } from "./security/headers.js";
+import { enforceRateLimit, isRateLimited } from "./security/ratelimit.js";
 import type { Env, RequestContext } from "./types.js";
 
 /**
@@ -45,6 +46,11 @@ export default {
 		let logContext: Readonly<Record<string, unknown>> | undefined;
 
 		try {
+			// Metered before dispatch so a refused request costs no database work.
+			if (isRateLimited(url.pathname)) {
+				await enforceRateLimit(request, env);
+			}
+
 			if (match.kind === "not-found") {
 				throw notFound();
 			}
@@ -66,7 +72,14 @@ export default {
 			if (error instanceof ApiError) {
 				errorCode = error.code;
 				logContext = error.logContext;
-				response = jsonResponse(error.toBody(), { status: error.status, requestId, cors });
+				response = jsonResponse(error.toBody(), {
+					status: error.status,
+					requestId,
+					cors,
+					// Tell a throttled caller when to come back rather than leaving
+					// it to guess and retry in a tight loop.
+					...(error.status === 429 ? { headers: { "retry-after": "60" } } : {}),
+				});
 			} else {
 				errorCode = "INTERNAL_ERROR";
 				logUnhandledError(requestId, route, error);

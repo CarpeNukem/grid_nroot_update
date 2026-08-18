@@ -18,6 +18,12 @@ export interface Env {
 	readonly CF_ACCESS_AUD?: string;
 	readonly CF_ACCESS_TEAM_DOMAIN?: string;
 	readonly ADMIN_ALLOWED_EMAILS?: string;
+
+	/**
+	 * Public-read throttle. Optional because local development and the test
+	 * pool do not always provide one; production always does.
+	 */
+	readonly PUBLIC_READ_LIMITER?: RateLimit;
 }
 
 /** Per-request state threaded through route handlers. */

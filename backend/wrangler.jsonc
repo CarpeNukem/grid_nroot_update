@@ -46,6 +46,17 @@
 		}
 	],
 
+	// Public reads are metered per caller. Writes sit behind Cloudflare Access,
+	// so this guards the read quota rather than access: an unthrottled client can
+	// exhaust D1 reads and blank the venue screens.
+	"ratelimits": [
+		{
+			"name": "PUBLIC_READ_LIMITER",
+			"namespace_id": "1001",
+			"simple": { "limit": 60, "period": 60 }
+		}
+	],
+
 	// Deployed environments are declared explicitly so `wrangler deploy` alone
 	// cannot ship the development settings above. That matters more than it
 	// looks: with ENVIRONMENT set to "development" the Worker accepts an
@@ -81,10 +92,9 @@
 				{
 					"binding": "DB",
 					"database_name": "grid-cyberdeck",
-					// TODO: from `wrangler d1 create grid-cyberdeck`. Not a
-					// credential — it is useless without account access — but
-					// decide deliberately whether to commit it.
-					"database_id": "REPLACE-ME",
+					// An identifier, not a credential: it does nothing without
+					// authenticated access to the account, so it is committed.
+					"database_id": "71d547fc-1c41-4a7f-ad5c-c7c2b1000805",
 					"migrations_dir": "migrations"
 				}
 			],
@@ -93,6 +103,14 @@
 				{
 					"binding": "MEDIA",
 					"bucket_name": "grid-cyberdeck-media"
+				}
+			],
+
+			"ratelimits": [
+				{
+					"name": "PUBLIC_READ_LIMITER",
+					"namespace_id": "1001",
+					"simple": { "limit": 60, "period": 60 }
 				}
 			]
 		}
