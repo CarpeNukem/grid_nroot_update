@@ -292,10 +292,26 @@ internal sealed class RemoteAssetCache : IDisposable
         }
     }
 
+    /// <summary>The only non-loopback host assets may be downloaded from.</summary>
+    private static readonly string VenueRelayHost = new Uri(PluginConfig.VenueRelayUrl).Host;
+
+    /// <summary>
+    /// Whether an asset URL may be fetched at all.
+    ///
+    /// The catalogue supplies these, so a compromised or substituted relay could
+    /// otherwise make the deck download from anywhere. Restricting the host
+    /// keeps that inside the same trust boundary the catalogue itself has.
+    /// </summary>
+    private static bool IsAllowedAssetHost(Uri uri)
+        => uri.IsLoopback || string.Equals(uri.Host, VenueRelayHost, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>The digest the backend put in the object name, if it is there.</summary>
     private static string? DigestFromUrl(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return null;
+
+        if (!IsAllowedAssetHost(uri))
             return null;
 
         var name = Path.GetFileNameWithoutExtension(uri.AbsolutePath);

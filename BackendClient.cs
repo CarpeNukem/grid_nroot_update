@@ -147,6 +147,9 @@ internal sealed class BackendClient : IDisposable
     /// <summary>Highest wire schema this build understands.</summary>
     public const int SupportedSchemaVersion = 1;
 
+    /// <summary>The only non-loopback host the deck will read from.</summary>
+    private static readonly string VenueRelayHost = new Uri(PluginConfig.VenueRelayUrl).Host;
+
     private const int MaxResponseBytes = 512 * 1024;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
 
@@ -330,6 +333,13 @@ internal sealed class BackendClient : IDisposable
         // http is tolerated only for a loopback development server.
         var isLoopback = parsed.IsLoopback;
         if (parsed.Scheme != Uri.UriSchemeHttps && !(parsed.Scheme == Uri.UriSchemeHttp && isLoopback))
+            return false;
+
+        // The relay is a trust boundary: everything it returns gets rendered,
+        // and its media URLs get downloaded. Restricting the host means a
+        // hand-edited config cannot repoint the deck at a hostile server, which
+        // hiding the setting from the interface alone would not prevent.
+        if (!isLoopback && !string.Equals(parsed.Host, VenueRelayHost, StringComparison.OrdinalIgnoreCase))
             return false;
 
         uri = parsed;

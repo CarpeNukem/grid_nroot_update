@@ -19,7 +19,20 @@ public sealed class PluginConfig : IPluginConfiguration
     // Venue announcement feed. Off by default: until a backend is deployed there
     // is nothing to reach, and the Cyberdeck must behave identically without it.
     public bool BackendEnabled { get; set; } = false;
-    public string BackendBaseUrl { get; set; } = "http://127.0.0.1:8787";
+
+    /// <summary>
+    /// Where venue content is read from.
+    ///
+    /// Not editable in the interface. The deck trusts whatever this returns —
+    /// profile text, links, and media URLs are all rendered — so a player who
+    /// could be talked into pointing it somewhere else ("paste this for the
+    /// beta menu") would be handing that trust to a stranger. Only the venue
+    /// relay and a loopback address are accepted; see BackendClient.
+    /// </summary>
+    public string BackendBaseUrl { get; set; } = VenueRelayUrl;
+
+    /// <summary>The venue's own relay. Changing this is a code change, deliberately.</summary>
+    public const string VenueRelayUrl = "https://api.nroot.io";
 
     // Remembers whether the home banner is folded away, per install.
     public bool NewsBannerCollapsed { get; set; } = false;
