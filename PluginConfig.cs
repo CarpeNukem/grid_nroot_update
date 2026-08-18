@@ -16,8 +16,6 @@ public sealed class PluginConfig : IPluginConfiguration
     public bool FullAuto { get; set; } = true;
     public bool FirstRunCompleted { get; set; } = false;
 
-    // Venue announcement feed. Off by default: until a backend is deployed there
-    // is nothing to reach, and the Cyberdeck must behave identically without it.
     /// <summary>
     /// Whether the deck reads venue content from the relay.
     ///
@@ -41,6 +39,9 @@ public sealed class PluginConfig : IPluginConfiguration
 
     /// <summary>The venue's own relay. Changing this is a code change, deliberately.</summary>
     public const string VenueRelayUrl = "https://api.nroot.io";
+
+    /// <summary>Chime when a tell arrives carrying the venue prefix.</summary>
+    public bool MessageToneEnabled { get; set; } = true;
 
     // Remembers whether the home banner is folded away, per install.
     public bool NewsBannerCollapsed { get; set; } = false;
@@ -109,6 +110,14 @@ public sealed class PluginConfig : IPluginConfiguration
 
         if (string.IsNullOrWhiteSpace(Mappings[0].PenumbraFolderPath))
             Mappings[0].PenumbraFolderPath = "TheGrid";
+
+        // A stored relay address from an older build wins over the default,
+        // which means an install that once pointed at a developer's machine
+        // would stay there forever — and since the address is no longer shown
+        // as a field, there is no way to correct it from inside the game.
+        // Anything that is not the venue relay is reset here.
+        if (!string.Equals(BackendBaseUrl, VenueRelayUrl, System.StringComparison.OrdinalIgnoreCase))
+            BackendBaseUrl = VenueRelayUrl;
 
         // Migrate the old beta-specific asset pattern to "any .pmp".
         if (string.IsNullOrWhiteSpace(Mappings[0].AssetPattern)
