@@ -2510,36 +2510,83 @@ internal sealed partial class CyberdeckWindow
                 ImGui.Spacing();
             }
 
-            var narrowCard = ImGui.GetContentRegionAvail().X < (340 * GetUiScale());
-            var wrap = ResolveArt(item.ImageUrl, item.BundledImage);
-            if (wrap is not null)
-            {
-                ImGui.Image(wrap.Handle, GetTextureSize(wrap, GetUiScale()));
-                if (!narrowCard)
-                    ImGui.SameLine();
-                else
-                    ImGui.Spacing();
-            }
-
-            ImGui.BeginGroup();
-            ImGui.PushStyleColor(ImGuiCol.Text, CyberdeckTheme.Palette.Cyan);
-            ImGui.TextWrapped(item.Name);
-            ImGui.PopStyleColor();
-            ImGui.TextColored(CyberdeckTheme.Palette.Amber, $"{item.PriceLabel} gil");
-            ImGui.SameLine();
-            if (ImGui.SmallButton($"Copy##drink_{item.Name}"))
-                CopyToClipboard(item.Name, "DRINK NAME COPIED");
-            DrawHoverTooltip("Copy to clipboard");
-            ImGui.TextWrapped(item.Description);
-            if (ImGui.CollapsingHeader($"FLAVOR PROFILE##drink_profile_{i}"))
-            {
-                ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X);
-                ImGui.TextDisabled($"Ingredients: {item.Ingredients}");
-                ImGui.PopTextWrapPos();
-                ImGui.TextWrapped($"Taste: {item.Taste}");
-            }
-            ImGui.EndGroup();
+            DrawDrinkCard(item, i);
         }
+    }
+
+    /// <summary>Width of the art column on the drinks card.</summary>
+    private const float DrinkArtColumnWidth = 104f;
+
+    /// <summary>
+    /// One drink: art on the left, everything else to its right.
+    ///
+    /// A table rather than Image + SameLine, because the text needs a column of
+    /// its own to wrap inside — with SameLine it wraps against the window edge
+    /// and runs back underneath the picture.
+    ///
+    /// The art is scaled down to the column instead of drawn at native size. A
+    /// drinks card is a list to scan, and full-size glasses turned every entry
+    /// into a screenful.
+    /// </summary>
+    private void DrawDrinkCard(MenuEntry item, int index)
+    {
+        var uiScale = GetUiScale();
+        var wrap = ResolveArt(item.ImageUrl, item.BundledImage);
+        var columnWidth = DrinkArtColumnWidth * uiScale;
+
+        if (!ImGui.BeginTable(
+                $"drink_{index}",
+                wrap is null ? 1 : 2,
+                ImGuiTableFlags.SizingStretchProp))
+        {
+            return;
+        }
+
+        if (wrap is not null)
+        {
+            ImGui.TableSetupColumn("ART", ImGuiTableColumnFlags.WidthFixed, columnWidth);
+            ImGui.TableSetupColumn("DETAIL", ImGuiTableColumnFlags.WidthStretch);
+        }
+        else
+        {
+            ImGui.TableSetupColumn("DETAIL", ImGuiTableColumnFlags.WidthStretch);
+        }
+
+        ImGui.TableNextRow();
+        ImGui.TableSetColumnIndex(0);
+
+        if (wrap is not null)
+        {
+            var scale = MathF.Min(
+                columnWidth / MathF.Max(1, wrap.Width),
+                (150 * uiScale) / MathF.Max(1, wrap.Height));
+            ImGui.Image(wrap.Handle, new Vector2(wrap.Width * scale, wrap.Height * scale));
+            ImGui.TableSetColumnIndex(1);
+        }
+
+        ImGui.PushStyleColor(ImGuiCol.Text, CyberdeckTheme.Palette.Cyan);
+        ImGui.TextWrapped(item.Name);
+        ImGui.PopStyleColor();
+
+        ImGui.TextColored(CyberdeckTheme.Palette.Amber, $"{item.PriceLabel} gil");
+        ImGui.SameLine();
+        if (ImGui.SmallButton($"Copy##drink_{index}"))
+            CopyToClipboard(item.Name, "DRINK NAME COPIED");
+        DrawHoverTooltip("Copy to clipboard");
+
+        ImGui.TextWrapped(item.Description);
+
+        if (ImGui.CollapsingHeader($"FLAVOR PROFILE##drink_profile_{index}"))
+        {
+            // TextDisabled does not wrap; in a narrow column the ingredient list
+            // would run off the side. TextWrapped wraps to the column instead.
+            ImGui.PushStyleColor(ImGuiCol.Text, CyberdeckTheme.Palette.TextMuted);
+            ImGui.TextWrapped($"Ingredients: {item.Ingredients}");
+            ImGui.PopStyleColor();
+            ImGui.TextWrapped($"Taste: {item.Taste}");
+        }
+
+        ImGui.EndTable();
     }
 
     private void DrawNetworkView()
