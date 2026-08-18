@@ -21,6 +21,9 @@ internal sealed class StaffProfile
     /// <summary>Optional brand mark shown under the portrait, e.g. a resident DJ logo.</summary>
     public string Logo { get; set; } = string.Empty;
 
+    /// <summary>Free text describing what a DJ plays.</summary>
+    public string Genres { get; set; } = string.Empty;
+
     /// <summary>Remote portrait, when the profile came from the relay.</summary>
     public string ImageUrl { get; set; } = string.Empty;
 

@@ -128,7 +128,14 @@ internal sealed partial class CyberdeckWindow
     private string staffProfilesSourcePath = string.Empty;
     private string? staffProfilesLoadError;
     private StaffProfile? pendingStaffRequestProfile;
+    /// <summary>Set by the request button; consumed where the modal is drawn.</summary>
+    private bool staffRequestConfirmationPending;
     private readonly Dictionary<string, long> staffRequestLastSentAt = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Song titles typed per DJ, kept until the request is sent.</summary>
+    private readonly Dictionary<string, string> songRequestDrafts = new(StringComparer.OrdinalIgnoreCase);
+    private const int SongRequestMaxLength = 128;
+    private static readonly TimeSpan StaffRequestCooldown = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan SongRequestCooldown = TimeSpan.FromMinutes(1);
     private readonly Dictionary<string, (bool Success, string Message)> staffRequestFeedback = new(StringComparer.OrdinalIgnoreCase);
     private bool showInstallationDetails;
     private CyberdeckThemeId customThemeSource = CyberdeckThemeId.Grid;
@@ -1988,6 +1995,9 @@ internal sealed partial class CyberdeckWindow
         ImGui.TableSetColumnIndex(1);
         ImGui.TextColored(CyberdeckTheme.Palette.Magenta, profile.Name.ToUpperInvariant());
         ImGui.Spacing();
+        if (!string.IsNullOrWhiteSpace(profile.Genres))
+            DrawStaffProfileField("PLAYS", profile.Genres);
+
         if (!string.IsNullOrWhiteSpace(profile.Optional?.Pronunciation))
             DrawStaffProfileField("PRONUNCIATION", profile.Optional.Pronunciation);
         DrawStaffProfileField("CHARACTER", profile.CharacterName);
@@ -2013,21 +2023,55 @@ internal sealed partial class CyberdeckWindow
 
         var atGrid = getNetworkStats().IsActive;
         var present = atGrid && IsPlayerPresent(profile.CharacterName);
-        var coolingDown = staffRequestLastSentAt.TryGetValue(profile.Id, out var lastSentAt) &&
-                          Environment.TickCount64 - lastSentAt < 30_000;
+        // A DJ takes song requests, so the request carries a title rather than a
+        // fixed message. Everyone else keeps the single-button form.
+        var isDj = string.Equals(profile.Category, "dj", StringComparison.OrdinalIgnoreCase);
+
+        var cooldownRemaining = GetRequestCooldownRemaining(profile);
+        var coolingDown = cooldownRemaining > TimeSpan.Zero;
+        var song = string.Empty;
+        if (isDj)
+        {
+            songRequestDrafts.TryGetValue(profile.Id, out song);
+            song ??= string.Empty;
+
+            ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+            if (ImGui.InputTextWithHint($"##song_{profile.Id}", "Song or artist", ref song, SongRequestMaxLength))
+                songRequestDrafts[profile.Id] = song;
+
+            ImGui.Spacing();
+        }
+
         var requestLabel = string.IsNullOrWhiteSpace(profile.RequestLabel)
-            ? "SEND REQUEST"
+            ? (isDj ? "REQUEST A SONG" : "SEND REQUEST")
             : profile.RequestLabel.ToUpperInvariant();
-        ImGui.BeginDisabled(!atGrid || !present || coolingDown || string.IsNullOrWhiteSpace(profile.RequestMessage));
+
+        // A DJ needs a song typed; everyone else needs the profile to carry a
+        // message, since there is nothing else to send.
+        var hasSomethingToSend = isDj
+            ? !string.IsNullOrWhiteSpace(song)
+            : !string.IsNullOrWhiteSpace(profile.RequestMessage);
+
+        ImGui.BeginDisabled(!atGrid || !present || coolingDown || !hasSomethingToSend);
         using (CyberdeckTheme.PushAccentButton())
         {
             if (ImGui.Button($"{requestLabel}##request_{profile.Id}", new Vector2(ImGui.GetContentRegionAvail().X, 38 * uiScale)))
             {
+                // Only records the intent. Opening the popup from in here would
+                // register its id inside this table's ID scope, where the modal —
+                // drawn outside the table — could never find it, and the click
+                // would silently do nothing.
                 pendingStaffRequestProfile = profile;
-                ImGui.OpenPopup("CONFIRM STAFF REQUEST");
+                staffRequestConfirmationPending = true;
             }
         }
         ImGui.EndDisabled();
+
+        // A silent disabled button reads as broken, so the wait is stated.
+        if (coolingDown)
+            ImGui.TextDisabled($"Another request in {Math.Ceiling(cooldownRemaining.TotalSeconds):0}s.");
+        else if (isDj && atGrid && present && string.IsNullOrWhiteSpace(song))
+            ImGui.TextDisabled("Type a song to enable the request.");
 
         if (!atGrid)
             ImGui.TextColored(CyberdeckTheme.Palette.Amber, "Available while you are at The Grid.");
@@ -2049,6 +2093,14 @@ internal sealed partial class CyberdeckWindow
 
     private void DrawStaffRequestConfirmation()
     {
+        // Opened here rather than at the button, so the popup id is registered in
+        // the same ID scope the modal is drawn in.
+        if (staffRequestConfirmationPending)
+        {
+            staffRequestConfirmationPending = false;
+            ImGui.OpenPopup("CONFIRM STAFF REQUEST");
+        }
+
         if (!ImGui.BeginPopupModal("CONFIRM STAFF REQUEST", ImGuiWindowFlags.AlwaysAutoResize))
             return;
 
@@ -2094,8 +2146,66 @@ internal sealed partial class CyberdeckWindow
         ImGui.EndPopup();
     }
 
+    /// <summary>
+    /// How long until this profile will accept another request.
+    ///
+    /// Song requests get the longer wait: a guest with a playlist in mind will
+    /// send one after another, and a DJ reading tells mid-set needs the room to
+    /// breathe. A photoshoot request is a one-off, so it keeps the shorter one.
+    /// </summary>
+    private TimeSpan GetRequestCooldownRemaining(StaffProfile profile)
+    {
+        if (!staffRequestLastSentAt.TryGetValue(profile.Id, out var lastSentAt))
+            return TimeSpan.Zero;
+
+        var cooldown = string.Equals(profile.Category, "dj", StringComparison.OrdinalIgnoreCase)
+            ? SongRequestCooldown
+            : StaffRequestCooldown;
+
+        var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - lastSentAt);
+        var remaining = cooldown - elapsed;
+
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+    }
+
+    /// <summary>
+    /// Builds the message a request actually sends.
+    ///
+    /// A DJ's request is the typed song appended to the profile's message, so
+    /// the venue controls the wording and the guest supplies only the title.
+    /// The song is never sent alone: without the profile's framing the DJ would
+    /// receive a bare song name with no indication of what it is.
+    /// </summary>
+    private string ComposeRequestMessage(StaffProfile profile)
+    {
+        var isDj = string.Equals(profile.Category, "dj", StringComparison.OrdinalIgnoreCase);
+        if (!isDj)
+            return profile.RequestMessage;
+
+        var song = songRequestDrafts.TryGetValue(profile.Id, out var draft) ? draft.Trim() : string.Empty;
+        if (song.Length == 0)
+            return string.Empty;
+
+        var prefix = string.IsNullOrWhiteSpace(profile.RequestMessage)
+            ? "Song request:"
+            : profile.RequestMessage.Trim();
+
+        return $"{prefix} {song}";
+    }
+
     private void SendStaffRequest(StaffProfile profile)
     {
+        // Checked here as well as on the button: the confirmation popup can be
+        // open across the moment a cooldown starts, and the disabled button is a
+        // hint rather than the rule.
+        var cooldownRemaining = GetRequestCooldownRemaining(profile);
+        if (cooldownRemaining > TimeSpan.Zero)
+        {
+            staffRequestFeedback[profile.Id] =
+                (false, $"Wait {Math.Ceiling(cooldownRemaining.TotalSeconds):0}s before sending another request.");
+            return;
+        }
+
         if (!getNetworkStats().IsActive)
         {
             staffRequestFeedback[profile.Id] = (false, "Requests are available only while you are at The Grid.");
@@ -2108,9 +2218,18 @@ internal sealed partial class CyberdeckWindow
             return;
         }
 
-        if (TarotTellSender.TrySendMessage(profile.CharacterName, profile.RequestMessage, out var error))
+        var message = ComposeRequestMessage(profile);
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            staffRequestFeedback[profile.Id] = (false, "There is nothing to send for this profile.");
+            return;
+        }
+
+        if (TarotTellSender.TrySendMessage(profile.CharacterName, message, out var error))
         {
             staffRequestLastSentAt[profile.Id] = Environment.TickCount64;
+            // Clearing the draft stops the same song being sent twice by reflex.
+            songRequestDrafts.Remove(profile.Id);
             staffRequestFeedback[profile.Id] = (true, $"Request sent to {profile.Name}.");
             return;
         }
