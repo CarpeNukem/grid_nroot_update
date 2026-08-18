@@ -445,6 +445,12 @@ internal sealed partial class CyberdeckWindow
                 packet.SessionId,
                 sender,
                 result.Message);
+
+            // A refusal used to go only to the log and the debug feed, neither
+            // of which a customer is looking at — so a card that never arrived
+            // was indistinguishable from a reader who had not sent one. Saying
+            // so on screen is what makes the difference diagnosable.
+            SetTransientFeedback($"TAROT REFUSED // {result.Message.ToUpperInvariant()}");
         }
         if (result.Accepted)
         {
