@@ -18,7 +18,15 @@ public sealed class PluginConfig : IPluginConfiguration
 
     // Venue announcement feed. Off by default: until a backend is deployed there
     // is nothing to reach, and the Cyberdeck must behave identically without it.
-    public bool BackendEnabled { get; set; } = false;
+    /// <summary>
+    /// Whether the deck reads venue content from the relay.
+    ///
+    /// On by default now that the relay is live and populated. It stays a
+    /// setting because the deck has to keep working without it: turning this
+    /// off falls back to the profiles and drinks bundled in the plugin, which
+    /// is also what happens whenever the relay cannot be reached.
+    /// </summary>
+    public bool BackendEnabled { get; set; } = true;
 
     /// <summary>
     /// Where venue content is read from.

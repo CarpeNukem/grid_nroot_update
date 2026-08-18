@@ -1408,7 +1408,7 @@ internal sealed partial class CyberdeckWindow
         if (venueManager && badgeCounts.TryGetValue(DeckView.Network, out var networkBadge) && networkBadge > 0)
             DrawTileBadge(networkPos, buttonSize, networkBadge, badgeColors.GetValueOrDefault(DeckView.Network, CyberdeckTheme.Palette.Error));
 
-        if (DrawImageNavButton("Services", "services.png", buttonSize, "03 ACTIVITIES"))
+        if (DrawImageNavButton("Services", "services.png", buttonSize, GetServicesTelemetry()))
             SelectDeckView(DeckView.Services);
         if (useTwoColumns)
             ImGui.SameLine();
@@ -1866,6 +1866,33 @@ internal sealed partial class CyberdeckWindow
             out staffProfilesSourcePath,
             out staffProfilesLoadError);
     }
+
+    /// <summary>
+    /// What the Services tile advertises.
+    ///
+    /// Counts what a guest can actually open, rather than the six rows the
+    /// screen always draws: the tarot cast, the two hacking activities, and any
+    /// staff directory that has someone published in it. An empty directory
+    /// shows "COMING SOON" inside, so counting it here would promise something
+    /// that is not there — and the number moves on its own as the venue
+    /// publishes profiles, which is the point of it not being hardcoded.
+    /// </summary>
+    private string GetServicesTelemetry()
+    {
+        // Tarot, Breach Protocol, Cipher Vault — always present.
+        const int alwaysAvailable = 3;
+
+        var profiles = GetProfileEntries();
+        var populatedDirectories = StaffDirectoryCategories.Count(category =>
+            profiles.Any(profile =>
+                string.Equals(profile.Category, category, StringComparison.OrdinalIgnoreCase)));
+
+        var total = alwaysAvailable + populatedDirectories;
+        return $"{total:00} {(total == 1 ? "ACTIVITY" : "ACTIVITIES")}";
+    }
+
+    /// <summary>The directories the Services screen offers, in the order it draws them.</summary>
+    private static readonly string[] StaffDirectoryCategories = ["photography", "dj", "bar"];
 
     private string GetStaffDirectoryStatus(string category)
     {
