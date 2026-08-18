@@ -512,8 +512,23 @@ internal sealed class TarotDebugSession
 
     public TarotReceiveResult Receive(string sender, TarotPacket packet)
     {
+        // A reader whose session has broken cannot resume it — they start a new
+        // one and invite again. To the customer that arrives mid-reading with an
+        // unfamiliar session id, so without this it was refused as belonging to
+        // another session and nothing reached them at all.
+        //
+        // Restricted to the partner already bound: a fresh invitation from the
+        // person you are reading with is a restart, while one from anyone else
+        // during a reading is exactly what should keep being refused.
+        var isRestartFromPartner =
+            packet.Kind == TarotPacketKind.Invite &&
+            Partner.Length > 0 &&
+            PartnerMatches(sender, Partner);
+
         if (packet.Kind == TarotPacketKind.Invite &&
-            (Role == TarotDebugRole.None || Phase is TarotDebugPhase.Idle or TarotDebugPhase.WaitingForInvite or TarotDebugPhase.Ended))
+            (Role == TarotDebugRole.None
+             || Phase is TarotDebugPhase.Idle or TarotDebugPhase.WaitingForInvite or TarotDebugPhase.Ended
+             || isRestartFromPartner))
             return ReceiveInvite(sender, packet);
 
         if (Role == TarotDebugRole.None || SessionId.Length == 0)
