@@ -51,6 +51,8 @@ describe("profiles", () => {
 			// Added by 0004: a second image slot, used for DJ brand marks.
 			"logo_key",
 			"logo_bundled",
+			// Added by 0006: what a DJ plays.
+			"genres",
 		]);
 	});
 

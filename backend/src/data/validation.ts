@@ -303,6 +303,7 @@ export interface ProfileInput {
 	readonly bundledImage: string;
 	readonly logoKey: string;
 	readonly logoImage: string;
+	readonly genres: string;
 	readonly requestLabel: string;
 	readonly requestMessage: string;
 	readonly sortOrder: number;
@@ -323,6 +324,7 @@ const PROFILE_FIELDS = [
 	"bundledImage",
 	"logoKey",
 	"logoImage",
+	"genres",
 	"requestLabel",
 	"requestMessage",
 	"sortOrder",
@@ -386,6 +388,7 @@ export function parseProfileInput(body: unknown, id?: string): ProfileInput {
 		bundledImage: bundled,
 		logoKey: optionalImageKey(input, "logoKey"),
 		logoImage: optionalBundledImage(input, "logoImage"),
+		genres: optionalText(input, "genres", FIELD_LIMITS.shortText),
 		requestLabel: optionalText(input, "requestLabel", FIELD_LIMITS.shortText),
 		requestMessage: optionalText(input, "requestMessage", FIELD_LIMITS.mediumText),
 		sortOrder: optionalInt(input, "sortOrder", 0, FIELD_LIMITS.maxSortOrder, 0),
