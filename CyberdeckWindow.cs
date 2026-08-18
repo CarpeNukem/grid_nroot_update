@@ -4122,6 +4122,16 @@ internal sealed partial class CyberdeckWindow
         }
         DrawMutedWrapped("Controls operations-feed scrolling, terminal glitches, pulses, scanlines, and loading animation together.");
 
+        var messageTone = config.MessageToneEnabled;
+        if (ImGui.Checkbox("Message tone", ref messageTone))
+        {
+            config.MessageToneEnabled = messageTone;
+            config.Save();
+            if (messageTone)
+                VenueSounds.PlayMessageTone();
+        }
+        DrawMutedWrapped("Plays a chime when a tell arrives from the venue. Ticking it plays the tone once.");
+
         var autoOpenOnEntrance = config.AutoOpenOnVenueAddress;
         if (ImGui.Checkbox("Auto-open Cyberdeck", ref autoOpenOnEntrance))
         {
