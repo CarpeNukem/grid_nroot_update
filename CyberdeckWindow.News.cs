@@ -388,14 +388,10 @@ internal sealed partial class CyberdeckWindow
         if (!enabled)
             return;
 
-        var address = config.BackendBaseUrl;
-        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
-        if (ImGui.InputText("##broadcast_relay_url", ref address, 256))
-        {
-            config.BackendBaseUrl = address.Trim();
-            config.Save();
-        }
-        DrawMutedWrapped("Relay address. Must be https, unless it points at this machine for testing.");
+        // The address is fixed rather than editable. The deck renders whatever
+        // the relay returns and downloads the media it points at, so letting it
+        // be repointed would hand that trust to whoever supplied the new URL.
+        ImGui.TextDisabled(config.BackendBaseUrl);
 
         var news = getCatalog();
         if (ImGui.SmallButton("CHECK NOW##broadcast_check"))
