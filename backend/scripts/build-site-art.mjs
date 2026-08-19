@@ -37,7 +37,7 @@ const LOGO = { source: "grid.png", width: 320 };
  * Tile art, one per view the site offers. These mirror the deck's home grid so
  * the two read as the same application.
  */
-const TILES = ["menu", "wifi", "address", "broadcast", "services"];
+const TILES = ["menu", "wifi", "address", "broadcast", "services", "settings"];
 
 const kb = (bytes) => `${(bytes / 1024).toFixed(1)} KB`;
 

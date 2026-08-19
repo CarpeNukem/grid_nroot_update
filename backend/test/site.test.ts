@@ -1,5 +1,6 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import pluginManifest from "../../repo.json";
 import worker from "../src/index.js";
 import { isAdminHostname, isAdminSurface } from "../src/security/hosts.js";
 import type { Env } from "../src/types.js";
@@ -196,6 +197,38 @@ describe("public site", () => {
 		const html = await (await get("/")).text();
 
 		expect(html).not.toMatch(/CF_ACCESS|api[_-]?key|secret|Bearer\s/i);
+	});
+});
+
+describe("install guide", () => {
+	it("points at the repository the plugin actually publishes from", async () => {
+		// The guide hardcodes a Dalamud custom-repository URL. If the plugin is
+		// ever renamed or moved, that URL sends people somewhere that does not
+		// exist, and nothing else in the build would notice. Anchor it to the
+		// manifest Dalamud itself reads.
+		const slug = (pluginManifest[0]?.RepoUrl ?? "").replace(/^https:\/\/github\.com\//, "");
+
+		expect(slug).not.toBe("");
+
+		const html = await (await get("/")).text();
+		expect(html).toContain(`https://raw.githubusercontent.com/${slug}/main/repo.json`);
+	});
+
+	it("names the commands the plugin registers", async () => {
+		const html = await (await get("/")).text();
+
+		expect(html).toContain("/grid update");
+		expect(html).toMatch(/\/thegrid|\/cyberdeck/);
+	});
+
+	it("tells the reader to make the collection themselves", async () => {
+		const html = await (await get("/")).text();
+
+		// Penumbra's IPC exposes CreateTemporaryCollection and nothing that makes
+		// a permanent one, so the plugin cannot do this step for anybody. Leaving
+		// it out sends people to a venue that silently renders wrong.
+		expect(html).toMatch(/empty.{0,40}collection/i);
+		expect(html).toContain("cannot create a permanent collection");
 	});
 });
 

@@ -110,6 +110,25 @@
 				justify-content: space-between;
 			}
 
+			/* Discord sits in the status strip so it is reachable from every screen. */
+			.footlink {
+				color: var(--cyan);
+				text-decoration: none;
+				border-bottom: 1px solid transparent;
+			}
+
+			.footlink:hover,
+			.footlink:focus-visible {
+				border-bottom-color: var(--cyan);
+			}
+
+			/* The sync stamp is the first thing to go when the strip runs out of room. */
+			@media (max-width: 26rem) {
+				#footright {
+					display: none;
+				}
+			}
+
 			.lamp {
 				width: 7px;
 				height: 7px;
@@ -748,6 +767,12 @@
 				color: var(--magenta);
 				cursor: pointer;
 				border-bottom: 1px dotted rgba(255, 62, 181, 0.6);
+				/*
+					The plugin repository URL is one unbroken 76-character token. The
+					deck clips its own overflow, so without this it is not merely ugly
+					on a phone — the half a reader most needs to copy is cut off.
+				*/
+				overflow-wrap: anywhere;
 			}
 
 			.md code:hover,
@@ -828,6 +853,14 @@
 
 			<div class="deck-foot">
 				<span id="footleft">CYBERDECK // WEB</span>
+				<a
+					class="footlink"
+					id="footdiscord"
+					href="https://discord.gg/kxZMbP3C5B"
+					rel="noopener noreferrer nofollow"
+					target="_blank"
+					>Discord</a
+				>
 				<span id="footright"></span>
 			</div>
 		</div>
@@ -866,7 +899,48 @@
 						{ name: "Lightless", id: "LLS-6AAKEJBAPRB0" },
 						{ name: "PlayerSync", id: "n_root" }
 					],
-					rules: ["Please compress your textures.", "Please be SFW."]
+					rules: ["Please compress your textures.", "Please be SFW."],
+
+					/**
+					 * How to get the deck itself, written as Markdown so it renders
+					 * through the same path as a published page — which means the
+					 * repository URL is a code span, and code spans copy when clicked.
+					 *
+					 * Steps and URLs are taken from repo.json and the README rather
+					 * than written from memory. A published `install` page replaces
+					 * this wholesale, so the instructions can follow a release without
+					 * a deploy.
+					 */
+					install: [
+						"The Grid Cyberdeck is a Dalamud plugin. It installs the venue mod into Penumbra for you, so the venue looks the way it is meant to.",
+						"",
+						"# Before you start",
+						"- FFXIV launched through **XIVLauncher**, so Dalamud is available",
+						"- **Penumbra** installed and enabled",
+						"",
+						"# 1. Add the repository",
+						"In game, open **Dalamud Settings**, go to **Experimental**, and paste this under Custom Plugin Repositories, then save:",
+						"",
+						"`https://raw.githubusercontent.com/CarpeNukem/grid_nroot_update/main/repo.json`",
+						"",
+						"# 2. Install the plugin",
+						"Open the **Plugin Installer**, search for **The Grid Cyberdeck**, and install it.",
+						"",
+						"# 3. Make an empty collection",
+						"In **Penumbra**, create a new collection named `Grid` and leave it empty. `TheGrid` and `The Grid` are recognised too.",
+						"",
+						"This step has to be done by hand, because the plugin **cannot create a permanent collection** — Penumbra offers no way to. Skip it and the deck falls back to a temporary collection it has to rebuild every session.",
+						"",
+						"# 4. Open the deck",
+						"Type `/grid` in chat. `/thegrid` and `/cyberdeck` do the same thing.",
+						"",
+						"# 5. Install the venue mod",
+						"In the deck, open **Settings** and press **Install** — or just type `/grid update`. The plugin downloads the venue mod and installs it into the collection you made.",
+						"",
+						"---",
+						"",
+						"Stuck on any of that? Ask in Discord and someone will walk you through it."
+					].join("\n")
 				};
 
 				var CREW_GROUPS = [
@@ -1332,6 +1406,14 @@
 					into.appendChild(discordLink());
 				}
 
+				function viewInstall(into) {
+					// A published `install` page replaces this, exactly as `wifi` does,
+					// so the steps can follow a release without a deploy.
+					var page = findPage("install");
+					renderMarkdown(page ? page.body : DECK.install, into);
+					into.appendChild(discordLink());
+				}
+
 				function viewAddress(into) {
 					into.appendChild(el("p", "body", DECK.address));
 					into.appendChild(termLine("Address", DECK.address));
@@ -1397,6 +1479,13 @@
 								pad(profiles.length) + (profiles.length === 1 ? " PROFILE" : " PROFILES")
 						});
 					}
+
+					built.push({
+						id: "install",
+						label: "Get The Deck",
+						art: "settings",
+						telemetry: "DALAMUD PLUGIN"
+					});
 
 					if (news.length > 0) {
 						built.push({
@@ -1479,6 +1568,7 @@
 					menu: { title: "Menu", render: viewMenu },
 					wifi: { title: "Wi-Fi / Syncshell", render: viewWifi },
 					address: { title: "Address", render: viewAddress },
+					install: { title: "Get The Deck", render: viewInstall },
 					crew: { title: "The Crew", render: viewCrew },
 					broadcast: { title: "Broadcast", render: viewBroadcast }
 				};

@@ -4,6 +4,7 @@ import logo from "../../../site/img/grid.webp";
 import menu from "../../../site/img/menu.webp";
 import rooftop from "../../../site/img/rooftop.webp";
 import services from "../../../site/img/services.webp";
+import settings from "../../../site/img/settings.webp";
 import wifi from "../../../site/img/wifi.webp";
 import { notFound } from "../../security/errors.js";
 import type { Route } from "../router.js";
@@ -37,6 +38,7 @@ const ASSETS: Readonly<Record<string, ArrayBuffer>> = {
 	"address.webp": address,
 	"broadcast.webp": broadcast,
 	"services.webp": services,
+	"settings.webp": settings,
 };
 
 export const siteAssetRoute: Route = {
