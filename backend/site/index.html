@@ -475,10 +475,25 @@
 				gap: 0.85rem;
 			}
 
+			/*
+				Portraits keep their own proportions rather than being cropped to
+				the card's.
+
+				They are full-body character shots around 9:16, and the card's 4:5
+				box with object-fit: cover showed only about 70% of the height —
+				taken off the top and bottom equally, which cut heads off. These are
+				glamour shots; the outfit is most of the point, so the whole image
+				stays and the row grows to fit it. The cap is for a pathological
+				upload, not for these.
+			*/
 			.card.row img {
 				width: 7.5rem;
 				flex: none;
 				margin-bottom: 0;
+				aspect-ratio: auto;
+				height: auto;
+				max-height: 15rem;
+				object-fit: contain;
 			}
 
 			/* Without this the text column refuses to shrink and the row overflows. */
