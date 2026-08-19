@@ -6,8 +6,9 @@
 	// Raise it together with the wrangler version, never ahead of it.
 	"compatibility_date": "2025-10-11",
 
-	// Lets the admin page be imported as a string and served with headers this
-	// Worker controls, rather than needing a separate static-assets deployment.
+	// Lets the admin page and the public site be imported as strings and served
+	// with headers this Worker controls, rather than needing a separate
+	// static-assets deployment for either.
 	"rules": [{ "type": "Text", "globs": ["**/*.html"], "fallthrough": false }],
 
 	// Structured request logs. See src/observability/log.ts.
@@ -25,6 +26,9 @@
 		"PUBLIC_MEDIA_BASE_URL": "http://127.0.0.1:8787/media",
 		// Exact origin of the Pages admin site. Admin CORS is never a wildcard.
 		"ADMIN_ALLOWED_ORIGIN": "http://127.0.0.1:8788"
+		// No ADMIN_HOSTNAME here on purpose. Development has no stable hostname
+		// to match, so `isAdminHostname` exempts it — the same way this
+		// environment already accepts a header in place of an Access token.
 	},
 
 	// Local development bindings. `database_id` is a placeholder: `wrangler dev` and
@@ -72,10 +76,17 @@
 			// hostname that Access does not cover would simply route around it.
 			"workers_dev": false,
 
-			// Binding the hostname needs nroot.io to be an active zone in the same
+			// Binding the hostnames needs nroot.io to be an active zone in the same
 			// Cloudflare account. The domain is registered but still on the
 			// registrar's nameservers, so this fails until it is moved across.
-			"routes": [{ "pattern": "api.nroot.io", "custom_domain": true }],
+			//
+			// Two hostnames, one Worker. Access covers only the first, so the
+			// Worker refuses admin on anything but ADMIN_HOSTNAME below — without
+			// that, grid.nroot.io/admin would serve the panel unprotected.
+			"routes": [
+				{ "pattern": "api.nroot.io", "custom_domain": true },
+				{ "pattern": "grid.nroot.io", "custom_domain": true }
+			],
 
 			"vars": {
 				// The single most important line here. Anything other than
@@ -85,7 +96,13 @@
 				// The Worker serves R2 from its own /media path.
 				"PUBLIC_MEDIA_BASE_URL": "https://api.nroot.io/media",
 				// Same origin: the admin page is served by this Worker.
-				"ADMIN_ALLOWED_ORIGIN": "https://api.nroot.io"
+				"ADMIN_ALLOWED_ORIGIN": "https://api.nroot.io",
+				// The one hostname admin is served on, and the one Cloudflare
+				// Access protects. These two must not drift apart: the Worker
+				// enforces this line, Access enforces its own, and admin is safe
+				// only where both agree. Removing it locks admin out entirely,
+				// which is the correct way for this setting to fail.
+				"ADMIN_HOSTNAME": "api.nroot.io"
 			},
 
 			"d1_databases": [
