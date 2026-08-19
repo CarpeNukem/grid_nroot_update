@@ -201,17 +201,28 @@ describe("public site", () => {
 });
 
 describe("install guide", () => {
-	it("points at the repository the plugin actually publishes from", async () => {
-		// The guide hardcodes a Dalamud custom-repository URL. If the plugin is
-		// ever renamed or moved, that URL sends people somewhere that does not
-		// exist, and nothing else in the build would notice. Anchor it to the
-		// manifest Dalamud itself reads.
-		const slug = (pluginManifest[0]?.RepoUrl ?? "").replace(/^https:\/\/github\.com\//, "");
+	it("points at the n_root feed, spelled exactly", async () => {
+		// The guide sends people to the community feed, which carries this plugin
+		// alongside xivAMP and lives in its own repository — so it cannot be
+		// derived from this one's manifest. It is pinned literally instead,
+		// because a URL that is subtly wrong fails silently: Dalamud simply shows
+		// an empty repository and the reader has nothing to go on.
+		const html = await (await get("/")).text();
 
-		expect(slug).not.toBe("");
+		expect(html).toContain("https://raw.githubusercontent.com/CarpeNukem/n_root/main/repo.json");
+		// The per-plugin feed still exists and stays current, but is not what the
+		// guide advertises; finding it here means the two have drifted apart.
+		expect(html).not.toContain("grid_nroot_update/main/repo.json");
+	});
+
+	it("names the plugin as the installer lists it", async () => {
+		// The reader is told to search for this by name, so it has to match what
+		// Dalamud will actually show them.
+		const name = pluginManifest[0]?.Name ?? "";
+		expect(name).not.toBe("");
 
 		const html = await (await get("/")).text();
-		expect(html).toContain(`https://raw.githubusercontent.com/${slug}/main/repo.json`);
+		expect(html).toContain(name);
 	});
 
 	it("names the commands the plugin registers", async () => {
