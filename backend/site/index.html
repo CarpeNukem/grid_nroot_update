@@ -457,6 +457,46 @@
 				font-size: 1rem;
 			}
 
+			/*
+				The crew reads as a directory rather than a gallery: a portrait
+				beside the details, one profile per row. A bio and a fact list are
+				taller than they are wide, so stacking them under a full-width
+				portrait wastes the screen and pushes the third profile off it.
+			*/
+			.crewlist {
+				display: flex;
+				flex-direction: column;
+				gap: 0.6rem;
+			}
+
+			.card.row {
+				display: flex;
+				align-items: flex-start;
+				gap: 0.85rem;
+			}
+
+			.card.row img {
+				width: 7.5rem;
+				flex: none;
+				margin-bottom: 0;
+			}
+
+			/* Without this the text column refuses to shrink and the row overflows. */
+			.card.row .info {
+				flex: 1;
+				min-width: 0;
+			}
+
+			@media (max-width: 26rem) {
+				.card.row img {
+					width: 5.25rem;
+				}
+
+				.card.row .facts dt {
+					min-width: 5rem;
+				}
+			}
+
 			.grouplabel {
 				font-family: var(--mono);
 				font-size: 0.66rem;
@@ -1091,21 +1131,23 @@
 				/* ---- views ---- */
 
 				function crewCard(profile) {
-					var card = el("article", "card");
+					var card = el("article", "card row");
 					addImage(card, profile.imageUrl, profile.name);
-					card.appendChild(el("h3", null, profile.name));
+
+					var info = el("div", "info");
+					info.appendChild(el("h3", null, profile.name));
 
 					if (profile.characterName) {
-						card.appendChild(el("p", "handle", profile.characterName));
+						info.appendChild(el("p", "handle", profile.characterName));
 					}
 					if (profile.occupation) {
-						card.appendChild(el("p", "role", profile.occupation));
+						info.appendChild(el("p", "role", profile.occupation));
 					}
 					if (profile.genres) {
-						card.appendChild(el("p", "taste", profile.genres));
+						info.appendChild(el("p", "taste", profile.genres));
 					}
 					if (profile.bio) {
-						card.appendChild(el("p", "body", profile.bio));
+						info.appendChild(el("p", "body", profile.bio));
 					}
 
 					var optional = profile.optional || {};
@@ -1126,8 +1168,10 @@
 							row.appendChild(el("dd", null, pair[1]));
 							list.appendChild(row);
 						});
-						card.appendChild(list);
+						info.appendChild(list);
 					}
+
+					card.appendChild(info);
 
 					// requestLabel and requestMessage are deliberately not rendered.
 					// They send an in-game /tell from the plugin; on the web they
@@ -1151,7 +1195,7 @@
 						});
 
 						into.appendChild(el("p", "grouplabel", group.label));
-						var grid = el("div", "cards");
+						var grid = el("div", "crewlist");
 						members.forEach(function (profile) {
 							grid.appendChild(crewCard(profile));
 						});
@@ -1165,7 +1209,7 @@
 					});
 					if (rest.length > 0) {
 						into.appendChild(el("p", "grouplabel", "Also On Shift"));
-						var grid = el("div", "cards");
+						var grid = el("div", "crewlist");
 						rest.forEach(function (profile) {
 							grid.appendChild(crewCard(profile));
 						});
