@@ -1493,11 +1493,20 @@
 							label: "Broadcast",
 							art: "broadcast",
 							telemetry: pad(news.length) + (news.length === 1 ? " POST" : " POSTS"),
-							wide: true,
 							badge: news.filter(function (post) {
 								return post.pinned;
 							}).length
 						});
+					}
+
+					// The plugin widens Broadcast because there it is a seventh tile
+					// and would otherwise leave a dangling half-row. Here the count
+					// moves — a tile is dropped whenever its collection is empty — so
+					// the same intent has to be worked out rather than pinned to one
+					// tile: widen the last only when it would sit on a row alone.
+					var last = built[built.length - 1];
+					if (last !== undefined && built.length % 2 === 1) {
+						last.wide = true;
 					}
 
 					return built;
