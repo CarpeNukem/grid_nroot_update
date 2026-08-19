@@ -2,6 +2,7 @@ import { adminRoutes } from "./admin/index.js";
 import { adminMediaRoutes } from "./admin/media.js";
 import { adminUiRoute } from "./admin/ui.js";
 import { healthRoute } from "./health.js";
+import { siteAssetRoute } from "./public/assets.js";
 import { catalogRoute } from "./public/catalog.js";
 import { mediaObjectRoute } from "./public/media.js";
 import { menuDetailRoute, menuListRoute } from "./public/menu.js";
@@ -27,6 +28,7 @@ export const routes: readonly Route[] = [
 
 	siteRoute,
 	robotsRoute,
+	siteAssetRoute,
 
 	catalogRoute,
 	profileListRoute,

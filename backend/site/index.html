@@ -13,20 +13,24 @@
 		<meta name="robots" content="noindex, nofollow, noarchive, noimageindex" />
 
 		<title>The Grid</title>
-		<meta name="description" content="Drinks, crew, and broadcasts from The Grid." />
+		<meta name="description" content="The Grid's cyberdeck, in a browser." />
 
 		<style>
+			/*
+				The plugin's default theme, transcribed from CyberdeckTheme.cs so the
+				browser build and the in-game one read as the same device.
+			*/
 			:root {
-				--bg: #05070d;
-				--panel: #0b1018;
-				--panel-edge: #16202e;
-				--ink: #d6e2f0;
-				--soft: #aebbcd;
-				--muted: #7c8ba0;
-				--faint: #5f6d80;
-				--cyan: #35e0ee;
-				--magenta: #ff4fd8;
-				--amber: #ffb648;
+				--bg: #071017;
+				--panel: #0b1820;
+				--raised: #102630;
+				--cyan: #31e6df;
+				--magenta: #ff3eb5;
+				--amber: #ffc857;
+				--error: #ff5c6c;
+				--text: #d5fbf7;
+				--muted: #79aaa7;
+				--line: #236669;
 				--font: "Segoe UI", system-ui, -apple-system, sans-serif;
 				--mono: "Cascadia Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 			}
@@ -37,123 +41,405 @@
 				box-sizing: border-box;
 			}
 
+			html,
 			body {
 				margin: 0;
-				background: var(--bg);
-				color: var(--ink);
+				background: #02070a;
+				color: var(--text);
 				font-family: var(--font);
-				line-height: 1.6;
-				/* Faint scanline wash, purely decorative. */
-				background-image: repeating-linear-gradient(
+				line-height: 1.55;
+			}
+
+			body {
+				min-height: 100vh;
+				padding: clamp(0px, 3vw, 2.5rem) clamp(0px, 2vw, 1.5rem);
+				display: flex;
+				justify-content: center;
+				align-items: flex-start;
+			}
+
+			/* ---- the device ---- */
+
+			.deck {
+				width: 100%;
+				max-width: 46rem;
+				background: var(--bg);
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				box-shadow:
+					0 0 0 1px rgba(49, 230, 223, 0.12),
+					0 0 40px rgba(49, 230, 223, 0.09),
+					0 18px 50px rgba(0, 0, 0, 0.7);
+				overflow: hidden;
+				position: relative;
+			}
+
+			/* Scanlines over the whole device, never over the content's hit area. */
+			.deck::after {
+				content: "";
+				position: absolute;
+				inset: 0;
+				pointer-events: none;
+				background: repeating-linear-gradient(
 					to bottom,
-					rgba(53, 224, 238, 0.03) 0 1px,
+					rgba(49, 230, 223, 0.035) 0 1px,
 					transparent 1px 3px
 				);
 			}
 
-			.wrap {
-				max-width: 60rem;
-				margin: 0 auto;
-				padding: 2rem 1.25rem 5rem;
-			}
-
-			/* ---- masthead ---- */
-
-			header.masthead {
-				padding: 2rem 0 1rem;
-				border-bottom: 1px solid var(--panel-edge);
-			}
-
-			.mark {
-				font-family: var(--mono);
-				font-size: clamp(2rem, 8vw, 3.5rem);
-				letter-spacing: 0.18em;
-				margin: 0;
-				color: var(--cyan);
-				text-shadow: 0 0 18px rgba(53, 224, 238, 0.45);
-			}
-
-			.tagline {
-				color: var(--muted);
-				font-family: var(--mono);
-				letter-spacing: 0.14em;
-				font-size: 0.8rem;
-				text-transform: uppercase;
-				margin: 0.5rem 0 0;
-			}
-
-			nav.jump {
+			.deck-bar,
+			.deck-foot {
 				display: flex;
-				flex-wrap: wrap;
-				gap: 1.25rem;
-				margin-top: 1.5rem;
+				align-items: center;
+				gap: 0.6rem;
+				padding: 0.55rem 0.9rem;
+				background: var(--panel);
 				font-family: var(--mono);
-				font-size: 0.78rem;
+				font-size: 0.68rem;
 				letter-spacing: 0.16em;
 				text-transform: uppercase;
-			}
-
-			nav.jump a {
 				color: var(--muted);
-				text-decoration: none;
-				border-bottom: 1px solid transparent;
-				padding-bottom: 2px;
 			}
 
-			nav.jump a:hover,
-			nav.jump a:focus-visible {
+			.deck-bar {
+				border-bottom: 1px solid var(--line);
+			}
+
+			.deck-foot {
+				border-top: 1px solid var(--line);
+				justify-content: space-between;
+			}
+
+			.lamp {
+				width: 7px;
+				height: 7px;
+				border-radius: 50%;
+				background: var(--muted);
+				box-shadow: 0 0 8px currentColor;
+				flex: none;
+			}
+
+			.lamp.online {
+				background: var(--cyan);
 				color: var(--cyan);
-				border-bottom-color: var(--cyan);
 			}
 
-			/* ---- sections ---- */
-
-			section {
-				margin-top: 3.5rem;
-				scroll-margin-top: 1rem;
+			.lamp.fault {
+				background: var(--error);
+				color: var(--error);
 			}
 
-			h2 {
+			.deck-bar .name {
+				color: var(--cyan);
+			}
+
+			.deck-bar .spacer {
+				margin-left: auto;
+			}
+
+			.screen {
+				padding: 0.9rem;
+				min-height: 24rem;
+			}
+
+			/* ---- neon separator, as the deck draws it ---- */
+
+			.sep {
+				height: 7px;
+				margin: 0.55rem 0;
+				position: relative;
+			}
+
+			.sep::before,
+			.sep::after {
+				content: "";
+				position: absolute;
+				left: 0;
+				right: 0;
+				height: 1px;
+			}
+
+			.sep::before {
+				top: 2px;
+				background: rgba(49, 230, 223, 0.88);
+				box-shadow: 0 -1px 0 rgba(49, 230, 223, 0.2);
+			}
+
+			.sep::after {
+				top: 4px;
+				background: rgba(255, 62, 181, 0.42);
+			}
+
+			/* ---- home: hero ---- */
+
+			.hero {
+				position: relative;
+				height: 11rem;
+				border: 1px solid rgba(49, 230, 223, 0.78);
+				border-radius: 6px;
+				overflow: hidden;
+				display: flex;
+				align-items: center;
+				gap: 0.9rem;
+				padding: 0 0.9rem;
+			}
+
+			.hero::before {
+				content: "";
+				position: absolute;
+				inset: 0;
+				background-image: url("/assets/rooftop.webp");
+				background-size: cover;
+				background-position: center 38%;
+				opacity: 0.66;
+			}
+
+			.hero::after {
+				content: "";
+				position: absolute;
+				inset: 0;
+				background: rgba(7, 16, 23, 0.66);
+			}
+
+			.hero > * {
+				position: relative;
+				z-index: 1;
+			}
+
+			.hero img {
+				width: 5.5rem;
+				flex: none;
+				filter: drop-shadow(0 0 12px rgba(49, 230, 223, 0.5));
+			}
+
+			.hero h1 {
+				margin: 0;
 				font-family: var(--mono);
-				font-size: 0.85rem;
-				letter-spacing: 0.24em;
-				text-transform: uppercase;
-				color: var(--amber);
-				margin: 0 0 0.25rem;
-			}
-
-			h2::before {
-				content: "// ";
-				opacity: 0.5;
-			}
-
-			.section-note {
-				color: var(--muted);
-				font-size: 0.9rem;
-				margin: 0 0 1.5rem;
-			}
-
-			.group-label {
-				font-family: var(--mono);
-				font-size: 0.72rem;
+				font-size: 1.6rem;
 				letter-spacing: 0.2em;
+				color: var(--cyan);
+				text-shadow: 0 0 18px rgba(49, 230, 223, 0.55);
+			}
+
+			.hero p {
+				margin: 0.3rem 0 0;
+				font-family: var(--mono);
+				font-size: 0.66rem;
+				letter-spacing: 0.16em;
+				text-transform: uppercase;
+				color: var(--text);
+				opacity: 0.75;
+			}
+
+			@media (max-width: 26rem) {
+				.hero {
+					height: 9rem;
+				}
+
+				.hero img {
+					width: 3.6rem;
+				}
+
+				.hero h1 {
+					font-size: 1.15rem;
+				}
+			}
+
+			/* ---- home: news banner ---- */
+
+			.banner {
+				display: block;
+				width: 100%;
+				text-align: left;
+				font: inherit;
+				color: var(--text);
+				background: var(--raised);
+				border: 1px solid rgba(255, 62, 181, 0.5);
+				border-left: 3px solid var(--magenta);
+				border-radius: 4px;
+				padding: 0.6rem 0.8rem;
+				margin-bottom: 0.7rem;
+				cursor: pointer;
+			}
+
+			.banner:hover,
+			.banner:focus-visible {
+				border-color: var(--magenta);
+				box-shadow: 0 0 14px rgba(255, 62, 181, 0.25);
+			}
+
+			.banner .flag {
+				font-family: var(--mono);
+				font-size: 0.62rem;
+				letter-spacing: 0.18em;
 				text-transform: uppercase;
 				color: var(--magenta);
-				margin: 2rem 0 0.9rem;
 			}
 
-			.grid {
+			.banner .headline {
+				display: block;
+				font-size: 0.92rem;
+				margin-top: 0.15rem;
+			}
+
+			/* ---- home: tile grid ---- */
+
+			.tiles {
 				display: grid;
-				gap: 1rem;
-				grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+				gap: 0.55rem;
+				grid-template-columns: repeat(2, 1fr);
 			}
 
-			/* No hover lift, no pointer cursor: these are notices, not controls. */
+			@media (max-width: 26rem) {
+				.tiles {
+					grid-template-columns: 1fr;
+				}
+			}
+
+			.tile {
+				position: relative;
+				display: flex;
+				flex-direction: column;
+				justify-content: flex-end;
+				height: 8.25rem;
+				padding: 0.7rem 0.8rem;
+				border: 1px solid rgba(49, 230, 223, 0.35);
+				border-radius: 5px;
+				background: var(--raised);
+				color: var(--text);
+				font: inherit;
+				text-align: left;
+				cursor: pointer;
+				overflow: hidden;
+			}
+
+			.tile.wide {
+				grid-column: 1 / -1;
+			}
+
+			.tile .art {
+				position: absolute;
+				inset: 0;
+				background-size: cover;
+				background-position: center;
+				opacity: 0.55;
+				transition: opacity 120ms linear, transform 200ms ease;
+			}
+
+			.tile::after {
+				content: "";
+				position: absolute;
+				inset: 0;
+				background: linear-gradient(
+					to top,
+					rgba(7, 16, 23, 0.94) 0%,
+					rgba(7, 16, 23, 0.55) 45%,
+					rgba(7, 16, 23, 0.25) 100%
+				);
+			}
+
+			.tile > .label,
+			.tile > .telemetry {
+				position: relative;
+				z-index: 1;
+			}
+
+			.tile .label {
+				font-family: var(--mono);
+				font-size: 0.92rem;
+				letter-spacing: 0.12em;
+				text-transform: uppercase;
+				color: var(--text);
+			}
+
+			.tile .telemetry {
+				font-family: var(--mono);
+				font-size: 0.64rem;
+				letter-spacing: 0.14em;
+				text-transform: uppercase;
+				color: var(--cyan);
+				margin-top: 0.15rem;
+			}
+
+			.tile:hover,
+			.tile:focus-visible {
+				border-color: var(--cyan);
+				box-shadow: 0 0 16px rgba(49, 230, 223, 0.3);
+			}
+
+			.tile:hover .art,
+			.tile:focus-visible .art {
+				opacity: 0.72;
+				transform: scale(1.03);
+			}
+
+			.badge {
+				position: absolute;
+				top: 0.5rem;
+				right: 0.55rem;
+				z-index: 2;
+				min-width: 1.3rem;
+				height: 1.3rem;
+				padding: 0 0.35rem;
+				border-radius: 0.65rem;
+				background: var(--magenta);
+				color: #0a0410;
+				font-family: var(--mono);
+				font-size: 0.68rem;
+				font-weight: 700;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+			}
+
+			/* ---- view screens ---- */
+
+			.viewbar {
+				display: flex;
+				align-items: center;
+				gap: 0.7rem;
+			}
+
+			.back {
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				letter-spacing: 0.12em;
+				text-transform: uppercase;
+				color: var(--cyan);
+				background: transparent;
+				border: 1px solid var(--line);
+				border-radius: 3px;
+				padding: 0.3rem 0.6rem;
+				cursor: pointer;
+			}
+
+			.back:hover,
+			.back:focus-visible {
+				border-color: var(--cyan);
+				box-shadow: 0 0 12px rgba(49, 230, 223, 0.25);
+			}
+
+			.viewtitle {
+				font-family: var(--mono);
+				font-size: 0.76rem;
+				letter-spacing: 0.2em;
+				text-transform: uppercase;
+				color: var(--muted);
+			}
+
+			/* ---- content primitives ---- */
+
+			.cards {
+				display: grid;
+				gap: 0.7rem;
+				grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+			}
+
 			.card {
 				background: var(--panel);
-				border: 1px solid var(--panel-edge);
-				border-radius: 3px;
-				padding: 1rem 1.1rem 1.2rem;
+				border: 1px solid var(--line);
+				border-radius: 4px;
+				padding: 0.75rem 0.85rem 0.9rem;
 			}
 
 			.card img {
@@ -161,43 +447,66 @@
 				width: 100%;
 				aspect-ratio: 4 / 5;
 				object-fit: cover;
-				border-radius: 2px;
-				margin: -0.25rem 0 0.9rem;
-				background: #070b12;
+				border-radius: 3px;
+				margin-bottom: 0.65rem;
+				background: var(--raised);
 			}
 
 			.card h3 {
 				margin: 0;
-				font-size: 1.05rem;
-				color: var(--ink);
+				font-size: 1rem;
+			}
+
+			.grouplabel {
+				font-family: var(--mono);
+				font-size: 0.66rem;
+				letter-spacing: 0.2em;
+				text-transform: uppercase;
+				color: var(--magenta);
+				margin: 1.1rem 0 0.55rem;
 			}
 
 			.handle {
 				font-family: var(--mono);
-				font-size: 0.78rem;
+				font-size: 0.74rem;
 				color: var(--cyan);
-				margin: 0.15rem 0 0;
+				margin: 0.1rem 0 0;
 				word-break: break-word;
 			}
 
-			.role {
+			.role,
+			.taste {
 				font-family: var(--mono);
-				font-size: 0.72rem;
+				font-size: 0.66rem;
 				letter-spacing: 0.12em;
 				text-transform: uppercase;
-				color: var(--muted);
-				margin: 0.5rem 0 0;
+				margin: 0.4rem 0 0;
 			}
 
-			.bio {
-				font-size: 0.9rem;
-				color: var(--soft);
-				margin: 0.75rem 0 0;
+			.role {
+				color: var(--muted);
+			}
+
+			.taste {
+				color: var(--magenta);
+			}
+
+			.body {
+				font-size: 0.88rem;
+				margin: 0.55rem 0 0;
+				color: #b9d4d1;
+			}
+
+			.ingredients {
+				font-size: 0.78rem;
+				font-style: italic;
+				color: var(--muted);
+				margin: 0.45rem 0 0;
 			}
 
 			.facts {
-				margin: 0.75rem 0 0;
-				font-size: 0.82rem;
+				margin: 0.55rem 0 0;
+				font-size: 0.78rem;
 				color: var(--muted);
 			}
 
@@ -208,58 +517,40 @@
 
 			.facts dt {
 				font-family: var(--mono);
-				font-size: 0.7rem;
+				font-size: 0.64rem;
 				letter-spacing: 0.1em;
 				text-transform: uppercase;
-				min-width: 6.5rem;
-				color: var(--faint);
+				min-width: 6rem;
+				color: var(--line);
 			}
 
 			.facts dd {
 				margin: 0;
 			}
 
-			/* ---- drinks ---- */
-
-			.drink-head {
+			.drinkhead {
 				display: flex;
 				justify-content: space-between;
 				align-items: baseline;
-				gap: 1rem;
+				gap: 0.7rem;
 			}
 
 			.price {
 				font-family: var(--mono);
+				font-size: 0.8rem;
 				color: var(--amber);
-				font-size: 0.85rem;
 				white-space: nowrap;
-			}
-
-			.taste {
-				font-family: var(--mono);
-				font-size: 0.72rem;
-				letter-spacing: 0.1em;
-				text-transform: uppercase;
-				color: var(--magenta);
-				margin: 0.4rem 0 0;
-			}
-
-			.ingredients {
-				font-size: 0.82rem;
-				color: var(--muted);
-				margin: 0.6rem 0 0;
-				font-style: italic;
 			}
 
 			/* ---- broadcasts ---- */
 
 			.post {
 				background: var(--panel);
-				border: 1px solid var(--panel-edge);
+				border: 1px solid var(--line);
 				border-left: 2px solid var(--cyan);
-				border-radius: 3px;
-				padding: 1.1rem 1.25rem 1.25rem;
-				margin-bottom: 1rem;
+				border-radius: 4px;
+				padding: 0.8rem 0.95rem 0.95rem;
+				margin-bottom: 0.7rem;
 			}
 
 			.post.pinned {
@@ -268,115 +559,222 @@
 
 			.post h3 {
 				margin: 0;
-				font-size: 1.15rem;
+				font-size: 1.05rem;
 			}
 
 			.stamp {
 				font-family: var(--mono);
-				font-size: 0.72rem;
+				font-size: 0.66rem;
 				letter-spacing: 0.1em;
 				text-transform: uppercase;
 				color: var(--muted);
-				margin: 0.3rem 0 0;
+				margin: 0.25rem 0 0;
 			}
 
-			.pin-flag {
+			.pin {
 				color: var(--amber);
 			}
 
-			.post .body {
+			.prose {
 				white-space: pre-wrap;
-				margin: 0.8rem 0 0;
-				font-size: 0.92rem;
+				font-size: 0.88rem;
+				margin: 0.6rem 0 0;
 			}
 
 			.post img.flyer {
 				display: block;
 				width: 100%;
-				max-width: 26rem;
-				border-radius: 2px;
-				margin: 1rem 0 0;
+				max-width: 22rem;
+				border-radius: 3px;
+				margin-top: 0.7rem;
 			}
 
-			.post a.link {
+			a.link {
 				display: inline-block;
-				margin-top: 0.9rem;
+				margin-top: 0.7rem;
 				font-family: var(--mono);
-				font-size: 0.78rem;
+				font-size: 0.72rem;
 				letter-spacing: 0.1em;
 				color: var(--cyan);
 			}
 
-			/* ---- info pages ---- */
+			/* ---- terminal lines (wi-fi, address) ---- */
 
-			.page-panel {
+			.termline {
+				display: flex;
+				align-items: center;
+				gap: 0.6rem;
+				flex-wrap: wrap;
+				font-family: var(--mono);
+				font-size: 0.82rem;
 				background: var(--panel);
-				border: 1px solid var(--panel-edge);
+				border: 1px solid var(--line);
 				border-radius: 3px;
-				padding: 1.1rem 1.25rem 1.25rem;
-				margin-bottom: 1rem;
+				padding: 0.5rem 0.7rem;
+				margin-bottom: 0.4rem;
 			}
 
-			.page-panel h3 {
-				margin: 0 0 0.6rem;
+			.termline .key {
+				font-size: 0.66rem;
+				letter-spacing: 0.14em;
+				text-transform: uppercase;
+				color: var(--muted);
+			}
+
+			.termline .value {
+				color: var(--cyan);
+				word-break: break-all;
+			}
+
+			.copy {
+				margin-left: auto;
 				font-family: var(--mono);
-				font-size: 0.8rem;
+				font-size: 0.62rem;
+				letter-spacing: 0.12em;
+				text-transform: uppercase;
+				color: var(--muted);
+				background: transparent;
+				border: 1px solid var(--line);
+				border-radius: 3px;
+				padding: 0.2rem 0.5rem;
+				cursor: pointer;
+			}
+
+			.copy:hover,
+			.copy:focus-visible {
+				color: var(--cyan);
+				border-color: var(--cyan);
+			}
+
+			.copy.done {
+				color: var(--cyan);
+				border-color: var(--cyan);
+			}
+
+			.heading {
+				font-family: var(--mono);
+				font-size: 0.78rem;
 				letter-spacing: 0.16em;
 				text-transform: uppercase;
 				color: var(--cyan);
+				margin: 1rem 0 0.4rem;
 			}
 
-			.page-panel .body {
-				white-space: pre-wrap;
-				font-size: 0.92rem;
+			.muted {
+				color: var(--muted);
+				font-size: 0.82rem;
+				margin: 0.3rem 0 0;
+			}
+
+			ul.bullets {
+				margin: 0.4rem 0 0;
+				padding-left: 1.1rem;
+				font-size: 0.88rem;
+			}
+
+			/* ---- markdown, styled as the deck styles it ---- */
+
+			.heading.alt {
+				color: var(--magenta);
+			}
+
+			.md strong {
+				color: var(--cyan);
+				font-weight: 600;
+			}
+
+			.md em {
+				color: var(--amber);
+				font-style: italic;
+			}
+
+			.md code {
+				font-family: var(--mono);
+				color: var(--magenta);
+				cursor: pointer;
+				border-bottom: 1px dotted rgba(255, 62, 181, 0.6);
+			}
+
+			.md code:hover,
+			.md code:focus-visible {
+				color: var(--text);
+				background: rgba(255, 62, 181, 0.14);
+			}
+
+			.md code.copied {
+				color: var(--cyan);
+				border-bottom-color: var(--cyan);
+			}
+
+			.quote {
+				display: flex;
+				gap: 0.5rem;
+				font-size: 0.88rem;
+				margin: 0.4rem 0 0;
+				color: var(--muted);
+			}
+
+			.quote::before {
+				content: "|";
+				color: var(--line);
+				flex: none;
+			}
+
+			.ordered {
+				display: flex;
+				gap: 0.45rem;
+				font-size: 0.88rem;
+				margin: 0.3rem 0 0;
+			}
+
+			.ordered .marker {
+				font-family: var(--mono);
+				color: var(--amber);
+				flex: none;
 			}
 
 			/* ---- states ---- */
 
 			.status {
 				font-family: var(--mono);
-				font-size: 0.85rem;
+				font-size: 0.78rem;
+				letter-spacing: 0.1em;
 				color: var(--muted);
-				padding: 3rem 0;
 				text-align: center;
+				padding: 4rem 1rem;
 			}
 
 			.status.error {
-				color: var(--magenta);
+				color: var(--error);
 			}
 
-			footer {
-				margin-top: 4rem;
-				padding-top: 1.5rem;
-				border-top: 1px solid var(--panel-edge);
-				color: var(--faint);
-				font-family: var(--mono);
-				font-size: 0.72rem;
-				letter-spacing: 0.1em;
+			@media (prefers-reduced-motion: reduce) {
+				*,
+				*::before,
+				*::after {
+					transition: none !important;
+					animation: none !important;
+				}
 			}
 		</style>
 	</head>
 
 	<body>
-		<div class="wrap">
-			<header class="masthead">
-				<h1 class="mark">THE GRID</h1>
-				<p class="tagline">Eorzea &middot; Raiden &middot; Venue Terminal</p>
-				<nav class="jump" aria-label="Sections">
-					<a href="#broadcasts">Broadcasts</a>
-					<a href="#crew">Crew</a>
-					<a href="#drinks">Drinks</a>
-					<a href="#info">Info</a>
-				</nav>
-			</header>
+		<div class="deck">
+			<div class="deck-bar">
+				<span class="lamp" id="lamp"></span>
+				<span class="name">THE GRID</span>
+				<span class="spacer" id="barstate">BOOTING</span>
+			</div>
 
-			<main id="main">
-				<p class="status" id="status">Connecting to the grid&hellip;</p>
-			</main>
+			<div class="screen" id="screen">
+				<p class="status">Connecting to the relay&hellip;</p>
+			</div>
 
-			<footer>
-				<p>The Grid &middot; unlisted venue terminal &middot; not affiliated with Square Enix</p>
-			</footer>
+			<div class="deck-foot">
+				<span id="footleft">CYBERDECK // WEB</span>
+				<span id="footright"></span>
+			</div>
 		</div>
 
 		<script>
@@ -384,20 +782,47 @@
 				"use strict";
 
 				/**
-				 * Read-only mirror of the venue catalogue.
+				 * The Cyberdeck, as much of it as a browser can honestly be.
 				 *
-				 * Every node here is built with createElement and textContent rather
-				 * than innerHTML. The content is editor-authored and passes server-side
-				 * validation, but it is still stored text arriving over the network:
-				 * building nodes means a stray angle bracket in a drink description
-				 * renders as an angle bracket and can never become markup.
+				 * The plugin is a tile grid that swaps one view into a single screen;
+				 * this mirrors that rather than unrolling everything into a page, so
+				 * the two read as the same device. What is missing is missing because
+				 * it cannot work here: Network scans live game memory, Settings
+				 * configures a plugin, and the activities are played in-game.
+				 *
+				 * Every node is built with createElement and textContent. The content
+				 * is editor-authored and server-validated, but it is still stored text
+				 * arriving over the network, so a stray angle bracket in a drink
+				 * description renders as an angle bracket and never as markup.
 				 */
+
+				/**
+				 * Values the deck keeps in its own configuration rather than in the
+				 * catalogue, copied from PluginConfig.cs and CyberdeckWindow.cs.
+				 *
+				 * The Wi-Fi block is the fallback only. A published `wifi` page
+				 * replaces that screen wholesale, exactly as it does in the plugin —
+				 * which is the point of the page: these can change without a release.
+				 */
+				var DECK = {
+					address: "Light Raiden Mist W2 P6",
+					discord: "https://discord.gg/kxZMbP3C5B",
+					relays: [
+						{ name: "Lightless", id: "LLS-6AAKEJBAPRB0" },
+						{ name: "PlayerSync", id: "n_root" }
+					],
+					rules: ["Please compress your textures.", "Please be SFW."]
+				};
 
 				var CREW_GROUPS = [
 					{ key: "photography", label: "Visual Capture" },
 					{ key: "dj", label: "Resident DJs" },
 					{ key: "bar", label: "Bar Staff" }
 				];
+
+				var catalog = null;
+
+				/* ---- small builders ---- */
 
 				function el(tag, className, text) {
 					var node = document.createElement(tag);
@@ -410,19 +835,25 @@
 					return node;
 				}
 
+				function sep() {
+					return el("div", "sep");
+				}
+
+				function pad(value) {
+					return (value < 10 ? "0" : "") + value;
+				}
+
 				/**
 				 * Points a media URL at whichever host is serving this page.
 				 *
 				 * The catalogue hands out absolute URLs on the API hostname, but the
 				 * same Worker serves /media on every hostname it answers. Rewriting to
-				 * the current origin keeps the image CSP at 'self' rather than having
-				 * to name a second host in it.
+				 * the current origin keeps the image CSP at 'self'.
 				 */
 				function sameOrigin(url) {
 					if (typeof url !== "string" || url === "") {
 						return "";
 					}
-
 					try {
 						return location.origin + new URL(url, location.origin).pathname;
 					} catch (error) {
@@ -435,59 +866,229 @@
 					if (src === "") {
 						return;
 					}
-
 					var img = el("img", className);
 					img.src = src;
 					img.alt = alt || "";
 					img.loading = "lazy";
 					img.decoding = "async";
-					// A missing object should leave a gap, not a broken-image glyph.
 					img.addEventListener("error", function () {
 						img.remove();
 					});
 					parent.appendChild(img);
 				}
 
-				function facts(pairs) {
-					var present = pairs.filter(function (pair) {
-						return pair[1];
-					});
-					if (present.length === 0) {
-						return null;
+				function formatDate(value) {
+					if (!value) {
+						return "";
 					}
-
-					var list = el("dl", "facts");
-					present.forEach(function (pair) {
-						var row = el("div");
-						row.appendChild(el("dt", null, pair[0]));
-						row.appendChild(el("dd", null, pair[1]));
-						list.appendChild(row);
-					});
-
-					return list;
-				}
-
-				function section(id, title, note) {
-					var node = el("section");
-					node.id = id;
-					node.appendChild(el("h2", null, title));
-					if (note) {
-						node.appendChild(el("p", "section-note", note));
+					var parsed = new Date(value);
+					if (isNaN(parsed.getTime())) {
+						return "";
 					}
-
-					return node;
-				}
-
-				function cardGrid(items, build) {
-					var grid = el("div", "grid");
-					items.forEach(function (item) {
-						grid.appendChild(build(item));
+					return parsed.toLocaleString(undefined, {
+						dateStyle: "medium",
+						timeStyle: "short"
 					});
-
-					return grid;
 				}
 
-				/* ---- crew: information only, nothing to press ---- */
+				/** A copyable terminal line, as the deck draws it. */
+				function termLine(key, value) {
+					var row = el("div", "termline");
+					row.appendChild(el("span", "key", key));
+					row.appendChild(el("span", "value", value));
+
+					var button = el("button", "copy", "Copy");
+					button.type = "button";
+					button.addEventListener("click", function () {
+						var done = function () {
+							button.textContent = "Copied";
+							button.classList.add("done");
+							setTimeout(function () {
+								button.textContent = "Copy";
+								button.classList.remove("done");
+							}, 1400);
+						};
+						if (navigator.clipboard && navigator.clipboard.writeText) {
+							navigator.clipboard.writeText(value).then(done, function () {
+								button.textContent = "Copy failed";
+							});
+						} else {
+							button.textContent = "Copy failed";
+						}
+					});
+					row.appendChild(button);
+
+					return row;
+				}
+
+				/**
+				 * The same Markdown subset the plugin renders, with the same meanings.
+				 *
+				 * Transcribed from CyberdeckWindow.Markdown.cs: headings, bullets,
+				 * numbered lists that keep the author's own numbering, blockquotes,
+				 * horizontal rules, and inline strong / emphasis / code / links. The
+				 * colours match too, because the page is written once and read in both
+				 * places — the venue should not have to check which build it looks
+				 * right in.
+				 *
+				 * Two behaviours are carried over deliberately. Code spans copy when
+				 * clicked, which is how the syncshell ids are meant to be lifted off
+				 * the screen. And links are https only, matching what the relay
+				 * enforces on stored links; anything else stays inert text rather than
+				 * becoming a clickable javascript: or data: URL.
+				 */
+				function renderMarkdown(source, into) {
+					var INLINE =
+						/`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*|\[([^\]]+)\]\(([^)]+)\)|(https?:\/\/[^\s)]+)/g;
+
+					var isSafeLink = function (href) {
+						return /^https:\/\//i.test(String(href || ""));
+					};
+
+					var codeSpan = function (text) {
+						var node = el("code", null, text);
+						node.tabIndex = 0;
+						node.title = "Click to copy";
+						var copy = function () {
+							if (!navigator.clipboard || !navigator.clipboard.writeText) {
+								return;
+							}
+							navigator.clipboard.writeText(text).then(function () {
+								node.classList.add("copied");
+								setTimeout(function () {
+									node.classList.remove("copied");
+								}, 1400);
+							});
+						};
+						node.addEventListener("click", copy);
+						node.addEventListener("keydown", function (event) {
+							if (event.key === "Enter" || event.key === " ") {
+								event.preventDefault();
+								copy();
+							}
+						});
+						return node;
+					};
+
+					var anchor = function (label, href) {
+						if (!isSafeLink(href)) {
+							return document.createTextNode(label);
+						}
+						var node = el("a", "link", label);
+						node.href = href;
+						node.rel = "noopener noreferrer nofollow";
+						node.target = "_blank";
+						return node;
+					};
+
+					var inline = function (target, text) {
+						var cursor = 0;
+						var match;
+						INLINE.lastIndex = 0;
+
+						while ((match = INLINE.exec(text)) !== null) {
+							if (match.index > cursor) {
+								target.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+							}
+
+							if (match[1] !== undefined) {
+								target.appendChild(codeSpan(match[1]));
+							} else if (match[2] !== undefined) {
+								target.appendChild(el("strong", null, match[2]));
+							} else if (match[3] !== undefined) {
+								target.appendChild(el("em", null, match[3]));
+							} else if (match[4] !== undefined) {
+								target.appendChild(anchor(match[4], match[5]));
+							} else {
+								target.appendChild(anchor(match[6], match[6]));
+							}
+
+							cursor = match.index + match[0].length;
+						}
+
+						if (cursor < text.length) {
+							target.appendChild(document.createTextNode(text.slice(cursor)));
+						}
+					};
+
+					var block = el("div", "md");
+					var list = null;
+
+					String(source || "")
+						.replace(/\r\n/g, "\n")
+						.split("\n")
+						.forEach(function (raw) {
+							var line = raw.replace(/\s+$/, "");
+							var trimmed = line.replace(/^\s+/, "");
+
+							if (trimmed === "") {
+								list = null;
+								return;
+							}
+
+							if (trimmed === "---" || trimmed === "***" || trimmed === "___") {
+								list = null;
+								block.appendChild(sep());
+								return;
+							}
+
+							// One to three hashes only, as the deck has it: h1 cyan, the
+							// rest magenta.
+							var heading = /^(#{1,3})\s+(.*)$/.exec(trimmed);
+							if (heading) {
+								list = null;
+								block.appendChild(
+									el("p", heading[1].length === 1 ? "heading" : "heading alt", heading[2].trim())
+								);
+								return;
+							}
+
+							var bullet = /^[-*]\s+(.*)$/.exec(trimmed);
+							if (bullet) {
+								if (list === null) {
+									list = el("ul", "bullets");
+									block.appendChild(list);
+								}
+								var item = el("li");
+								inline(item, bullet[1].trim());
+								list.appendChild(item);
+								return;
+							}
+
+							list = null;
+
+							// Numbered lists keep the author's numbering rather than
+							// being renumbered.
+							var ordered = /^(\d+\.)\s+(.*)$/.exec(trimmed);
+							if (ordered) {
+								var row = el("div", "ordered");
+								row.appendChild(el("span", "marker", ordered[1]));
+								var content = el("span");
+								inline(content, ordered[2].trim());
+								row.appendChild(content);
+								block.appendChild(row);
+								return;
+							}
+
+							var quote = /^>\s+(.*)$/.exec(trimmed);
+							if (quote) {
+								var quoted = el("div", "quote");
+								var quoteBody = el("span");
+								inline(quoteBody, quote[1].trim());
+								quoted.appendChild(quoteBody);
+								block.appendChild(quoted);
+								return;
+							}
+
+							var paragraph = el("p", "body");
+							inline(paragraph, trimmed);
+							block.appendChild(paragraph);
+						});
+
+					into.appendChild(block);
+				}
+
+				/* ---- views ---- */
 
 				function crewCard(profile) {
 					var card = el("article", "card");
@@ -504,34 +1105,40 @@
 						card.appendChild(el("p", "taste", profile.genres));
 					}
 					if (profile.bio) {
-						card.appendChild(el("p", "bio", profile.bio));
+						card.appendChild(el("p", "body", profile.bio));
 					}
 
 					var optional = profile.optional || {};
-					var detail = facts([
+					var rows = [
 						["Pronouns", optional.pronouns],
 						["Race", optional.race],
 						["Affiliation", profile.affiliation],
 						["Available", optional.availability]
-					]);
-					if (detail) {
-						card.appendChild(detail);
+					].filter(function (pair) {
+						return pair[1];
+					});
+
+					if (rows.length > 0) {
+						var list = el("dl", "facts");
+						rows.forEach(function (pair) {
+							var row = el("div");
+							row.appendChild(el("dt", null, pair[0]));
+							row.appendChild(el("dd", null, pair[1]));
+							list.appendChild(row);
+						});
+						card.appendChild(list);
 					}
 
 					// requestLabel and requestMessage are deliberately not rendered.
-					// They drive an in-game /tell from the Cyberdeck; on the web they
+					// They send an in-game /tell from the plugin; on the web they
 					// would be a button that cannot do the one thing it names.
 					return card;
 				}
 
-				function renderCrew(profiles) {
-					var node = section(
-						"crew",
-						"The Crew",
-						"Who you will find behind the bar, the decks, and the lens."
-					);
-
+				function viewCrew(into) {
+					var profiles = catalog.profiles || [];
 					var placed = {};
+
 					CREW_GROUPS.forEach(function (group) {
 						var members = profiles.filter(function (profile) {
 							return profile.category === group.key;
@@ -539,171 +1146,340 @@
 						if (members.length === 0) {
 							return;
 						}
-
 						members.forEach(function (profile) {
 							placed[profile.id] = true;
 						});
-						node.appendChild(el("h3", "group-label", group.label));
-						node.appendChild(cardGrid(members, crewCard));
+
+						into.appendChild(el("p", "grouplabel", group.label));
+						var grid = el("div", "cards");
+						members.forEach(function (profile) {
+							grid.appendChild(crewCard(profile));
+						});
+						into.appendChild(grid);
 					});
 
-					// Anyone in a category this page does not know about still shows, so
-					// adding a category in the admin panel never silently drops people.
+					// A category this build does not know about still shows, so adding
+					// one in the admin panel never silently drops people.
 					var rest = profiles.filter(function (profile) {
 						return placed[profile.id] !== true;
 					});
 					if (rest.length > 0) {
-						node.appendChild(el("h3", "group-label", "Also On Shift"));
-						node.appendChild(cardGrid(rest, crewCard));
+						into.appendChild(el("p", "grouplabel", "Also On Shift"));
+						var grid = el("div", "cards");
+						rest.forEach(function (profile) {
+							grid.appendChild(crewCard(profile));
+						});
+						into.appendChild(grid);
 					}
-
-					return node;
 				}
 
-				/* ---- drinks ---- */
+				function viewMenu(into) {
+					var grid = el("div", "cards");
 
-				function drinkCard(item) {
-					var card = el("article", "card");
-					addImage(card, item.imageUrl, item.name);
+					(catalog.menu || []).forEach(function (item) {
+						var card = el("article", "card");
+						addImage(card, item.imageUrl, item.name);
 
-					var head = el("div", "drink-head");
-					head.appendChild(el("h3", null, item.name));
-					if (item.priceLabel) {
-						head.appendChild(el("span", "price", item.priceLabel));
-					}
-					card.appendChild(head);
+						var head = el("div", "drinkhead");
+						head.appendChild(el("h3", null, item.name));
+						if (item.priceLabel) {
+							head.appendChild(el("span", "price", item.priceLabel));
+						}
+						card.appendChild(head);
 
-					if (item.taste) {
-						card.appendChild(el("p", "taste", item.taste));
-					}
-					if (item.description) {
-						card.appendChild(el("p", "bio", item.description));
-					}
-					if (item.ingredients) {
-						card.appendChild(el("p", "ingredients", item.ingredients));
-					}
+						if (item.taste) {
+							card.appendChild(el("p", "taste", item.taste));
+						}
+						if (item.description) {
+							card.appendChild(el("p", "body", item.description));
+						}
+						if (item.ingredients) {
+							card.appendChild(el("p", "ingredients", item.ingredients));
+						}
 
-					return card;
+						grid.appendChild(card);
+					});
+
+					into.appendChild(grid);
 				}
 
-				function renderMenu(items) {
-					var node = section("drinks", "Drinks", "What is pouring tonight.");
-					node.appendChild(cardGrid(items, drinkCard));
+				function viewBroadcast(into) {
+					(catalog.news || []).forEach(function (post) {
+						var article = el("article", post.pinned ? "post pinned" : "post");
+						article.appendChild(el("h3", null, post.title));
 
-					return node;
-				}
+						var stamp = el("p", "stamp");
+						if (post.pinned) {
+							stamp.appendChild(el("span", "pin", "Pinned · "));
+						}
+						var when = post.eventAt ? formatDate(post.eventAt) : formatDate(post.publishedAt);
+						if (when) {
+							stamp.appendChild(
+								document.createTextNode((post.eventAt ? "Event · " : "Posted · ") + when)
+							);
+						}
+						article.appendChild(stamp);
 
-				/* ---- broadcasts ---- */
+						if (post.summary) {
+							article.appendChild(el("p", "body", post.summary));
+						}
+						if (post.body) {
+							article.appendChild(el("p", "prose", post.body));
+						}
 
-				function formatDate(value) {
-					if (!value) {
-						return "";
-					}
+						addImage(article, post.flyerUrl, post.title, "flyer");
 
-					var parsed = new Date(value);
-					if (isNaN(parsed.getTime())) {
-						return "";
-					}
+						if (post.link) {
+							var link = el("a", "link", post.linkLabel || "Open link");
+							link.href = post.link;
+							link.rel = "noopener noreferrer nofollow";
+							link.target = "_blank";
+							article.appendChild(link);
+						}
 
-					return parsed.toLocaleString(undefined, {
-						dateStyle: "medium",
-						timeStyle: "short"
+						into.appendChild(article);
 					});
 				}
 
-				function newsPost(post) {
-					var article = el("article", post.pinned ? "post pinned" : "post");
-					article.appendChild(el("h3", null, post.title));
-
-					var stamp = el("p", "stamp");
-					if (post.pinned) {
-						stamp.appendChild(el("span", "pin-flag", "Pinned · "));
-					}
-					var when = post.eventAt ? formatDate(post.eventAt) : formatDate(post.publishedAt);
-					if (when) {
-						stamp.appendChild(
-							document.createTextNode((post.eventAt ? "Event · " : "Posted · ") + when)
-						);
-					}
-					article.appendChild(stamp);
-
-					if (post.summary) {
-						article.appendChild(el("p", "bio", post.summary));
-					}
-					if (post.body) {
-						article.appendChild(el("p", "body", post.body));
-					}
-
-					addImage(article, post.flyerUrl, post.title, "flyer");
-
-					if (post.link) {
-						var link = el("a", "link", post.linkLabel || "Open link");
-						link.href = post.link;
-						link.rel = "noopener noreferrer nofollow";
-						link.target = "_blank";
-						article.appendChild(link);
-					}
-
-					return article;
+				function discordLink() {
+					var link = el("a", "link", "Discord");
+					link.href = DECK.discord;
+					link.rel = "noopener noreferrer nofollow";
+					link.target = "_blank";
+					return link;
 				}
 
-				function renderNews(posts) {
-					var node = section("broadcasts", "Broadcasts", "Events and notices from the venue.");
-					posts.forEach(function (post) {
-						node.appendChild(newsPost(post));
+				function viewWifi(into) {
+					// A published page replaces this screen wholesale, exactly as it
+					// does in the plugin, so relay ids and house rules can change
+					// without touching either build.
+					var page = findPage("wifi");
+					if (page) {
+						renderMarkdown(page.body, into);
+						into.appendChild(discordLink());
+						return;
+					}
+
+					DECK.relays.forEach(function (relay) {
+						into.appendChild(el("p", "heading", relay.name));
+						into.appendChild(termLine("Id", relay.id));
+						into.appendChild(el("p", "muted", "No password required"));
 					});
 
-					return node;
+					into.appendChild(sep());
+					DECK.rules.forEach(function (rule) {
+						into.appendChild(el("p", "body", rule));
+					});
+					into.appendChild(discordLink());
 				}
 
-				/* ---- info pages ---- */
+				function viewAddress(into) {
+					into.appendChild(el("p", "body", DECK.address));
+					into.appendChild(termLine("Address", DECK.address));
+					// The deck's other control here is a Lifestream teleport, which
+					// only means anything inside the game, so it is not offered.
+					into.appendChild(
+						el("p", "muted", "Travel there in game, or copy the address for Lifestream.")
+					);
+				}
 
-				function renderPages(pages) {
-					var node = section("info", "Info", "House rules, connection details, and the rest.");
-					pages.forEach(function (page) {
-						var panel = el("div", "page-panel");
-						panel.appendChild(el("h3", null, page.title));
-						panel.appendChild(el("p", "body", page.body));
-						node.appendChild(panel);
+				/* ---- home ---- */
+
+				function findPage(id) {
+					return (catalog.pages || []).filter(function (page) {
+						return page.id === id;
+					})[0];
+				}
+
+				function addressTelemetry() {
+					var segments = DECK.address.split(/\s+/).filter(Boolean);
+					return segments.slice(Math.max(0, segments.length - 3)).join(" ").toUpperCase();
+				}
+
+				/**
+				 * The tiles, in the plugin's own order. A tile with nothing behind it
+				 * is left out rather than opening an empty screen.
+				 */
+				function tiles() {
+					var menu = catalog.menu || [];
+					var profiles = catalog.profiles || [];
+					var news = catalog.news || [];
+					var built = [];
+
+					if (menu.length > 0) {
+						built.push({
+							id: "menu",
+							label: "Menu",
+							art: "menu",
+							telemetry: pad(menu.length) + " ITEMS"
+						});
+					}
+
+					built.push({
+						id: "wifi",
+						label: "Wi-Fi",
+						art: "wifi",
+						telemetry: pad(DECK.relays.length) + " RELAYS"
 					});
 
-					return node;
+					built.push({
+						id: "address",
+						label: "Address",
+						art: "address",
+						telemetry: addressTelemetry()
+					});
+
+					if (profiles.length > 0) {
+						built.push({
+							id: "crew",
+							label: "Crew",
+							art: "services",
+							telemetry:
+								pad(profiles.length) + (profiles.length === 1 ? " PROFILE" : " PROFILES")
+						});
+					}
+
+					if (news.length > 0) {
+						built.push({
+							id: "broadcast",
+							label: "Broadcast",
+							art: "broadcast",
+							telemetry: pad(news.length) + (news.length === 1 ? " POST" : " POSTS"),
+							wide: true,
+							badge: news.filter(function (post) {
+								return post.pinned;
+							}).length
+						});
+					}
+
+					return built;
 				}
+
+				function tileButton(spec) {
+					var button = el("button", spec.wide ? "tile wide" : "tile");
+					button.type = "button";
+
+					var art = el("div", "art");
+					art.style.backgroundImage = 'url("/assets/' + spec.art + '.webp")';
+					button.appendChild(art);
+
+					if (spec.badge > 0) {
+						button.appendChild(el("span", "badge", String(spec.badge)));
+					}
+
+					button.appendChild(el("span", "label", spec.label));
+					button.appendChild(el("span", "telemetry", spec.telemetry));
+					button.addEventListener("click", function () {
+						go(spec.id);
+					});
+
+					return button;
+				}
+
+				function viewHome(into) {
+					var hero = el("div", "hero");
+					var logo = el("img");
+					logo.src = "/assets/grid.webp";
+					logo.alt = "";
+					hero.appendChild(logo);
+
+					var block = el("div");
+					block.appendChild(el("h1", null, "THE GRID"));
+					block.appendChild(el("p", null, "Eorzea · Raiden · " + addressTelemetry()));
+					hero.appendChild(block);
+					into.appendChild(hero);
+
+					into.appendChild(sep());
+
+					// The banner mirrors the deck's: the newest pinned post, promoted
+					// to the home screen so it is seen without opening anything.
+					var pinned = (catalog.news || []).filter(function (post) {
+						return post.pinned;
+					})[0];
+					if (pinned) {
+						var banner = el("button", "banner");
+						banner.type = "button";
+						banner.appendChild(el("span", "flag", "Broadcast"));
+						banner.appendChild(el("span", "headline", pinned.title));
+						banner.addEventListener("click", function () {
+							go("broadcast");
+						});
+						into.appendChild(banner);
+					}
+
+					var grid = el("div", "tiles");
+					tiles().forEach(function (spec) {
+						grid.appendChild(tileButton(spec));
+					});
+					into.appendChild(grid);
+				}
+
+				/* ---- routing ---- */
+
+				var VIEWS = {
+					menu: { title: "Menu", render: viewMenu },
+					wifi: { title: "Wi-Fi / Syncshell", render: viewWifi },
+					address: { title: "Address", render: viewAddress },
+					crew: { title: "The Crew", render: viewCrew },
+					broadcast: { title: "Broadcast", render: viewBroadcast }
+				};
+
+				function go(id) {
+					// Through the hash, so the browser's own back button walks the
+					// deck's screens instead of leaving the site.
+					location.hash = id ? "#" + id : "";
+				}
+
+				function currentView() {
+					var id = location.hash.replace(/^#/, "");
+					return Object.hasOwn(VIEWS, id) ? id : "";
+				}
+
+				function paint() {
+					if (catalog === null) {
+						return;
+					}
+
+					var screen = document.getElementById("screen");
+					screen.textContent = "";
+
+					var id = currentView();
+					if (id === "") {
+						viewHome(screen);
+						document.getElementById("barstate").textContent = "HOME";
+						return;
+					}
+
+					var view = VIEWS[id];
+					var bar = el("div", "viewbar");
+					var back = el("button", "back", "< HOME");
+					back.type = "button";
+					back.addEventListener("click", function () {
+						go("");
+					});
+					bar.appendChild(back);
+					bar.appendChild(el("span", "viewtitle", "// " + view.title.toUpperCase()));
+					screen.appendChild(bar);
+					screen.appendChild(sep());
+
+					var content = el("div");
+					view.render(content);
+					screen.appendChild(content);
+
+					document.getElementById("barstate").textContent = view.title.toUpperCase();
+					screen.scrollIntoView({ block: "start", behavior: "auto" });
+				}
+
+				window.addEventListener("hashchange", paint);
 
 				/* ---- boot ---- */
 
-				function render(catalog) {
-					var main = document.getElementById("main");
-					main.textContent = "";
-
-					var sections = [
-						{ items: catalog.news || [], build: renderNews },
-						{ items: catalog.profiles || [], build: renderCrew },
-						{ items: catalog.menu || [], build: renderMenu },
-						{ items: catalog.pages || [], build: renderPages }
-					];
-
-					var rendered = 0;
-					sections.forEach(function (entry) {
-						// An empty collection is a section that is not ready yet, not an
-						// error. Leaving it out beats printing an empty heading.
-						if (entry.items.length === 0) {
-							return;
-						}
-
-						main.appendChild(entry.build(entry.items));
-						rendered += 1;
-					});
-
-					if (rendered === 0) {
-						main.appendChild(el("p", "status", "Nothing published yet. Check back soon."));
-					}
-				}
-
-				function fail(message) {
-					var main = document.getElementById("main");
-					main.textContent = "";
-					main.appendChild(el("p", "status error", message));
+				function fault(message) {
+					var screen = document.getElementById("screen");
+					screen.textContent = "";
+					screen.appendChild(el("p", "status error", message));
+					document.getElementById("lamp").className = "lamp fault";
+					document.getElementById("barstate").textContent = "OFFLINE";
 				}
 
 				fetch("/v1/catalog", { headers: { accept: "application/json" } })
@@ -714,15 +1490,23 @@
 						if (!response.ok) {
 							throw new Error("http " + response.status);
 						}
-
 						return response.json();
 					})
-					.then(render)
+					.then(function (data) {
+						catalog = data;
+						document.getElementById("lamp").className = "lamp online";
+						document.getElementById("footleft").textContent = "RELAY // ONLINE";
+						var updated = formatDate(data.updatedAt);
+						document.getElementById("footright").textContent = updated
+							? "SYNC " + updated
+							: "";
+						paint();
+					})
 					.catch(function (error) {
-						fail(
+						fault(
 							error && error.message === "busy"
-								? "The grid is busy right now. Try again in a minute."
-								: "Could not reach the grid. Try again shortly."
+								? "Relay busy. Try again in a minute."
+								: "Relay unreachable. Try again shortly."
 						);
 					});
 			})();
