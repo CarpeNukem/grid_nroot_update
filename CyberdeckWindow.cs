@@ -1646,12 +1646,19 @@ internal sealed partial class CyberdeckWindow
             OpenDiscord();
     }
 
+    /// <summary>
+    /// The Services screen, in two groups.
+    ///
+    /// Split by the question a guest is asking — "who is here?" against "what
+    /// can I do?" — rather than by what each feature is internally. Tarot sits
+    /// with the activities because that is what it is from the guest's side,
+    /// whether they read for themselves or ask the reader for a live one.
+    ///
+    /// The previous arrangement gave tarot a heading of its own above a single
+    /// card, which cost a header's height for one row in a window that has six.
+    /// </summary>
     private void DrawServicesView()
     {
-        DrawSettingsGroupHeader("TAROT");
-        DrawMutedWrapped("Quick local readings and live readings with The Grid's tarot reader.");
-        ImGui.Spacing();
-
         var uiScale = GetUiScale();
         var spacing = ImGui.GetStyle().ItemSpacing.X;
         var availableWidth = ImGui.GetContentRegionAvail().X;
@@ -1661,28 +1668,7 @@ internal sealed partial class CyberdeckWindow
             : availableWidth;
         var cardSize = new Vector2(cardWidth, 232 * uiScale);
 
-        var openArcana = DrawServiceLauncherCard(
-            "ARCANA CAST",
-            "Tarot reading",
-            config.TarotHost ? "HOST CONSOLE" : "SELF-GUIDED / LIVE",
-            "tarot.png",
-            CyberdeckTheme.Palette.Magenta,
-            cardSize,
-            portrait: false);
-
-        if (openArcana)
-        {
-            if (config.TarotHost)
-                OpenTarotDebug();
-            else
-                OpenTarotRequestWindow();
-        }
-
-        ImGui.Spacing();
-        ImGui.Spacing();
-        DrawNeonSeparator();
-        ImGui.Spacing();
-        DrawSettingsGroupHeader("STAFF DIRECTORY");
+        DrawSettingsGroupHeader("THE CREW");
         DrawMutedWrapped("Staff profiles, portfolios, and music links.");
         ImGui.Spacing();
 
@@ -1730,9 +1716,26 @@ internal sealed partial class CyberdeckWindow
         ImGui.Spacing();
         DrawNeonSeparator();
         ImGui.Spacing();
-        DrawSettingsGroupHeader("HACKING ACTIVITIES");
-        DrawMutedWrapped("Local challenges available through the Cyberdeck.");
+        DrawSettingsGroupHeader("ACTIVITIES");
+        DrawMutedWrapped("Readings and local challenges available through the Cyberdeck.");
         ImGui.Spacing();
+
+        if (DrawServiceLauncherCard(
+            "ARCANA CAST",
+            "Tarot reading",
+            config.TarotHost ? "HOST CONSOLE" : "SELF-GUIDED / LIVE",
+            "tarot.png",
+            CyberdeckTheme.Palette.Magenta,
+            cardSize,
+            portrait: false))
+        {
+            if (config.TarotHost)
+                OpenTarotDebug();
+            else
+                OpenTarotRequestWindow();
+        }
+
+        StartNextCardInSection(1);
 
         if (DrawServiceLauncherCard(
             "BREACH PROTOCOL",
@@ -1744,7 +1747,7 @@ internal sealed partial class CyberdeckWindow
             portrait: false))
             OpenIntrusionGame();
 
-        StartNextCardInSection(1);
+        StartNextCardInSection(2);
 
         if (DrawServiceLauncherCard(
             "CIPHER VAULT",
@@ -1756,6 +1759,8 @@ internal sealed partial class CyberdeckWindow
             portrait: false))
             OpenCipherVault();
 
+        // Cards run two to a row when there is width for it. The index is the
+        // card's position within its own group, so each group starts a fresh row.
         void StartNextCardInSection(int index)
         {
             if (useTwoColumns && index % 2 == 1)
