@@ -30,6 +30,17 @@ internal sealed partial class CyberdeckWindow
     private bool focusFlyerWindow;
     private NewsPost? flyerWindowPost;
 
+    /// <summary>
+    /// Id of the post the flyer window has already been sized to fit.
+    ///
+    /// Cleared every time the window is opened, so each flyer gets a window
+    /// shaped for it, and left alone afterwards so a size the reader drags to
+    /// survives until they close it. The art loads over the network and is not
+    /// always ready on the first frame, so this stays empty until there is a
+    /// texture to measure and the fit is retried until then.
+    /// </summary>
+    private string flyerWindowSizedFor = string.Empty;
+
     private int CountUnreadNews(CatalogSnapshot news)
     {
         var lastSeen = DateTimeOffset.FromUnixTimeMilliseconds(Math.Max(0, config.LastSeenNewsUnixMs));
@@ -260,6 +271,35 @@ internal sealed partial class CyberdeckWindow
         flyerWindowPost = post;
         flyerWindowOpen = true;
         focusFlyerWindow = true;
+        flyerWindowSizedFor = string.Empty;
+    }
+
+    /// <summary>
+    /// A window big enough to show the flyer at its own size.
+    ///
+    /// The point of opening it is to see the art properly, so the window is
+    /// shaped to the art rather than the art squeezed into a fixed rectangle:
+    /// a 512x768 poster in the old 520x560 default came out around a third of
+    /// native, which is smaller than the feed thumbnail deserves to lead to.
+    ///
+    /// <see cref="FitFlyer"/> never scales above 1.0, so this asks for the
+    /// space that lets it reach exactly native and no further. Anything larger
+    /// than the display is clipped by the caller's constraints.
+    /// </summary>
+    private static Vector2 FlyerWindowSizeFor(IDalamudTextureWrap flyer, float uiScale)
+    {
+        // Title bar and padding (~40), the title, event line and separator above
+        // the art (~70 when the title wraps to two lines), and the 110 the draw
+        // reserves below it for the summary. Rounded up on purpose: overshooting
+        // leaves a little space under the text, while undershooting is the very
+        // thing this exists to fix.
+        var chrome = new Vector2(30f, 240f) * uiScale;
+        var fitted = new Vector2(flyer.Width, flyer.Height) + chrome;
+
+        // Small art must not drag the window down with it: the title, the event
+        // line and the summary still have to be readable, and shaping the window
+        // to a 200px thumbnail would leave them in a column two words wide.
+        return Vector2.Max(fitted, new Vector2(420f, 380f) * uiScale);
     }
 
     /// <summary>
@@ -280,11 +320,24 @@ internal sealed partial class CyberdeckWindow
         using var fontScale = CyberdeckTheme.PushFontScale(uiScale);
         using var theme = CyberdeckTheme.Push(uiScale);
 
+        // The default only applies until a flyer has been measured, and covers
+        // animated art, which has no texture here to size against.
         ImGui.SetNextWindowSize(new Vector2(520, 560) * uiScale, ImGuiCond.FirstUseEver);
+
+        var openedFlyer = GetNewsFlyer(post);
+        if (openedFlyer is not null && !string.Equals(flyerWindowSizedFor, post.Id, StringComparison.Ordinal))
+        {
+            ImGui.SetNextWindowSize(FlyerWindowSizeFor(openedFlyer, uiScale), ImGuiCond.Always);
+            flyerWindowSizedFor = post.Id;
+        }
+
+        // The ceiling is generous because the constraint helper clamps it to the
+        // display anyway; a low logical maximum would undo the fit above on any
+        // flyer taller than it.
         var (minimumSize, maximumSize) = CyberdeckTheme.ResolveWindowConstraints(
             uiScale,
             new Vector2(320, 260),
-            new Vector2(1100, 1000));
+            new Vector2(2400, 2200));
         ImGui.SetNextWindowSizeConstraints(minimumSize, maximumSize);
 
         if (focusFlyerWindow)
