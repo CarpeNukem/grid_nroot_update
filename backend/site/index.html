@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+		<!--
+			Unlisted, not hidden. The venue shares this link with its own guests; it
+			is not meant to be found by searching a staff member's character name.
+			The Worker sends X-Robots-Tag alongside this tag, and that is the one
+			that also covers the JSON and the images, which no meta tag can reach.
+		-->
+		<meta name="robots" content="noindex, nofollow, noarchive, noimageindex" />
+
+		<title>The Grid</title>
+		<meta name="description" content="Drinks, crew, and broadcasts from The Grid." />
+
+		<style>
+			:root {
+				--bg: #05070d;
+				--panel: #0b1018;
+				--panel-edge: #16202e;
+				--ink: #d6e2f0;
+				--soft: #aebbcd;
+				--muted: #7c8ba0;
+				--faint: #5f6d80;
+				--cyan: #35e0ee;
+				--magenta: #ff4fd8;
+				--amber: #ffb648;
+				--font: "Segoe UI", system-ui, -apple-system, sans-serif;
+				--mono: "Cascadia Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+			}
+
+			*,
+			*::before,
+			*::after {
+				box-sizing: border-box;
+			}
+
+			body {
+				margin: 0;
+				background: var(--bg);
+				color: var(--ink);
+				font-family: var(--font);
+				line-height: 1.6;
+				/* Faint scanline wash, purely decorative. */
+				background-image: repeating-linear-gradient(
+					to bottom,
+					rgba(53, 224, 238, 0.03) 0 1px,
+					transparent 1px 3px
+				);
+			}
+
+			.wrap {
+				max-width: 60rem;
+				margin: 0 auto;
+				padding: 2rem 1.25rem 5rem;
+			}
+
+			/* ---- masthead ---- */
+
+			header.masthead {
+				padding: 2rem 0 1rem;
+				border-bottom: 1px solid var(--panel-edge);
+			}
+
+			.mark {
+				font-family: var(--mono);
+				font-size: clamp(2rem, 8vw, 3.5rem);
+				letter-spacing: 0.18em;
+				margin: 0;
+				color: var(--cyan);
+				text-shadow: 0 0 18px rgba(53, 224, 238, 0.45);
+			}
+
+			.tagline {
+				color: var(--muted);
+				font-family: var(--mono);
+				letter-spacing: 0.14em;
+				font-size: 0.8rem;
+				text-transform: uppercase;
+				margin: 0.5rem 0 0;
+			}
+
+			nav.jump {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 1.25rem;
+				margin-top: 1.5rem;
+				font-family: var(--mono);
+				font-size: 0.78rem;
+				letter-spacing: 0.16em;
+				text-transform: uppercase;
+			}
+
+			nav.jump a {
+				color: var(--muted);
+				text-decoration: none;
+				border-bottom: 1px solid transparent;
+				padding-bottom: 2px;
+			}
+
+			nav.jump a:hover,
+			nav.jump a:focus-visible {
+				color: var(--cyan);
+				border-bottom-color: var(--cyan);
+			}
+
+			/* ---- sections ---- */
+
+			section {
+				margin-top: 3.5rem;
+				scroll-margin-top: 1rem;
+			}
+
+			h2 {
+				font-family: var(--mono);
+				font-size: 0.85rem;
+				letter-spacing: 0.24em;
+				text-transform: uppercase;
+				color: var(--amber);
+				margin: 0 0 0.25rem;
+			}
+
+			h2::before {
+				content: "// ";
+				opacity: 0.5;
+			}
+
+			.section-note {
+				color: var(--muted);
+				font-size: 0.9rem;
+				margin: 0 0 1.5rem;
+			}
+
+			.group-label {
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				letter-spacing: 0.2em;
+				text-transform: uppercase;
+				color: var(--magenta);
+				margin: 2rem 0 0.9rem;
+			}
+
+			.grid {
+				display: grid;
+				gap: 1rem;
+				grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+			}
+
+			/* No hover lift, no pointer cursor: these are notices, not controls. */
+			.card {
+				background: var(--panel);
+				border: 1px solid var(--panel-edge);
+				border-radius: 3px;
+				padding: 1rem 1.1rem 1.2rem;
+			}
+
+			.card img {
+				display: block;
+				width: 100%;
+				aspect-ratio: 4 / 5;
+				object-fit: cover;
+				border-radius: 2px;
+				margin: -0.25rem 0 0.9rem;
+				background: #070b12;
+			}
+
+			.card h3 {
+				margin: 0;
+				font-size: 1.05rem;
+				color: var(--ink);
+			}
+
+			.handle {
+				font-family: var(--mono);
+				font-size: 0.78rem;
+				color: var(--cyan);
+				margin: 0.15rem 0 0;
+				word-break: break-word;
+			}
+
+			.role {
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				letter-spacing: 0.12em;
+				text-transform: uppercase;
+				color: var(--muted);
+				margin: 0.5rem 0 0;
+			}
+
+			.bio {
+				font-size: 0.9rem;
+				color: var(--soft);
+				margin: 0.75rem 0 0;
+			}
+
+			.facts {
+				margin: 0.75rem 0 0;
+				font-size: 0.82rem;
+				color: var(--muted);
+			}
+
+			.facts div {
+				display: flex;
+				gap: 0.5rem;
+			}
+
+			.facts dt {
+				font-family: var(--mono);
+				font-size: 0.7rem;
+				letter-spacing: 0.1em;
+				text-transform: uppercase;
+				min-width: 6.5rem;
+				color: var(--faint);
+			}
+
+			.facts dd {
+				margin: 0;
+			}
+
+			/* ---- drinks ---- */
+
+			.drink-head {
+				display: flex;
+				justify-content: space-between;
+				align-items: baseline;
+				gap: 1rem;
+			}
+
+			.price {
+				font-family: var(--mono);
+				color: var(--amber);
+				font-size: 0.85rem;
+				white-space: nowrap;
+			}
+
+			.taste {
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				letter-spacing: 0.1em;
+				text-transform: uppercase;
+				color: var(--magenta);
+				margin: 0.4rem 0 0;
+			}
+
+			.ingredients {
+				font-size: 0.82rem;
+				color: var(--muted);
+				margin: 0.6rem 0 0;
+				font-style: italic;
+			}
+
+			/* ---- broadcasts ---- */
+
+			.post {
+				background: var(--panel);
+				border: 1px solid var(--panel-edge);
+				border-left: 2px solid var(--cyan);
+				border-radius: 3px;
+				padding: 1.1rem 1.25rem 1.25rem;
+				margin-bottom: 1rem;
+			}
+
+			.post.pinned {
+				border-left-color: var(--amber);
+			}
+
+			.post h3 {
+				margin: 0;
+				font-size: 1.15rem;
+			}
+
+			.stamp {
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				letter-spacing: 0.1em;
+				text-transform: uppercase;
+				color: var(--muted);
+				margin: 0.3rem 0 0;
+			}
+
+			.pin-flag {
+				color: var(--amber);
+			}
+
+			.post .body {
+				white-space: pre-wrap;
+				margin: 0.8rem 0 0;
+				font-size: 0.92rem;
+			}
+
+			.post img.flyer {
+				display: block;
+				width: 100%;
+				max-width: 26rem;
+				border-radius: 2px;
+				margin: 1rem 0 0;
+			}
+
+			.post a.link {
+				display: inline-block;
+				margin-top: 0.9rem;
+				font-family: var(--mono);
+				font-size: 0.78rem;
+				letter-spacing: 0.1em;
+				color: var(--cyan);
+			}
+
+			/* ---- info pages ---- */
+
+			.page-panel {
+				background: var(--panel);
+				border: 1px solid var(--panel-edge);
+				border-radius: 3px;
+				padding: 1.1rem 1.25rem 1.25rem;
+				margin-bottom: 1rem;
+			}
+
+			.page-panel h3 {
+				margin: 0 0 0.6rem;
+				font-family: var(--mono);
+				font-size: 0.8rem;
+				letter-spacing: 0.16em;
+				text-transform: uppercase;
+				color: var(--cyan);
+			}
+
+			.page-panel .body {
+				white-space: pre-wrap;
+				font-size: 0.92rem;
+			}
+
+			/* ---- states ---- */
+
+			.status {
+				font-family: var(--mono);
+				font-size: 0.85rem;
+				color: var(--muted);
+				padding: 3rem 0;
+				text-align: center;
+			}
+
+			.status.error {
+				color: var(--magenta);
+			}
+
+			footer {
+				margin-top: 4rem;
+				padding-top: 1.5rem;
+				border-top: 1px solid var(--panel-edge);
+				color: var(--faint);
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				letter-spacing: 0.1em;
+			}
+		</style>
+	</head>
+
+	<body>
+		<div class="wrap">
+			<header class="masthead">
+				<h1 class="mark">THE GRID</h1>
+				<p class="tagline">Eorzea &middot; Raiden &middot; Venue Terminal</p>
+				<nav class="jump" aria-label="Sections">
+					<a href="#broadcasts">Broadcasts</a>
+					<a href="#crew">Crew</a>
+					<a href="#drinks">Drinks</a>
+					<a href="#info">Info</a>
+				</nav>
+			</header>
+
+			<main id="main">
+				<p class="status" id="status">Connecting to the grid&hellip;</p>
+			</main>
+
+			<footer>
+				<p>The Grid &middot; unlisted venue terminal &middot; not affiliated with Square Enix</p>
+			</footer>
+		</div>
+
+		<script>
+			(function () {
+				"use strict";
+
+				/**
+				 * Read-only mirror of the venue catalogue.
+				 *
+				 * Every node here is built with createElement and textContent rather
+				 * than innerHTML. The content is editor-authored and passes server-side
+				 * validation, but it is still stored text arriving over the network:
+				 * building nodes means a stray angle bracket in a drink description
+				 * renders as an angle bracket and can never become markup.
+				 */
+
+				var CREW_GROUPS = [
+					{ key: "photography", label: "Visual Capture" },
+					{ key: "dj", label: "Resident DJs" },
+					{ key: "bar", label: "Bar Staff" }
+				];
+
+				function el(tag, className, text) {
+					var node = document.createElement(tag);
+					if (className) {
+						node.className = className;
+					}
+					if (text !== undefined && text !== null && text !== "") {
+						node.textContent = text;
+					}
+					return node;
+				}
+
+				/**
+				 * Points a media URL at whichever host is serving this page.
+				 *
+				 * The catalogue hands out absolute URLs on the API hostname, but the
+				 * same Worker serves /media on every hostname it answers. Rewriting to
+				 * the current origin keeps the image CSP at 'self' rather than having
+				 * to name a second host in it.
+				 */
+				function sameOrigin(url) {
+					if (typeof url !== "string" || url === "") {
+						return "";
+					}
+
+					try {
+						return location.origin + new URL(url, location.origin).pathname;
+					} catch (error) {
+						return "";
+					}
+				}
+
+				function addImage(parent, url, alt, className) {
+					var src = sameOrigin(url);
+					if (src === "") {
+						return;
+					}
+
+					var img = el("img", className);
+					img.src = src;
+					img.alt = alt || "";
+					img.loading = "lazy";
+					img.decoding = "async";
+					// A missing object should leave a gap, not a broken-image glyph.
+					img.addEventListener("error", function () {
+						img.remove();
+					});
+					parent.appendChild(img);
+				}
+
+				function facts(pairs) {
+					var present = pairs.filter(function (pair) {
+						return pair[1];
+					});
+					if (present.length === 0) {
+						return null;
+					}
+
+					var list = el("dl", "facts");
+					present.forEach(function (pair) {
+						var row = el("div");
+						row.appendChild(el("dt", null, pair[0]));
+						row.appendChild(el("dd", null, pair[1]));
+						list.appendChild(row);
+					});
+
+					return list;
+				}
+
+				function section(id, title, note) {
+					var node = el("section");
+					node.id = id;
+					node.appendChild(el("h2", null, title));
+					if (note) {
+						node.appendChild(el("p", "section-note", note));
+					}
+
+					return node;
+				}
+
+				function cardGrid(items, build) {
+					var grid = el("div", "grid");
+					items.forEach(function (item) {
+						grid.appendChild(build(item));
+					});
+
+					return grid;
+				}
+
+				/* ---- crew: information only, nothing to press ---- */
+
+				function crewCard(profile) {
+					var card = el("article", "card");
+					addImage(card, profile.imageUrl, profile.name);
+					card.appendChild(el("h3", null, profile.name));
+
+					if (profile.characterName) {
+						card.appendChild(el("p", "handle", profile.characterName));
+					}
+					if (profile.occupation) {
+						card.appendChild(el("p", "role", profile.occupation));
+					}
+					if (profile.genres) {
+						card.appendChild(el("p", "taste", profile.genres));
+					}
+					if (profile.bio) {
+						card.appendChild(el("p", "bio", profile.bio));
+					}
+
+					var optional = profile.optional || {};
+					var detail = facts([
+						["Pronouns", optional.pronouns],
+						["Race", optional.race],
+						["Affiliation", profile.affiliation],
+						["Available", optional.availability]
+					]);
+					if (detail) {
+						card.appendChild(detail);
+					}
+
+					// requestLabel and requestMessage are deliberately not rendered.
+					// They drive an in-game /tell from the Cyberdeck; on the web they
+					// would be a button that cannot do the one thing it names.
+					return card;
+				}
+
+				function renderCrew(profiles) {
+					var node = section(
+						"crew",
+						"The Crew",
+						"Who you will find behind the bar, the decks, and the lens."
+					);
+
+					var placed = {};
+					CREW_GROUPS.forEach(function (group) {
+						var members = profiles.filter(function (profile) {
+							return profile.category === group.key;
+						});
+						if (members.length === 0) {
+							return;
+						}
+
+						members.forEach(function (profile) {
+							placed[profile.id] = true;
+						});
+						node.appendChild(el("h3", "group-label", group.label));
+						node.appendChild(cardGrid(members, crewCard));
+					});
+
+					// Anyone in a category this page does not know about still shows, so
+					// adding a category in the admin panel never silently drops people.
+					var rest = profiles.filter(function (profile) {
+						return placed[profile.id] !== true;
+					});
+					if (rest.length > 0) {
+						node.appendChild(el("h3", "group-label", "Also On Shift"));
+						node.appendChild(cardGrid(rest, crewCard));
+					}
+
+					return node;
+				}
+
+				/* ---- drinks ---- */
+
+				function drinkCard(item) {
+					var card = el("article", "card");
+					addImage(card, item.imageUrl, item.name);
+
+					var head = el("div", "drink-head");
+					head.appendChild(el("h3", null, item.name));
+					if (item.priceLabel) {
+						head.appendChild(el("span", "price", item.priceLabel));
+					}
+					card.appendChild(head);
+
+					if (item.taste) {
+						card.appendChild(el("p", "taste", item.taste));
+					}
+					if (item.description) {
+						card.appendChild(el("p", "bio", item.description));
+					}
+					if (item.ingredients) {
+						card.appendChild(el("p", "ingredients", item.ingredients));
+					}
+
+					return card;
+				}
+
+				function renderMenu(items) {
+					var node = section("drinks", "Drinks", "What is pouring tonight.");
+					node.appendChild(cardGrid(items, drinkCard));
+
+					return node;
+				}
+
+				/* ---- broadcasts ---- */
+
+				function formatDate(value) {
+					if (!value) {
+						return "";
+					}
+
+					var parsed = new Date(value);
+					if (isNaN(parsed.getTime())) {
+						return "";
+					}
+
+					return parsed.toLocaleString(undefined, {
+						dateStyle: "medium",
+						timeStyle: "short"
+					});
+				}
+
+				function newsPost(post) {
+					var article = el("article", post.pinned ? "post pinned" : "post");
+					article.appendChild(el("h3", null, post.title));
+
+					var stamp = el("p", "stamp");
+					if (post.pinned) {
+						stamp.appendChild(el("span", "pin-flag", "Pinned · "));
+					}
+					var when = post.eventAt ? formatDate(post.eventAt) : formatDate(post.publishedAt);
+					if (when) {
+						stamp.appendChild(
+							document.createTextNode((post.eventAt ? "Event · " : "Posted · ") + when)
+						);
+					}
+					article.appendChild(stamp);
+
+					if (post.summary) {
+						article.appendChild(el("p", "bio", post.summary));
+					}
+					if (post.body) {
+						article.appendChild(el("p", "body", post.body));
+					}
+
+					addImage(article, post.flyerUrl, post.title, "flyer");
+
+					if (post.link) {
+						var link = el("a", "link", post.linkLabel || "Open link");
+						link.href = post.link;
+						link.rel = "noopener noreferrer nofollow";
+						link.target = "_blank";
+						article.appendChild(link);
+					}
+
+					return article;
+				}
+
+				function renderNews(posts) {
+					var node = section("broadcasts", "Broadcasts", "Events and notices from the venue.");
+					posts.forEach(function (post) {
+						node.appendChild(newsPost(post));
+					});
+
+					return node;
+				}
+
+				/* ---- info pages ---- */
+
+				function renderPages(pages) {
+					var node = section("info", "Info", "House rules, connection details, and the rest.");
+					pages.forEach(function (page) {
+						var panel = el("div", "page-panel");
+						panel.appendChild(el("h3", null, page.title));
+						panel.appendChild(el("p", "body", page.body));
+						node.appendChild(panel);
+					});
+
+					return node;
+				}
+
+				/* ---- boot ---- */
+
+				function render(catalog) {
+					var main = document.getElementById("main");
+					main.textContent = "";
+
+					var sections = [
+						{ items: catalog.news || [], build: renderNews },
+						{ items: catalog.profiles || [], build: renderCrew },
+						{ items: catalog.menu || [], build: renderMenu },
+						{ items: catalog.pages || [], build: renderPages }
+					];
+
+					var rendered = 0;
+					sections.forEach(function (entry) {
+						// An empty collection is a section that is not ready yet, not an
+						// error. Leaving it out beats printing an empty heading.
+						if (entry.items.length === 0) {
+							return;
+						}
+
+						main.appendChild(entry.build(entry.items));
+						rendered += 1;
+					});
+
+					if (rendered === 0) {
+						main.appendChild(el("p", "status", "Nothing published yet. Check back soon."));
+					}
+				}
+
+				function fail(message) {
+					var main = document.getElementById("main");
+					main.textContent = "";
+					main.appendChild(el("p", "status error", message));
+				}
+
+				fetch("/v1/catalog", { headers: { accept: "application/json" } })
+					.then(function (response) {
+						if (response.status === 429) {
+							throw new Error("busy");
+						}
+						if (!response.ok) {
+							throw new Error("http " + response.status);
+						}
+
+						return response.json();
+					})
+					.then(render)
+					.catch(function (error) {
+						fail(
+							error && error.message === "busy"
+								? "The grid is busy right now. Try again in a minute."
+								: "Could not reach the grid. Try again shortly."
+						);
+					});
+			})();
+		</script>
+	</body>
+</html>

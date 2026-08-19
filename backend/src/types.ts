@@ -15,6 +15,15 @@ export interface Env {
 	readonly PUBLIC_MEDIA_BASE_URL: string;
 	readonly ADMIN_ALLOWED_ORIGIN: string;
 
+	/**
+	 * The only hostname on which the admin page and admin API are served.
+	 *
+	 * Optional in the type because development does not set it, but deployed it
+	 * must match the hostname Cloudflare Access protects. Unset in production
+	 * denies admin everywhere — see `isAdminHostname`.
+	 */
+	readonly ADMIN_HOSTNAME?: string;
+
 	readonly CF_ACCESS_AUD?: string;
 	readonly CF_ACCESS_TEAM_DOMAIN?: string;
 	readonly ADMIN_ALLOWED_EMAILS?: string;

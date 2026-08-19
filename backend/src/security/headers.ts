@@ -11,6 +11,15 @@ export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
 	"referrer-policy": "no-referrer",
 	"x-frame-options": "DENY",
 	"content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+	// The venue site is public but deliberately unlisted: staff profiles carry
+	// character names, and being reachable is not the same as being searchable.
+	// Sent as a header rather than only a meta tag so it also covers the JSON
+	// and the images, which no <meta> can reach.
+	//
+	// Note the matching robots.txt permits crawling. A Disallow would be
+	// counterproductive here — a crawler that is refused the page never reads
+	// this header, and can still list the bare URL from a link elsewhere.
+	"x-robots-tag": "noindex, nofollow",
 };
 
 /** Cache-Control values. Public reads are cacheable; everything else is not. */

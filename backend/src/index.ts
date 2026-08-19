@@ -4,6 +4,7 @@ import { routes } from "./routes/index.js";
 import { matchRoute } from "./routes/router.js";
 import { ApiError, internalErrorBody, methodNotAllowed, notFound } from "./security/errors.js";
 import { CACHE_CONTROL, corsHeadersFor } from "./security/headers.js";
+import { isAdminHostname, isAdminSurface } from "./security/hosts.js";
 import { enforceRateLimit, isRateLimited } from "./security/ratelimit.js";
 import type { Env, RequestContext } from "./types.js";
 
@@ -46,6 +47,14 @@ export default {
 		let logContext: Readonly<Record<string, unknown>> | undefined;
 
 		try {
+			// Before anything else, and before the rate limiter spends a token on
+			// it: admin is served only on the hostname Access protects. A 404
+			// rather than a 403, because a visitor to the public site has no
+			// business learning that an admin panel is there to be found.
+			if (isAdminSurface(url.pathname) && !isAdminHostname(env, url.hostname)) {
+				throw notFound();
+			}
+
 			// Metered before dispatch so a refused request costs no database work.
 			if (isRateLimited(url.pathname)) {
 				await enforceRateLimit(request, env);
