@@ -33,12 +33,11 @@ const CALLER = { "cf-connecting-ip": "203.0.113.9" } as const;
 const get = (path: string): Promise<Response> =>
 	SELF.fetch(`https://example.com${path}`, { headers: CALLER });
 
-const productionEnv = (overrides: Partial<Env> = {}): Env =>
+const productionEnv = (): Env =>
 	({
 		...env,
 		ENVIRONMENT: "production",
 		ADMIN_HOSTNAME: ADMIN_HOST,
-		...overrides,
 	}) as Env;
 
 const fetchAs = (host: string, path: string, testEnv: Env): Promise<Response> =>
@@ -68,7 +67,7 @@ describe("admin hostname guard", () => {
 	it("denies admin everywhere when the hostname is not configured", () => {
 		// A missing setting must lock the editor out, never open the panel up.
 		for (const value of [undefined, "", "   "]) {
-			const misconfigured = productionEnv({ ADMIN_HOSTNAME: value });
+			const misconfigured = { ...productionEnv(), ADMIN_HOSTNAME: value } as Env;
 
 			expect(isAdminHostname(misconfigured, ADMIN_HOST)).toBe(false);
 			expect(isAdminHostname(misconfigured, SITE_HOST)).toBe(false);
@@ -125,6 +124,22 @@ describe("public site", () => {
 		expect(await response.text()).toContain("THE GRID");
 	});
 
+	it("serves its artwork from its own origin", async () => {
+		const response = await get("/assets/rooftop.webp");
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("content-type")).toBe("image/webp");
+		expect(response.headers.get("cache-control")).toContain("max-age");
+	});
+
+	it("serves only the artwork it lists", async () => {
+		// The name is looked up in a fixed map, never joined onto a path, so
+		// there is no traversal to get wrong.
+		for (const name of ["nope.webp", "../wrangler.jsonc", "index.html"]) {
+			expect((await get(`/assets/${name}`)).status).toBe(404);
+		}
+	});
+
 	it("sends a policy that allows its own script but nothing external", async () => {
 		const policy = (await get("/")).headers.get("content-security-policy") ?? "";
 
@@ -137,14 +152,36 @@ describe("public site", () => {
 		expect(policy).toContain("frame-ancestors 'none'");
 	});
 
-	it("renders nothing that would post back", async () => {
+	it("never posts anything back", async () => {
+		const response = await get("/");
+		const html = await response.text();
+
+		// Read-only by construction: the deck's controls navigate between views
+		// or copy to the clipboard, and nothing submits. Enforced by the policy
+		// as well as by the markup, so a future edit cannot quietly add one.
+		expect(html).not.toMatch(/<form/);
+		expect(response.headers.get("content-security-policy")).toContain("form-action 'none'");
+	});
+
+	it("leaves the crew's in-game actions out", async () => {
 		const html = await (await get("/")).text();
 
-		// A read-only mirror: no forms, and no controls promising an action the
-		// web page cannot perform. The crew's in-game request buttons stay in
-		// the Cyberdeck, where the /tell they send actually works.
-		expect(html).not.toMatch(/<form|<button|requestLabel\s*\)/);
-		expect(html).toContain("requestLabel and requestMessage are deliberately not rendered");
+		// requestLabel drives a /tell from the plugin. On the web it would be a
+		// button that cannot do the one thing it names, so it is not rendered.
+		expect(html).not.toMatch(/profile\.requestLabel|profile\.requestMessage/);
+		expect(html).toContain("deliberately not rendered");
+	});
+
+	it("offers only the views a browser can honestly serve", async () => {
+		const html = await (await get("/")).text();
+
+		for (const view of ["menu:", "wifi:", "address:", "crew:", "broadcast:"]) {
+			expect(html).toContain(view);
+		}
+
+		// Network reads live game memory, Settings configures a plugin, and the
+		// activities are played in-game. None of them can work here.
+		expect(html).not.toMatch(/DrawNetworkView|"network":|settings:|breach|cipher/i);
 	});
 
 	it("builds its content as text nodes rather than markup", async () => {

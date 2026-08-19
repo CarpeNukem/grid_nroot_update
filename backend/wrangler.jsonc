@@ -8,8 +8,13 @@
 
 	// Lets the admin page and the public site be imported as strings and served
 	// with headers this Worker controls, rather than needing a separate
-	// static-assets deployment for either.
-	"rules": [{ "type": "Text", "globs": ["**/*.html"], "fallthrough": false }],
+	// static-assets deployment for either. The site's artwork rides along the
+	// same way, as bytes — see scripts/build-site-art.mjs for how those files
+	// are produced, and why they are WebP rather than the plugin's PNGs.
+	"rules": [
+		{ "type": "Text", "globs": ["**/*.html"], "fallthrough": false },
+		{ "type": "Data", "globs": ["**/*.webp"], "fallthrough": false }
+	],
 
 	// Structured request logs. See src/observability/log.ts.
 	"observability": {
