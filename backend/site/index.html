@@ -661,6 +661,16 @@
 				max-width: 22rem;
 				border-radius: 3px;
 				margin-top: 0.7rem;
+				/*
+					Flyers are large — the first one published was 807 KB — and until
+					one arrives an <img> with no dimensions is zero pixels tall, so the
+					post collapsed and then jumped by the flyer's full height when it
+					landed. This holds a visible box in the meantime, and object-fit
+					keeps a flyer wider than it is tall from being stretched to fill it.
+				*/
+				min-height: 8rem;
+				background: var(--raised);
+				object-fit: contain;
 			}
 
 			a.link {
@@ -990,7 +1000,7 @@
 					}
 				}
 
-				function addImage(parent, url, alt, className) {
+				function addImage(parent, url, alt, className, eager) {
 					var src = sameOrigin(url);
 					if (src === "") {
 						return;
@@ -998,7 +1008,10 @@
 					var img = el("img", className);
 					img.src = src;
 					img.alt = alt || "";
-					img.loading = "lazy";
+					// Lazy suits a long list of portraits. It is wrong for a flyer,
+					// which is the post rather than an illustration of it, and is
+					// usually the only image on its screen.
+					img.loading = eager === true ? "eager" : "lazy";
 					img.decoding = "async";
 					img.addEventListener("error", function () {
 						img.remove();
@@ -1360,7 +1373,7 @@
 							article.appendChild(el("p", "prose", post.body));
 						}
 
-						addImage(article, post.flyerUrl, post.title, "flyer");
+						addImage(article, post.flyerUrl, post.title, "flyer", true);
 
 						if (post.link) {
 							var link = el("a", "link", post.linkLabel || "Open link");
