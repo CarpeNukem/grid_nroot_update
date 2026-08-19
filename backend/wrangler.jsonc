@@ -76,10 +76,6 @@
 			// hostname that Access does not cover would simply route around it.
 			"workers_dev": false,
 
-			// Binding the hostnames needs nroot.io to be an active zone in the same
-			// Cloudflare account. The domain is registered but still on the
-			// registrar's nameservers, so this fails until it is moved across.
-			//
 			// Two hostnames, one Worker. Access covers only the first, so the
 			// Worker refuses admin on anything but ADMIN_HOSTNAME below — without
 			// that, grid.nroot.io/admin would serve the panel unprotected.
