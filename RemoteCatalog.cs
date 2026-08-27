@@ -88,7 +88,21 @@ internal sealed class CatalogService : IDisposable
     /// relay's own 60/minute limit even with a busy venue, and it means an edit
     /// made in the admin tool reaches the deck within a minute or two.
     /// </summary>
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(1);
+    /// <summary>
+    /// How often a loaded plugin checks in, whether or not anyone is looking.
+    ///
+    /// This single interval decides the relay's bill. A deck left loaded for a
+    /// session polls for all of it, and at seventy decks the old one-minute
+    /// interval came to roughly a hundred thousand requests a day — against a
+    /// free plan that allows a hundred thousand.
+    ///
+    /// An hour is safe for the screens because opening the deck refreshes it,
+    /// so nothing a reader can actually see is ever this stale. What it delays
+    /// is the broadcast ring: a deck sitting closed can announce a post up to an
+    /// hour after it went out. Shorten this if the venue wants the ring to be
+    /// timely — ten minutes still removes ninety percent of the traffic.
+    /// </summary>
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(1);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -113,6 +127,23 @@ internal sealed class CatalogService : IDisposable
     }
 
     public CatalogSnapshot Snapshot => snapshot;
+
+    /// <summary>
+    /// Asks for a refresh only if what is on screen is older than <paramref name="age"/>.
+    ///
+    /// For the automatic check when the deck opens. Plain
+    /// <see cref="RequestRefresh"/> stays unconditional, because a reader who
+    /// presses refresh deserves a fetch; this exists so opening and closing the
+    /// window repeatedly cannot turn into a request per open.
+    /// </summary>
+    public void RequestRefreshIfOlderThan(TimeSpan age)
+    {
+        var lastSync = snapshot.LastSync;
+        if (lastSync is not null && DateTimeOffset.UtcNow - lastSync < age)
+            return;
+
+        RequestRefresh();
+    }
 
     /// <summary>
     /// Raised when a refresh brought new content, never on an unchanged 304.

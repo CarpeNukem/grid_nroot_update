@@ -116,6 +116,7 @@ public sealed class Plugin : IDalamudPlugin
             () => networkStatsTracker.Snapshot,
             () => catalogService.Snapshot,
             catalogService.RequestRefresh,
+            catalogService.RequestRefreshIfOlderThan,
             remoteAssets);
 
         remoteAssets.LoadExisting();
