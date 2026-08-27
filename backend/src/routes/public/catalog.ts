@@ -3,7 +3,8 @@ import { listPublishedNewsPosts, toPublicNewsPost } from "../../data/news.js";
 import { listPublishedPages, toPublicPage } from "../../data/pages.js";
 import { listPublishedProfiles, toPublicProfile } from "../../data/profiles.js";
 import { SCHEMA_VERSION } from "../../data/schema.js";
-import { publicReadResponse } from "../../http.js";
+import { cachedRead } from "../../cache.js";
+import { conditionalReadResponse } from "../../http.js";
 import type { Route } from "../router.js";
 import { latestUpdatedAt } from "./shared.js";
 
@@ -45,23 +46,25 @@ export const catalogRoute: Route = {
 	method: "GET",
 	pattern: "/v1/catalog",
 	handler: async (request, { env, requestId }) => {
-		const now = new Date().toISOString();
-		const [profileRows, menuRows, newsRows, pageRows] = await Promise.all([
-			listPublishedProfiles(env.DB),
-			listPublishedMenuItems(env.DB),
-			listPublishedNewsPosts(env.DB, now),
-			listPublishedPages(env.DB),
-		]);
+		// The four queries below run only when the edge has nothing current. A
+		// conditional request that would have answered 304 used to pay for all of
+		// them anyway, because the tag is derived from the body.
+		const { serialized, etag, cached } = await cachedRead(request, async () => {
+			const now = new Date().toISOString();
+			const [profileRows, menuRows, newsRows, pageRows] = await Promise.all([
+				listPublishedProfiles(env.DB),
+				listPublishedMenuItems(env.DB),
+				listPublishedNewsPosts(env.DB, now),
+				listPublishedPages(env.DB),
+			]);
 
-		const mediaRevision = await mediaRevisionFor([
-			...profileRows.map((row) => row.image_key),
-			...menuRows.map((row) => row.image_key),
-			...newsRows.map((row) => row.image_key),
-		]);
+			const mediaRevision = await mediaRevisionFor([
+				...profileRows.map((row) => row.image_key),
+				...menuRows.map((row) => row.image_key),
+				...newsRows.map((row) => row.image_key),
+			]);
 
-		return publicReadResponse(
-			request,
-			{
+			return {
 				schemaVersion: SCHEMA_VERSION,
 				updatedAt: latestUpdatedAt([...profileRows, ...menuRows, ...newsRows, ...pageRows]),
 				mediaRevision,
@@ -69,8 +72,15 @@ export const catalogRoute: Route = {
 				menu: menuRows.map((row) => toPublicMenuItem(row, env.PUBLIC_MEDIA_BASE_URL)),
 				news: newsRows.map((row) => toPublicNewsPost(row, env.PUBLIC_MEDIA_BASE_URL)),
 				pages: pageRows.map(toPublicPage),
-			},
-			requestId,
-		);
+			};
+		});
+
+		const response = conditionalReadResponse(request, serialized, etag, requestId);
+		// Whether the edge served this is the one thing you cannot infer from the
+		// outside, and it is exactly what you want to know when the cache is the
+		// thing keeping the database bill down.
+		response.headers.set("x-cache", cached ? "HIT" : "MISS");
+
+		return response;
 	},
 };

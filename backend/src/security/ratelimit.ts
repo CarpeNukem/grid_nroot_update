@@ -15,7 +15,11 @@ import { isAdminPath } from "./headers.js";
  * would break image loading in the deck rather than protecting anything.
  */
 
-/** Generous next to real use: the plugin refreshes once every 15 minutes. */
+/**
+ * Generous next to real use: a deck polls once a minute, so it spends a
+ * sixtieth of its own budget. This is a guard against a runaway client, not a
+ * throttle anybody legitimate should ever meet.
+ */
 const REQUESTS_PER_MINUTE = 60;
 
 const isMediaPath = (pathname: string): boolean => pathname.startsWith("/media/");

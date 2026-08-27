@@ -61,7 +61,7 @@ export function corsPreflightResponse(cors: Readonly<Record<string, string>>): R
  * is rendered, produces a different tag. 16 hex characters is ample for cache
  * validation — this is a change detector, not a security boundary.
  */
-async function etagFor(serialized: string): Promise<string> {
+export async function etagFor(serialized: string): Promise<string> {
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized));
 	const hex = [...new Uint8Array(digest)]
 		.slice(0, 8)
@@ -101,8 +101,24 @@ export async function publicReadResponse(
 	requestId: string,
 ): Promise<Response> {
 	const serialized = JSON.stringify(body);
-	const etag = await etagFor(serialized);
 
+	return conditionalReadResponse(request, serialized, await etagFor(serialized), requestId);
+}
+
+/**
+ * The same conditional answer, for a body that is already serialised and tagged.
+ *
+ * Split out because the catalogue serves from an edge cache: the bytes and their
+ * tag come back from the cache rather than from the database, and only the 304
+ * decision is per-request. Every response still carries a fresh `x-request-id`,
+ * which is why the cached copy is never returned directly.
+ */
+export function conditionalReadResponse(
+	request: Request,
+	serialized: string,
+	etag: string,
+	requestId: string,
+): Response {
 	if (matchesIfNoneMatch(request.headers.get("if-none-match"), etag)) {
 		return new Response(null, {
 			status: 304,

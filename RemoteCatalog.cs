@@ -77,12 +77,16 @@ internal sealed class CatalogService : IDisposable
     /// How often the catalogue is rechecked.
     ///
     /// A minute rather than something longer because an unchanged check is
-    /// almost free: the request carries an ETag, so the relay answers 304 with
-    /// no body and never touches the database. Measured at roughly 900 bytes of
-    /// headers against 6 KB for a full fetch. Sixty checks an hour is one
-    /// request per minute, comfortably inside the relay's own 60/minute limit
-    /// even with a busy venue, and it means an edit made in the admin tool
-    /// reaches the deck within a minute rather than fifteen.
+    /// cheap but not free: the request carries an ETag, so the relay answers 304
+    /// with no body — roughly 900 bytes of headers against 11 KB for a full
+    /// fetch. It does still cost the relay a request, and the tag is a hash of
+    /// the body, so nothing about a 304 lets it skip building one. An edge cache
+    /// in front of the catalogue is what keeps that off the database; this loop
+    /// should not be made faster on the assumption that 304s are free.
+    ///
+    /// Sixty checks an hour is one request per minute, comfortably inside the
+    /// relay's own 60/minute limit even with a busy venue, and it means an edit
+    /// made in the admin tool reaches the deck within a minute or two.
     /// </summary>
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(1);
 
