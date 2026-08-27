@@ -55,6 +55,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly UpdateUiStateStore updateUiState = new();
     private readonly NetworkStatsTracker networkStatsTracker;
     private readonly CatalogService catalogService;
+    private readonly BroadcastAlert broadcastAlert;
     private readonly RemoteAssetCache remoteAssets;
     private readonly PenumbraIpc penumbra;
     private readonly CyberdeckWindow cyberdeckWindow;
@@ -118,6 +119,9 @@ public sealed class Plugin : IDalamudPlugin
             remoteAssets);
 
         remoteAssets.LoadExisting();
+        broadcastAlert = new BroadcastAlert(Config, OpenMainUi);
+        catalogService.Updated += broadcastAlert.OnCatalogUpdated;
+
         catalogService.Start();
 
         foreach (var commandName in CommandNames)
@@ -181,6 +185,7 @@ public sealed class Plugin : IDalamudPlugin
         foreach (var commandName in CommandNames)
             PluginService.Commands.RemoveHandler(commandName);
         github.Dispose();
+        catalogService.Updated -= broadcastAlert.OnCatalogUpdated;
         catalogService.Dispose();
         remoteAssets.Dispose();
         zoneTickCts?.Dispose();

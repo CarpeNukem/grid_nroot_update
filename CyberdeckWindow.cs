@@ -4146,6 +4146,25 @@ internal sealed partial class CyberdeckWindow
         }
         DrawMutedWrapped("Opens automatically when you enter the venue address.");
 
+        var broadcastTone = config.BroadcastToneEnabled;
+        if (ImGui.Checkbox("Broadcast ring", ref broadcastTone))
+        {
+            config.BroadcastToneEnabled = broadcastTone;
+            config.Save();
+            if (broadcastTone)
+                VenueSounds.PlayCallTone();
+        }
+        DrawMutedWrapped("Rings when the venue posts a new broadcast. Ticking it plays the ring once.");
+
+        var autoOpenOnBroadcast = config.AutoOpenOnBroadcast;
+        if (ImGui.Checkbox("Open on a new broadcast", ref autoOpenOnBroadcast))
+        {
+            config.AutoOpenOnBroadcast = autoOpenOnBroadcast;
+            config.Save();
+        }
+        DrawMutedWrapped(
+            "Brings the deck up when a broadcast arrives. Never during combat, a duty, a cutscene, or a loading screen.");
+
         DrawBroadcastSettings();
     }
 
