@@ -87,6 +87,7 @@ internal sealed partial class CyberdeckWindow
     private readonly Func<NetworkStatsSnapshot> getNetworkStats;
     private readonly Func<CatalogSnapshot> getCatalog;
     private readonly Action refreshNews;
+    private readonly Action<TimeSpan> refreshNewsIfStale;
     private readonly RemoteAssetCache remoteAssets;
 
     private DeckView selectedView = DeckView.Home;
@@ -146,6 +147,9 @@ internal sealed partial class CyberdeckWindow
     private Vector2 mainWindowExpandedSize;
 
     public bool IsOpen;
+
+    /// <summary>Previous frame's <see cref="IsOpen"/>, for spotting the transition.</summary>
+    private bool wasOpenLastFrame;
     public long InstallStatusTimestamp;
     public List<(bool? Ok, string Label)> InstallStatusItems { get; } = [];
 
@@ -164,10 +168,12 @@ internal sealed partial class CyberdeckWindow
         Func<NetworkStatsSnapshot> getNetworkStats,
         Func<CatalogSnapshot> getCatalog,
         Action refreshNews,
+        Action<TimeSpan> refreshNewsIfStale,
         RemoteAssetCache remoteAssets)
     {
         this.getCatalog = getCatalog;
         this.refreshNews = refreshNews;
+        this.refreshNewsIfStale = refreshNewsIfStale;
         this.remoteAssets = remoteAssets;
         this.config = config;
         this.penumbra = penumbra;
@@ -185,6 +191,33 @@ internal sealed partial class CyberdeckWindow
         this.getNetworkStats = getNetworkStats;
     }
 
+    /// <summary>
+    /// How stale the catalogue may be when the deck opens before it is refetched.
+    ///
+    /// Short enough that opening the deck effectively always shows current
+    /// content, long enough that closing and reopening the window is not a
+    /// request each time.
+    /// </summary>
+    private static readonly TimeSpan RefreshOnOpenAfter = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Asks for fresh content the frame the deck becomes visible.
+    ///
+    /// The plugin only checks in hourly, so without this the first thing a
+    /// reader sees could be an hour old. Watching the flag rather than hooking
+    /// each entry point covers every way the window opens — the command, the
+    /// icon, the venue auto-open, and a broadcast ringing.
+    /// </summary>
+    private void RefreshOnOpen()
+    {
+        if (IsOpen == wasOpenLastFrame)
+            return;
+
+        wasOpenLastFrame = IsOpen;
+        if (IsOpen)
+            refreshNewsIfStale(RefreshOnOpenAfter);
+    }
+
     public void OpenSettings()
     {
         SelectDeckView(DeckView.Settings);
@@ -195,6 +228,7 @@ internal sealed partial class CyberdeckWindow
     {
         ApplyConfiguredTheme();
         UpdateTarotTellQueue();
+        RefreshOnOpen();
         if (IsOpen)
             DrawCyberdeckWindow();
         if (intrusionWindowOpen)
