@@ -17,12 +17,44 @@ export const jsonHeaders = (headers: Record<string, string> = {}): Record<string
 });
 
 /**
- * Empties every table and the media bucket.
+ * Origins the suite issues public reads against.
+ *
+ * The edge cache is keyed by origin and path, so an entry written under one
+ * host is invisible to a request on another. Every host the tests use has to be
+ * cleared, or a stale catalogue survives the reset.
+ */
+const TEST_ORIGINS = ["https://example.com", "https://api.nroot.io", "https://grid.nroot.io"];
+
+/** Public reads that are cached at the edge and therefore outlive a table wipe. */
+const CACHED_PATHS = ["/v1/catalog"];
+
+/**
+ * Drops the edge cache entries for the public reads.
+ *
+ * Without this a test that seeds rows and asks for the catalogue can be served
+ * the previous test's answer — the cache is shared storage exactly as the
+ * database is, and clearing one without the other is what makes a suite pass
+ * and production surprise you.
+ */
+export async function clearPublicReadCache(): Promise<void> {
+	await Promise.all(
+		TEST_ORIGINS.flatMap((origin) =>
+			CACHED_PATHS.map((path) =>
+				caches.default.delete(new Request(`${origin}${path}`, { method: "GET" })),
+			),
+		),
+	);
+}
+
+/**
+ * Empties every table, the media bucket, and the public-read cache.
  *
  * Storage is shared across tests (isolated storage cannot run on Windows — see
  * vitest.config.ts), so each test is responsible for starting clean.
  */
 export async function resetTables(): Promise<void> {
+	await clearPublicReadCache();
+
 	await env.DB.batch([
 		env.DB.prepare("DELETE FROM profiles"),
 		env.DB.prepare("DELETE FROM menu_items"),
