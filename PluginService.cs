@@ -17,4 +17,5 @@ internal sealed class PluginService
     [PluginService] public static IPluginLog Log { get; private set; } = null!;
     [PluginService] public static ITextureProvider TextureProvider { get; private set; } = null!;
     [PluginService] public static IDataManager Data { get; private set; } = null!;
+    [PluginService] public static ICondition Condition { get; private set; } = null!;
 }

@@ -114,6 +114,14 @@ internal sealed class CatalogService : IDisposable
 
     public CatalogSnapshot Snapshot => snapshot;
 
+    /// <summary>
+    /// Raised when a refresh brought new content, never on an unchanged 304.
+    ///
+    /// Fired from the background refresh loop, so a handler that touches the
+    /// game or the interface has to marshal onto the framework thread itself.
+    /// </summary>
+    public event Action<CatalogSnapshot>? Updated;
+
     public void Start()
     {
         LoadCache();
@@ -199,6 +207,7 @@ internal sealed class CatalogService : IDisposable
                     feed.Profiles.Count,
                     feed.Menu.Count,
                     feed.News.Count);
+                RaiseUpdated();
                 break;
 
             default:
@@ -280,6 +289,24 @@ internal sealed class CatalogService : IDisposable
             {
                 // Nothing useful to do if cleanup also fails.
             }
+        }
+    }
+
+    /// <summary>
+    /// Notifies subscribers, and never lets one of them stop the refresh loop.
+    ///
+    /// A handler that throws here would otherwise kill the background task and
+    /// the deck would quietly stop updating for the rest of the session.
+    /// </summary>
+    private void RaiseUpdated()
+    {
+        try
+        {
+            Updated?.Invoke(snapshot);
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Error(exception, "A catalogue update handler threw.");
         }
     }
 

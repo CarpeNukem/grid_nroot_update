@@ -31,9 +31,15 @@ internal static class VenueSounds
     /// <summary>Short chime for an incoming venue message.</summary>
     public static void PlayMessageTone() => Play("message.wav");
 
-    // snd/call.mp3 is the other bundled sound, meant for a call rather than a
-    // message. It is not converted or shipped: nothing rings yet, and its WAV is
-    // three megabytes — worth adding when something actually calls.
+    /// <summary>
+    /// Longer ring for an incoming broadcast, which is an event rather than a
+    /// line of text and deserves to be noticed across a room.
+    ///
+    /// Trimmed from the seventeen-second source to four, mono at 22 kHz, which
+    /// is 172 KB rather than the three megabytes a full-length stereo WAV would
+    /// have cost. See the note above on why this cannot simply ship the MP3.
+    /// </summary>
+    public static void PlayCallTone() => Play("call.wav");
 
     /// <summary>Stops whatever is currently playing.</summary>
     public static void Stop()

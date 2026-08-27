@@ -50,6 +50,22 @@ public sealed class PluginConfig : IPluginConfiguration
     // used for the unread badge. A timestamp rather than an id, so a pinned post
     // sitting at the top of the feed does not distort the count.
     public long LastSeenNewsUnixMs { get; set; }
+
+    /// <summary>Rings when a broadcast the deck has not announced before arrives.</summary>
+    public bool BroadcastToneEnabled { get; set; } = true;
+
+    /// <summary>Opens the deck on a new broadcast, unless the moment is a bad one.</summary>
+    public bool AutoOpenOnBroadcast { get; set; } = true;
+
+    /// <summary>
+    /// Newest broadcast this deck has already announced.
+    ///
+    /// Deliberately not <see cref="LastSeenNewsUnixMs"/>, which records that the
+    /// reader opened the Broadcast screen. Sharing one marker would mean a deck
+    /// whose owner never opens that screen announces the same post on every
+    /// refresh, forever.
+    /// </summary>
+    public long LastAnnouncedNewsUnixMs { get; set; }
     public float UiScale { get; set; } = 0;
     public CyberdeckThemeId Theme { get; set; } = CyberdeckThemeId.Grid;
     public Vector4 CustomThemeBackground { get; set; } = new(0x07 / 255f, 0x10 / 255f, 0x17 / 255f, 1f);
