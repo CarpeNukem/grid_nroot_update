@@ -715,7 +715,14 @@ public sealed class Plugin : IDalamudPlugin
 
         venueUpdateCheckDoneThisZone = true;
         if (IsKnownWrongVenueAddress(out var mismatchReason))
-            PluginService.Log.Debug("Venue address check reported a mismatch after finding mannequin '{Npc}'; continuing with mannequin assignment: {Reason}", mapping.NpcName, mismatchReason);
+        {
+            PluginService.Log.Information(
+                "Found '{Npc}' but the address does not match the venue ({Reason}); skipping the update check.",
+                mapping.NpcName,
+                mismatchReason);
+
+            return;
+        }
 
         PluginService.Log.Information(
             "Mannequin '{Npc}' found in territory {Territory}; running update check ({Mode}).",
@@ -1429,9 +1436,20 @@ public sealed class Plugin : IDalamudPlugin
         var alreadyAssigned = 0;
         var failedAssignments = 0;
         var redrawObjectIndices = new HashSet<int>();
-        var targetObjects = FindTargetNpcObjects(mapping.NpcName, out var mannequinFallbackCandidates);
+        var targetObjects = FindTargetNpcObjects(mapping.NpcName, out var nearbyMannequins);
         if (targetObjects.Count > 0 && IsKnownWrongVenueAddress(out var mismatchReason))
-            PluginService.Log.Debug("Venue address check reported a mismatch while assigning mannequin '{Npc}'; continuing with mannequin assignment: {Reason}", mapping.NpcName, mismatchReason);
+        {
+            // Refusing outright rather than logging and carrying on. Assignment
+            // through a permanent collection is persistent, so getting this
+            // wrong edits somebody else's Penumbra rather than flickering.
+            PluginService.Log.Information(
+                "Refusing to assign '{Npc}': the address does not match the venue ({Reason}).",
+                mapping.NpcName,
+                mismatchReason);
+            statusItems.Add((false, $"Not at the venue address ({mismatchReason}); nothing was assigned"));
+
+            return PublishAssignmentResult(statusItems, mapping, needsAttention);
+        }
 
         foreach (var targetObject in targetObjects)
         {
@@ -1494,8 +1512,8 @@ public sealed class Plugin : IDalamudPlugin
 
         if (targetCount == 0)
         {
-            if (mannequinFallbackCandidates > 1)
-                statusItems.Add((false, $"Found {mannequinFallbackCandidates} mannequins but could not identify '{mapping.NpcName}'"));
+            if (nearbyMannequins > 0)
+                statusItems.Add((false, $"Found {nearbyMannequins} mannequin(s) nearby, none named '{mapping.NpcName}'"));
             else
                 statusItems.Add((null, "Venue mannequin is not currently nearby"));
         }
@@ -1659,9 +1677,19 @@ public sealed class Plugin : IDalamudPlugin
         return null;
     }
 
-    private static IReadOnlyList<TargetObjectMatch> FindTargetNpcObjects(string npcName, out int mannequinFallbackCandidates)
+    /// <summary>
+    /// Finds the venue mannequin, and only the venue mannequin.
+    ///
+    /// Matching is by the configured name. There is deliberately no fallback to
+    /// "the only mannequin nearby": that fallback assigned the venue collection
+    /// to whatever single mannequin happened to be around, which in someone
+    /// else's house is a persistent individual assignment written into their
+    /// Penumbra setup. Nearby mannequins are still counted, so the deck can say
+    /// why it did nothing.
+    /// </summary>
+    private static IReadOnlyList<TargetObjectMatch> FindTargetNpcObjects(string npcName, out int nearbyMannequins)
     {
-        mannequinFallbackCandidates = 0;
+        nearbyMannequins = 0;
         var namedMatches = new List<TargetObjectMatch>();
         var mannequinMatches = new List<TargetObjectMatch>();
 
@@ -1682,11 +1710,9 @@ public sealed class Plugin : IDalamudPlugin
                 mannequinMatches.Add(new TargetObjectMatch(objectIndex, gameObject.Name.TextValue, gameObject.ObjectKind.ToString(), false));
         }
 
-        if (namedMatches.Count > 0)
-            return namedMatches;
+        nearbyMannequins = mannequinMatches.Count;
 
-        mannequinFallbackCandidates = mannequinMatches.Count;
-        return mannequinMatches.Count == 1 ? mannequinMatches : [];
+        return namedMatches;
     }
 
     private static bool IsAssignableObject(IGameObject? gameObject)
