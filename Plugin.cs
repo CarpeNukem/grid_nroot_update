@@ -1718,7 +1718,7 @@ public sealed class Plugin : IDalamudPlugin
             var tag = TryGetObjectTag(gameObject);
             mannequinDescriptions.Add(tag.Length > 0
                 ? $"{gameObject.Name.TextValue} «{tag}»"
-                : gameObject.Name.TextValue);
+                : $"{gameObject.Name.TextValue} [{gameObject.ObjectKind}, no tag readable]");
         }
 
         return namedMatches;
@@ -1768,7 +1768,16 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private static unsafe string TryGetObjectTag(IGameObject gameObject)
     {
-        if (gameObject is not ICharacter)
+        // The pointer is only followed for kinds that really are laid out as a
+        // character. A mannequin is not a player, so `is ICharacter` alone was
+        // too narrow — it read nothing and reported no tag at all.
+        var kind = gameObject.ObjectKind;
+        var characterLike = gameObject is ICharacter
+            || kind == ObjectKind.EventNpc
+            || kind == ObjectKind.BattleNpc
+            || kind == ObjectKind.Retainer;
+
+        if (!characterLike)
             return string.Empty;
 
         try
