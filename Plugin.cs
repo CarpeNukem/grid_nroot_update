@@ -500,13 +500,9 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var current = currentMaybe.Value;
-        if (!string.IsNullOrWhiteSpace(expected.WorldName) &&
-            !string.IsNullOrWhiteSpace(current.WorldName) &&
-            !string.Equals(expected.WorldName, current.WorldName, StringComparison.OrdinalIgnoreCase))
+        if (!AddressFieldMatches(expected.WorldName, current.WorldName))
             return VenuePresence.Elsewhere;
-        if (!string.IsNullOrWhiteSpace(expected.DistrictName) &&
-            !string.IsNullOrWhiteSpace(current.DistrictName) &&
-            !string.Equals(expected.DistrictName, current.DistrictName, StringComparison.OrdinalIgnoreCase))
+        if (!AddressFieldMatches(expected.DistrictName, current.DistrictName))
             return VenuePresence.Elsewhere;
         if (expected.Ward is not null && current.Ward is not null && expected.Ward != current.Ward)
             return VenuePresence.Elsewhere;
@@ -1861,6 +1857,22 @@ public sealed class Plugin : IDalamudPlugin
     /// is not on the object. So being at the venue is the evidence that the one
     /// mannequin in front of you is the venue's.
     /// </summary>
+    /// <summary>
+    /// Compares one field of a housing address.
+    ///
+    /// Tolerant on purpose. The game names the zone "Private House - Mist"
+    /// where the venue address says "Mist", so strict equality reports a
+    /// mismatch standing in the right place. Either side containing the other
+    /// counts as a match, which is the same rule object names use.
+    /// </summary>
+    private static bool AddressFieldMatches(string? expected, string? current)
+    {
+        if (string.IsNullOrWhiteSpace(expected) || string.IsNullOrWhiteSpace(current))
+            return true;
+
+        return NamesMatch(current, expected);
+    }
+
     private bool IsConfirmedVenueAddress(out string description)
     {
         if (!TryParseVenueAddress(Config.VenueAddress, out var expected))
@@ -1878,14 +1890,12 @@ public sealed class Plugin : IDalamudPlugin
 
         var current = currentMaybe.Value;
         description =
-            $"here: {current.WorldName ?? "?"} {current.DistrictName ?? "?"} " +
+            $"here: {current.WorldName ?? "?"} / {current.DistrictName ?? "?"} / " +
             $"W{current.Ward?.ToString() ?? "?"} P{current.Plot?.ToString() ?? "?"}";
 
-        if (!string.IsNullOrWhiteSpace(expected.WorldName) &&
-            !string.Equals(expected.WorldName, current.WorldName, StringComparison.OrdinalIgnoreCase))
+        if (!AddressFieldMatches(expected.WorldName, current.WorldName))
             return false;
-        if (!string.IsNullOrWhiteSpace(expected.DistrictName) &&
-            !string.Equals(expected.DistrictName, current.DistrictName, StringComparison.OrdinalIgnoreCase))
+        if (!AddressFieldMatches(expected.DistrictName, current.DistrictName))
             return false;
         if (expected.Ward is not null && expected.Ward != current.Ward)
             return false;
@@ -1907,14 +1917,10 @@ public sealed class Plugin : IDalamudPlugin
 
         var current = currentMaybe.Value;
         var mismatches = new List<string>();
-        if (!string.IsNullOrWhiteSpace(expected.WorldName)
-            && !string.IsNullOrWhiteSpace(current.WorldName)
-            && !string.Equals(expected.WorldName, current.WorldName, StringComparison.OrdinalIgnoreCase))
+        if (!AddressFieldMatches(expected.WorldName, current.WorldName))
             mismatches.Add($"world {current.WorldName} != {expected.WorldName}");
 
-        if (!string.IsNullOrWhiteSpace(expected.DistrictName)
-            && !string.IsNullOrWhiteSpace(current.DistrictName)
-            && !string.Equals(expected.DistrictName, current.DistrictName, StringComparison.OrdinalIgnoreCase))
+        if (!AddressFieldMatches(expected.DistrictName, current.DistrictName))
             mismatches.Add($"district {current.DistrictName} != {expected.DistrictName}");
 
         if (expected.Ward is not null && current.Ward is not null && expected.Ward != current.Ward)
