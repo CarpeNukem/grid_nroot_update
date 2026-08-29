@@ -722,7 +722,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         var mapping = Config.GetPrimaryMapping();
-        if (!IsTargetNpcPresent(mapping.NpcName))
+        if (!IsVenueMannequinPresent(mapping))
             return;
 
         venueUpdateCheckDoneThisZone = true;
@@ -761,6 +761,34 @@ public sealed class Plugin : IDalamudPlugin
     private static bool IsTargetNpcPresent(string npcName)
         => FindTargetNpcObjects(npcName, out _, out _).Count > 0;
 
+    /// <summary>
+    /// The venue mannequin, however it can be identified.
+    ///
+    /// A housing mannequin cannot be matched by name — see
+    /// <see cref="IsConfirmedVenueAddress"/> — so at a confirmed venue address
+    /// the single mannequin present is the venue's. Every caller has to agree on
+    /// that: when only the assignment path knew it, arriving at the venue
+    /// stopped triggering the update check and stopped opening the deck, because
+    /// both were still asking a question that can never be answered yes.
+    /// </summary>
+    private IReadOnlyList<TargetObjectMatch> FindVenueMannequins(
+        ModMapping mapping,
+        out IReadOnlyList<string> mannequinDescriptions,
+        out bool addressConfirmed)
+    {
+        var named = FindTargetNpcObjects(mapping.NpcName, out var mannequins, out mannequinDescriptions);
+        addressConfirmed = IsConfirmedVenueAddress(out _);
+
+        if (named.Count == 0 && mannequins.Count == 1 && addressConfirmed)
+            return mannequins;
+
+        return named;
+    }
+
+    /// <summary>Whether the venue mannequin is in reach, by any of those routes.</summary>
+    private bool IsVenueMannequinPresent(ModMapping mapping)
+        => FindVenueMannequins(mapping, out _, out _).Count > 0;
+
     private void QueueVenueAutoOpenCheck(bool immediate = false)
     {
         if (!Config.AutoOpenOnVenueAddress)
@@ -790,7 +818,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         var mapping = Config.GetPrimaryMapping();
-        foreach (var _ in FindTargetNpcObjects(mapping.NpcName, out _, out _))
+        foreach (var _ in FindVenueMannequins(mapping, out _, out _))
         {
             lastAutoOpenedTerritory = territory;
             OpenMainUi();
@@ -1452,19 +1480,9 @@ public sealed class Plugin : IDalamudPlugin
         var alreadyAssigned = 0;
         var failedAssignments = 0;
         var redrawObjectIndices = new HashSet<int>();
-        var targetObjects = FindTargetNpcObjects(
-            mapping.NpcName,
-            out var nearbyMannequins,
-            out var mannequinDescriptions);
-        var addressConfirmed = IsConfirmedVenueAddress(out var addressDescription);
-
-        // The venue mannequin cannot be matched by name — see IsConfirmedVenueAddress
-        // — so standing at the venue is what identifies it. One mannequin, at a
-        // confirmed venue address, is the venue's. Anywhere the address cannot be
-        // confirmed, nothing is assigned rather than guessing at someone's
-        // furniture, which is what the old unconditional fallback did.
-        if (targetObjects.Count == 0 && nearbyMannequins.Count == 1 && addressConfirmed)
-            targetObjects = nearbyMannequins;
+        var targetObjects = FindVenueMannequins(mapping, out var mannequinDescriptions, out var addressConfirmed);
+        var nearbyMannequins = mannequinDescriptions;
+        IsConfirmedVenueAddress(out var addressDescription);
         if (targetObjects.Count > 0 && IsKnownWrongVenueAddress(out var mismatchReason))
         {
             // Refusing outright rather than logging and carrying on. Assignment
