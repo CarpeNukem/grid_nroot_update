@@ -748,7 +748,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private static bool IsTargetNpcPresent(string npcName)
-        => FindTargetNpcObjects(npcName, out _).Count > 0;
+        => FindTargetNpcObjects(npcName, out _, out _).Count > 0;
 
     private void QueueVenueAutoOpenCheck(bool immediate = false)
     {
@@ -779,7 +779,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         var mapping = Config.GetPrimaryMapping();
-        foreach (var _ in FindTargetNpcObjects(mapping.NpcName, out _))
+        foreach (var _ in FindTargetNpcObjects(mapping.NpcName, out _, out _))
         {
             lastAutoOpenedTerritory = territory;
             OpenMainUi();
@@ -1437,7 +1437,19 @@ public sealed class Plugin : IDalamudPlugin
         var alreadyAssigned = 0;
         var failedAssignments = 0;
         var redrawObjectIndices = new HashSet<int>();
-        var targetObjects = FindTargetNpcObjects(mapping.NpcName, out var nearbyMannequins);
+        var targetObjects = FindTargetNpcObjects(
+            mapping.NpcName,
+            out var nearbyMannequins,
+            out var mannequinDescriptions);
+        var addressConfirmed = IsConfirmedVenueAddress(out var addressDescription);
+
+        // The venue mannequin cannot be matched by name — see IsConfirmedVenueAddress
+        // — so standing at the venue is what identifies it. One mannequin, at a
+        // confirmed venue address, is the venue's. Anywhere the address cannot be
+        // confirmed, nothing is assigned rather than guessing at someone's
+        // furniture, which is what the old unconditional fallback did.
+        if (targetObjects.Count == 0 && nearbyMannequins.Count == 1 && addressConfirmed)
+            targetObjects = nearbyMannequins;
         if (targetObjects.Count > 0 && IsKnownWrongVenueAddress(out var mismatchReason))
         {
             // Refusing outright rather than logging and carrying on. Assignment
@@ -1513,8 +1525,10 @@ public sealed class Plugin : IDalamudPlugin
 
         if (targetCount == 0)
         {
-            if (nearbyMannequins.Count > 0)
-                statusItems.Add((false, $"Found {nearbyMannequins.Count} mannequin(s) nearby, none matching '{mapping.NpcName}': {string.Join(", ", nearbyMannequins)}"));
+            if (nearbyMannequins.Count > 1)
+                statusItems.Add((false, $"Found {nearbyMannequins.Count} mannequins here, so none was assumed to be the venue's: {string.Join(", ", mannequinDescriptions)}"));
+            else if (nearbyMannequins.Count == 1 && !addressConfirmed)
+                statusItems.Add((false, $"A mannequin is here but this is not confirmed as the venue address, so nothing was assigned ({addressDescription})"));
             else
                 statusItems.Add((null, "Venue mannequin is not currently nearby"));
         }
@@ -1690,10 +1704,13 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private static IReadOnlyList<TargetObjectMatch> FindTargetNpcObjects(
         string npcName,
-        out IReadOnlyList<string> nearbyMannequins)
+        out IReadOnlyList<TargetObjectMatch> nearbyMannequins,
+        out IReadOnlyList<string> mannequinDescriptions)
     {
-        var mannequinDescriptions = new List<string>();
-        nearbyMannequins = mannequinDescriptions;
+        var mannequins = new List<TargetObjectMatch>();
+        var descriptions = new List<string>();
+        nearbyMannequins = mannequins;
+        mannequinDescriptions = descriptions;
         var namedMatches = new List<TargetObjectMatch>();
 
         for (var i = 0; i < PluginService.Objects.Length; i++)
@@ -1716,9 +1733,10 @@ public sealed class Plugin : IDalamudPlugin
             // is always "Mannequin", so without the tag this message says
             // nothing a reader can act on.
             var tag = TryGetObjectTag(gameObject);
-            mannequinDescriptions.Add(tag.Length > 0
+            mannequins.Add(new TargetObjectMatch(objectIndex, gameObject.Name.TextValue, gameObject.ObjectKind.ToString(), false));
+            descriptions.Add(tag.Length > 0
                 ? $"{gameObject.Name.TextValue} «{tag}»"
-                : $"{gameObject.Name.TextValue} [{gameObject.ObjectKind}, no tag readable]");
+                : $"{gameObject.Name.TextValue} [{gameObject.ObjectKind}]");
         }
 
         return namedMatches;
@@ -1828,6 +1846,53 @@ public sealed class Plugin : IDalamudPlugin
             PluginService.Log.Debug(ex, "Could not read current Penumbra collection for object index {Index}.", objectIndex);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Whether the game positively confirms this is the venue's address.
+    ///
+    /// Deliberately stricter than <see cref="IsKnownWrongVenueAddress"/>, which
+    /// answers "can I prove you are elsewhere" and so says no whenever it cannot
+    /// tell. This says yes only when every field the configured address
+    /// specifies was actually readable here and matched.
+    ///
+    /// It exists because the venue mannequin cannot be identified by name: a
+    /// housing mannequin is called "Mannequin", and the name its owner gave it
+    /// is not on the object. So being at the venue is the evidence that the one
+    /// mannequin in front of you is the venue's.
+    /// </summary>
+    private bool IsConfirmedVenueAddress(out string description)
+    {
+        if (!TryParseVenueAddress(Config.VenueAddress, out var expected))
+        {
+            description = "the configured venue address could not be read";
+            return false;
+        }
+
+        var currentMaybe = TryGetCurrentHousingAddress();
+        if (currentMaybe is null)
+        {
+            description = "this location reports no housing address";
+            return false;
+        }
+
+        var current = currentMaybe.Value;
+        description =
+            $"here: {current.WorldName ?? "?"} {current.DistrictName ?? "?"} " +
+            $"W{current.Ward?.ToString() ?? "?"} P{current.Plot?.ToString() ?? "?"}";
+
+        if (!string.IsNullOrWhiteSpace(expected.WorldName) &&
+            !string.Equals(expected.WorldName, current.WorldName, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (!string.IsNullOrWhiteSpace(expected.DistrictName) &&
+            !string.Equals(expected.DistrictName, current.DistrictName, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (expected.Ward is not null && expected.Ward != current.Ward)
+            return false;
+        if (expected.Plot is not null && expected.Plot != current.Plot)
+            return false;
+
+        return true;
     }
 
     private bool IsKnownWrongVenueAddress(out string reason)
