@@ -16,6 +16,7 @@ using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using Dalamud.Utility;
+using NativeCharacter = FFXIVClientStructs.FFXIV.Client.Game.Character.Character;
 using NativeHousingManager = FFXIVClientStructs.FFXIV.Client.Game.HousingManager;
 
 namespace GridNrootUpdate;
@@ -1512,8 +1513,8 @@ public sealed class Plugin : IDalamudPlugin
 
         if (targetCount == 0)
         {
-            if (nearbyMannequins > 0)
-                statusItems.Add((false, $"Found {nearbyMannequins} mannequin(s) nearby, none named '{mapping.NpcName}'"));
+            if (nearbyMannequins.Count > 0)
+                statusItems.Add((false, $"Found {nearbyMannequins.Count} mannequin(s) nearby, none matching '{mapping.NpcName}': {string.Join(", ", nearbyMannequins)}"));
             else
                 statusItems.Add((null, "Venue mannequin is not currently nearby"));
         }
@@ -1687,11 +1688,13 @@ public sealed class Plugin : IDalamudPlugin
     /// Penumbra setup. Nearby mannequins are still counted, so the deck can say
     /// why it did nothing.
     /// </summary>
-    private static IReadOnlyList<TargetObjectMatch> FindTargetNpcObjects(string npcName, out int nearbyMannequins)
+    private static IReadOnlyList<TargetObjectMatch> FindTargetNpcObjects(
+        string npcName,
+        out IReadOnlyList<string> nearbyMannequins)
     {
-        nearbyMannequins = 0;
+        var mannequinDescriptions = new List<string>();
+        nearbyMannequins = mannequinDescriptions;
         var namedMatches = new List<TargetObjectMatch>();
-        var mannequinMatches = new List<TargetObjectMatch>();
 
         for (var i = 0; i < PluginService.Objects.Length; i++)
         {
@@ -1706,11 +1709,17 @@ public sealed class Plugin : IDalamudPlugin
                 continue;
             }
 
-            if (IsMannequinObject(gameObject))
-                mannequinMatches.Add(new TargetObjectMatch(objectIndex, gameObject.Name.TextValue, gameObject.ObjectKind.ToString(), false));
-        }
+            if (!IsMannequinObject(gameObject))
+                continue;
 
-        nearbyMannequins = mannequinMatches.Count;
+            // Record what it actually is, tag included. A mannequin's own name
+            // is always "Mannequin", so without the tag this message says
+            // nothing a reader can act on.
+            var tag = TryGetObjectTag(gameObject);
+            mannequinDescriptions.Add(tag.Length > 0
+                ? $"{gameObject.Name.TextValue} «{tag}»"
+                : gameObject.Name.TextValue);
+        }
 
         return namedMatches;
     }
@@ -1726,12 +1735,57 @@ public sealed class Plugin : IDalamudPlugin
         return true;
     }
 
+    /// <summary>
+    /// Whether this object is the venue mannequin.
+    ///
+    /// A housing mannequin's object name is always "Mannequin". The name its
+    /// owner gave it — Chromiel, here — is the title, shown in guillemets under
+    /// the nameplate. Matching only on the name therefore never matched at all,
+    /// and the deck was reaching the venue mannequin purely through a fallback
+    /// that took the only mannequin nearby. That fallback was removed because
+    /// it also assigned to other people's furniture, so the title has to be
+    /// read for the venue's own setup to work.
+    /// </summary>
     private static bool IsTargetNpc(IGameObject gameObject, string npcName)
     {
         if (!IsAssignableObject(gameObject))
             return false;
 
-        return NamesMatch(gameObject.Name.TextValue, npcName);
+        if (NamesMatch(gameObject.Name.TextValue, npcName))
+            return true;
+
+        return NamesMatch(TryGetObjectTag(gameObject), npcName);
+    }
+
+    /// <summary>
+    /// The name in guillemets under an object's nameplate.
+    ///
+    /// It shares a slot with a player's Free Company tag, which is why it is
+    /// read from that field. Dalamud's object model does not expose it, so this
+    /// goes through the native character struct — guarded by the managed type
+    /// check, so the pointer is only followed for something that really is a
+    /// character.
+    /// </summary>
+    private static unsafe string TryGetObjectTag(IGameObject gameObject)
+    {
+        if (gameObject is not ICharacter)
+            return string.Empty;
+
+        try
+        {
+            var native = (NativeCharacter*)gameObject.Address;
+
+            return native is null ? string.Empty : native->FreeCompanyTagString;
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(
+                exception,
+                "Could not read the nameplate tag for object index {Index}.",
+                gameObject.ObjectIndex);
+
+            return string.Empty;
+        }
     }
 
     private static bool IsMannequinObject(IGameObject gameObject)
