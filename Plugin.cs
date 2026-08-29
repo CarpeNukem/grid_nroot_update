@@ -74,6 +74,21 @@ public sealed class Plugin : IDalamudPlugin
     private bool penumbraStateSubscribed;
     private Guid? managedTemporaryCollectionId;
     private string? pendingReplacementModDirectory;
+
+    /// <summary>
+    /// What the venue mannequins were last redrawn for.
+    ///
+    /// A redraw is not about which collection is assigned — it is about the mod
+    /// files having changed underneath one, which Penumbra will not re-render on
+    /// its own. So it cannot be skipped just because the assignment already
+    /// matched, or an update installed while someone stands in front of the
+    /// mannequin would never show. Comparing the mod directory, the applied
+    /// version and the collection catches every case that needs one, and lets a
+    /// reconcile that changed nothing leave the mannequin alone.
+    ///
+    /// Session state on purpose: redrawing once after a restart is harmless.
+    /// </summary>
+    private string? lastRedrawSignature;
     private string? pendingReplacementModName;
     private CancellationTokenSource? zoneTickCts;
     private TaskCompletionSource<string>? pendingModAdded;
@@ -1428,6 +1443,10 @@ public sealed class Plugin : IDalamudPlugin
         FinalizePendingModReplacement(modDirectory);
         _ = OrganizeModInPenumbra(mapping, modDirectory);
 
+        var redrawSignature =
+            $"{modDirectory}|{mapping.LastAppliedVersion}|{assignmentCollection.Value.Id}";
+        var contentChanged = !string.Equals(redrawSignature, lastRedrawSignature, StringComparison.Ordinal);
+
         var targetCount = 0;
         var assigned = 0;
         var alreadyAssigned = 0;
@@ -1468,7 +1487,10 @@ public sealed class Plugin : IDalamudPlugin
             if (currentCollection.HasValue && currentCollection.Value.Id == assignmentCollection.Value.Id)
             {
                 alreadyAssigned++;
-                redrawObjectIndices.Add(objectIndex);
+                // Already pointing at the right collection: only worth a redraw
+                // if what that collection contains has changed since the last one.
+                if (contentChanged)
+                    redrawObjectIndices.Add(objectIndex);
                 continue;
             }
 
@@ -1483,6 +1505,9 @@ public sealed class Plugin : IDalamudPlugin
             else if (errorCode == PenumbraApiNothingChanged)
             {
                 alreadyAssigned++;
+                if (!contentChanged)
+                    continue;
+
                 redrawObjectIndices.Add(objectIndex);
             }
             else
@@ -1506,6 +1531,9 @@ public sealed class Plugin : IDalamudPlugin
                 PluginService.Log.Warning(ex, "Could not redraw assigned NPC {Npc} at object index {Index}.", mapping.NpcName, objectIndex);
             }
         }
+
+        if (targetCount > 0)
+            lastRedrawSignature = redrawSignature;
 
         if (assigned > 0)
             statusItems.Add((true, $"Activated for {assigned} venue mannequin(s)"));
