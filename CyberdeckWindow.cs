@@ -82,6 +82,7 @@ internal sealed partial class CyberdeckWindow
     private readonly Action assignAll;
     private readonly Action checkForUpdates;
     private readonly Action<bool> autoOpenChanged;
+    private readonly Action<bool> venueFurnitureChanged;
     private readonly Func<bool> isPenumbraAvailable;
     private readonly Func<UpdateUiSnapshot> getUpdateStatus;
     private readonly Func<NetworkStatsSnapshot> getNetworkStats;
@@ -163,6 +164,7 @@ internal sealed partial class CyberdeckWindow
         Action assignAll,
         Action checkForUpdates,
         Action<bool> autoOpenChanged,
+        Action<bool> venueFurnitureChanged,
         Func<bool> isPenumbraAvailable,
         Func<UpdateUiSnapshot> getUpdateStatus,
         Func<NetworkStatsSnapshot> getNetworkStats,
@@ -186,6 +188,7 @@ internal sealed partial class CyberdeckWindow
         this.assignAll = assignAll;
         this.checkForUpdates = checkForUpdates;
         this.autoOpenChanged = autoOpenChanged;
+        this.venueFurnitureChanged = venueFurnitureChanged;
         this.isPenumbraAvailable = isPenumbraAvailable;
         this.getUpdateStatus = getUpdateStatus;
         this.getNetworkStats = getNetworkStats;
@@ -795,6 +798,9 @@ internal sealed partial class CyberdeckWindow
             case DeckView.Network:
                 DrawNetworkView();
                 break;
+            case DeckView.Crew:
+                DrawCrewView();
+                break;
             case DeckView.Services:
                 DrawServicesView();
                 break;
@@ -912,6 +918,7 @@ internal sealed partial class CyberdeckWindow
             DeckView.Menu => "Menu",
             DeckView.News => "Broadcast",
             DeckView.Network => "Network",
+            DeckView.Crew => "Crew",
             DeckView.Services => "Services",
             DeckView.Settings => "Settings",
             _ => "The Grid",
@@ -1442,25 +1449,25 @@ internal sealed partial class CyberdeckWindow
         if (venueManager && badgeCounts.TryGetValue(DeckView.Network, out var networkBadge) && networkBadge > 0)
             DrawTileBadge(networkPos, buttonSize, networkBadge, badgeColors.GetValueOrDefault(DeckView.Network, CyberdeckTheme.Palette.Error));
 
-        if (DrawImageNavButton("Services", "services.png", buttonSize, GetServicesTelemetry()))
-            SelectDeckView(DeckView.Services);
+        // Crew and Services are separate tiles because they answer separate
+        // questions. Sharing one meant scrolling past three staff cards to reach
+        // tarot, and a tile that had to count both in the same breath.
+        if (DrawImageNavButton("Crew", "crew.png", buttonSize, GetCrewTelemetry()))
+            SelectDeckView(DeckView.Crew);
         if (useTwoColumns)
             ImGui.SameLine();
-        var settingsPosition = ImGui.GetCursorScreenPos();
-        if (DrawImageNavButton("Settings", "settings.png", buttonSize, GetSettingsTelemetry(updateStatus)))
-            SelectDeckView(DeckView.Settings);
-        if (updateStatus.IsBusy)
-            DrawTileActivityBadge(settingsPosition, buttonSize, GetUpdateStatusColor(updateStatus));
-        else if (badgeCounts.TryGetValue(DeckView.Settings, out var settingsCount) && settingsCount > 0)
-            DrawTileBadge(settingsPosition, buttonSize, settingsCount, badgeColors.GetValueOrDefault(DeckView.Settings, CyberdeckTheme.Palette.Amber));
+        if (DrawImageNavButton("Services", "services.png", buttonSize, GetServicesTelemetry()))
+            SelectDeckView(DeckView.Services);
 
-        // A seventh tile would leave a dangling half-row, so Broadcast spans the
-        // full width. It appears only when there is something to read, which
-        // keeps the grid exactly as it was whenever the relay is unreachable.
+        // Splitting them makes seven tiles, and an odd count leaves a dangling
+        // half-row. Broadcast fills it when there is something to read; when
+        // there is not, Settings takes the row on its own rather than sitting
+        // beside a gap.
         var news = getCatalog();
+        var pairBroadcastWithSettings = useTwoColumns && news.HasPosts;
         if (news.HasPosts)
         {
-            var newsSize = new Vector2(width, buttonHeight);
+            var newsSize = pairBroadcastWithSettings ? buttonSize : new Vector2(width, buttonHeight);
             var newsPosition = ImGui.GetCursorScreenPos();
             if (DrawImageNavButton("Broadcast", "broadcast.png", newsSize, GetNewsTelemetry(news)))
                 SelectDeckView(DeckView.News);
@@ -1468,7 +1475,21 @@ internal sealed partial class CyberdeckWindow
             var unread = CountUnreadNews(news);
             if (unread > 0)
                 DrawTileBadge(newsPosition, newsSize, unread, CyberdeckTheme.Palette.Magenta);
+
+            if (pairBroadcastWithSettings)
+                ImGui.SameLine();
         }
+
+        var settingsSize = pairBroadcastWithSettings || !useTwoColumns
+            ? buttonSize
+            : new Vector2(width, buttonHeight);
+        var settingsPosition = ImGui.GetCursorScreenPos();
+        if (DrawImageNavButton("Settings", "settings.png", settingsSize, GetSettingsTelemetry(updateStatus)))
+            SelectDeckView(DeckView.Settings);
+        if (updateStatus.IsBusy)
+            DrawTileActivityBadge(settingsPosition, settingsSize, GetUpdateStatusColor(updateStatus));
+        else if (badgeCounts.TryGetValue(DeckView.Settings, out var settingsCount) && settingsCount > 0)
+            DrawTileBadge(settingsPosition, settingsSize, settingsCount, badgeColors.GetValueOrDefault(DeckView.Settings, CyberdeckTheme.Palette.Amber));
     }
 
     private bool DrawImageNavButton(string label, string imageName, Vector2 size, string telemetry)
@@ -1501,7 +1522,10 @@ internal sealed partial class CyberdeckWindow
         }
         else
         {
-            clicked = ImGui.Button(label, size);
+            // Same invisible button as the textured path. Letting ImGui draw the
+            // caption here put the label on the tile twice, because DrawTileLabels
+            // below draws it again — which is what a missing icon looked like.
+            clicked = ImGui.Button($"##tile_{label}", size);
             hovered = ImGui.IsItemHovered();
             var glitching = IsHoverGlitchActive(label, hovered);
             DrawTileGlow(start, size, hovered, glitching, uiScale);
@@ -1681,75 +1705,53 @@ internal sealed partial class CyberdeckWindow
     }
 
     /// <summary>
-    /// The Services screen, in two groups.
+    /// The Crew screen: who is here.
     ///
-    /// Split by the question a guest is asking — "who is here?" against "what
-    /// can I do?" — rather than by what each feature is internally. Tarot sits
-    /// with the activities because that is what it is from the guest's side,
-    /// whether they read for themselves or ask the reader for a live one.
-    ///
-    /// The previous arrangement gave tarot a heading of its own above a single
-    /// card, which cost a header's height for one row in a window that has six.
+    /// Split off from Services because the two answer different questions —
+    /// "who is working tonight?" against "what can I do?" — and one screen
+    /// carrying both meant scrolling past three staff cards to reach tarot.
     /// </summary>
-    private void DrawServicesView()
+    private void DrawCrewView()
     {
-        var uiScale = GetUiScale();
-        var spacing = ImGui.GetStyle().ItemSpacing.X;
-        var availableWidth = ImGui.GetContentRegionAvail().X;
-        var useTwoColumns = availableWidth >= (280 * uiScale);
-        var cardWidth = useTwoColumns
-            ? MathF.Max(1, (availableWidth - spacing) / 2)
-            : availableWidth;
-        var cardSize = new Vector2(cardWidth, 232 * uiScale);
+        var layout = BeginServiceCardLayout();
 
         DrawSettingsGroupHeader("THE CREW");
         DrawMutedWrapped("Staff profiles, portfolios, and music links.");
         ImGui.Spacing();
 
-        if (DrawServiceLauncherCard(
-            "VISUAL CAPTURE",
-            "Photographer profiles",
-            GetStaffDirectoryStatus("photography"),
-            "photo.png",
-            CyberdeckTheme.Palette.Cyan,
-            cardSize,
-            portrait: false))
+        var index = 0;
+        foreach (var (title, description, category, image, accent) in CrewDirectories)
         {
-            OpenStaffDirectory("VISUAL CAPTURE", "photography");
+            if (index > 0)
+                layout.StartNextCard(index);
+
+            if (DrawServiceLauncherCard(
+                title,
+                description,
+                GetStaffDirectoryStatus(category),
+                image,
+                accent(),
+                layout.CardSize,
+                portrait: false))
+            {
+                OpenStaffDirectory(title, category);
+            }
+
+            index++;
         }
+    }
 
-        StartNextCardInSection(1);
+    /// <summary>
+    /// The Services screen: what a guest can do.
+    ///
+    /// Tarot sits here rather than with the crew because that is what it is from
+    /// the guest's side, whether they read for themselves or ask the reader for
+    /// a live one.
+    /// </summary>
+    private void DrawServicesView()
+    {
+        var layout = BeginServiceCardLayout();
 
-        if (DrawServiceLauncherCard(
-            "RESIDENT DJS",
-            "Profiles and music",
-            GetStaffDirectoryStatus("dj"),
-            "dj.png",
-            CyberdeckTheme.Palette.Magenta,
-            cardSize,
-            portrait: false))
-        {
-            OpenStaffDirectory("RESIDENT DJS", "dj");
-        }
-
-        StartNextCardInSection(2);
-
-        if (DrawServiceLauncherCard(
-            "BAR STAFF",
-            "Bartender profiles",
-            GetStaffDirectoryStatus("bar"),
-            "bar.png",
-            CyberdeckTheme.Palette.Amber,
-            cardSize,
-            portrait: false))
-        {
-            OpenStaffDirectory("BAR STAFF", "bar");
-        }
-
-        ImGui.Spacing();
-        ImGui.Spacing();
-        DrawNeonSeparator();
-        ImGui.Spacing();
         DrawSettingsGroupHeader("ACTIVITIES");
         DrawMutedWrapped("Readings and local challenges available through the Cyberdeck.");
         ImGui.Spacing();
@@ -1760,7 +1762,7 @@ internal sealed partial class CyberdeckWindow
             config.TarotHost ? "HOST CONSOLE" : "SELF-GUIDED / LIVE",
             "tarot.png",
             CyberdeckTheme.Palette.Magenta,
-            cardSize,
+            layout.CardSize,
             portrait: false))
         {
             if (config.TarotHost)
@@ -1769,7 +1771,7 @@ internal sealed partial class CyberdeckWindow
                 OpenTarotRequestWindow();
         }
 
-        StartNextCardInSection(1);
+        layout.StartNextCard(1);
 
         if (DrawServiceLauncherCard(
             "BREACH PROTOCOL",
@@ -1777,11 +1779,11 @@ internal sealed partial class CyberdeckWindow
             "3 DIFFICULTIES",
             "hack.png",
             CyberdeckTheme.Palette.Cyan,
-            cardSize,
+            layout.CardSize,
             portrait: false))
             OpenIntrusionGame();
 
-        StartNextCardInSection(2);
+        layout.StartNextCard(2);
 
         if (DrawServiceLauncherCard(
             "CIPHER VAULT",
@@ -1789,15 +1791,51 @@ internal sealed partial class CyberdeckWindow
             "ENCRYPTED ARCHIVE",
             "vault.png",
             CyberdeckTheme.Palette.Amber,
-            cardSize,
+            layout.CardSize,
             portrait: false))
             OpenCipherVault();
+    }
 
-        // Cards run two to a row when there is width for it. The index is the
-        // card's position within its own group, so each group starts a fresh row.
-        void StartNextCardInSection(int index)
+    /// <summary>The crew directories, in the order both the screen and its tile count them.</summary>
+    private static readonly (string Title, string Description, string Category, string Image, Func<Vector4> Accent)[]
+        CrewDirectories =
+        [
+            ("VISUAL CAPTURE", "Photographer profiles", "photography", "photo.png", () => CyberdeckTheme.Palette.Cyan),
+            ("RESIDENT DJS", "Profiles and music", "dj", "dj.png", () => CyberdeckTheme.Palette.Magenta),
+            ("BAR STAFF", "Bartender profiles", "bar", "bar.png", () => CyberdeckTheme.Palette.Amber),
+        ];
+
+    /// <summary>
+    /// Shared card geometry for the Crew and Services screens.
+    ///
+    /// Both draw the same kind of launcher card, and having them disagree about
+    /// width or when to fall back to one column would show the moment someone
+    /// tabbed between them.
+    /// </summary>
+    private ServiceCardLayout BeginServiceCardLayout()
+    {
+        var uiScale = GetUiScale();
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var useTwoColumns = availableWidth >= (280 * uiScale);
+        var cardWidth = useTwoColumns
+            ? MathF.Max(1, (availableWidth - spacing) / 2)
+            : availableWidth;
+
+        return new ServiceCardLayout(new Vector2(cardWidth, 232 * uiScale), useTwoColumns);
+    }
+
+    /// <summary>
+    /// Where the next launcher card goes.
+    ///
+    /// Cards run two to a row when there is width for it. The index is the
+    /// card's position within its own screen, so each screen starts a fresh row.
+    /// </summary>
+    private readonly record struct ServiceCardLayout(Vector2 CardSize, bool UseTwoColumns)
+    {
+        public void StartNextCard(int index)
         {
-            if (useTwoColumns && index % 2 == 1)
+            if (UseTwoColumns && index % 2 == 1)
                 ImGui.SameLine();
             else
                 ImGui.Spacing();
@@ -1909,29 +1947,29 @@ internal sealed partial class CyberdeckWindow
     /// <summary>
     /// What the Services tile advertises.
     ///
-    /// Counts what a guest can actually open, rather than the six rows the
-    /// screen always draws: the tarot cast, the two hacking activities, and any
-    /// staff directory that has someone published in it. An empty directory
-    /// shows "COMING SOON" inside, so counting it here would promise something
-    /// that is not there — and the number moves on its own as the venue
-    /// publishes profiles, which is the point of it not being hardcoded.
+    /// Tarot, Breach Protocol and Cipher Vault are all built into the deck, so
+    /// unlike the crew count this one does not move.
     /// </summary>
-    private string GetServicesTelemetry()
+    private static string GetServicesTelemetry()
+        => "03 ACTIVITIES";
+
+    /// <summary>
+    /// What the Crew tile advertises.
+    ///
+    /// Counts published profiles rather than the three directories the screen
+    /// always draws: an empty directory shows "COMING SOON" inside, so counting
+    /// it here would promise someone who is not there. The number moves on its
+    /// own as the venue publishes, which is the point of it not being hardcoded.
+    /// </summary>
+    private string GetCrewTelemetry()
     {
-        // Tarot, Breach Protocol, Cipher Vault — always present.
-        const int alwaysAvailable = 3;
-
         var profiles = GetProfileEntries();
-        var populatedDirectories = StaffDirectoryCategories.Count(category =>
-            profiles.Any(profile =>
-                string.Equals(profile.Category, category, StringComparison.OrdinalIgnoreCase)));
+        var count = profiles.Count(profile =>
+            CrewDirectories.Any(directory =>
+                string.Equals(profile.Category, directory.Category, StringComparison.OrdinalIgnoreCase)));
 
-        var total = alwaysAvailable + populatedDirectories;
-        return $"{total:00} {(total == 1 ? "ACTIVITY" : "ACTIVITIES")}";
+        return count == 0 ? "COMING SOON" : $"{count:00} {(count == 1 ? "PROFILE" : "PROFILES")}";
     }
-
-    /// <summary>The directories the Services screen offers, in the order it draws them.</summary>
-    private static readonly string[] StaffDirectoryCategories = ["photography", "dj", "bar"];
 
     private string GetStaffDirectoryStatus(string category)
     {
@@ -4199,6 +4237,18 @@ internal sealed partial class CyberdeckWindow
         DrawMutedWrapped(
             "Brings the deck up when a broadcast arrives. Never during combat, a duty, a cutscene, or a loading screen.");
 
+        var venueFurniture = config.VenueFurnitureEnabled;
+        if (ImGui.Checkbox("Venue furniture", ref venueFurniture))
+        {
+            config.VenueFurnitureEnabled = venueFurniture;
+            config.Save();
+            venueFurnitureChanged(venueFurniture);
+        }
+        DrawMutedWrapped(
+            "Applies the venue's furniture and the effects it plays while you are at The Grid. These live in "
+            + "Penumbra's Base collection rather than the mannequin's, so the deck borrows it temporarily - nothing "
+            + "is written to your Penumbra settings, and it is taken back off when you leave.");
+
         DrawBroadcastSettings();
     }
 
@@ -4627,6 +4677,7 @@ internal sealed partial class CyberdeckWindow
         Menu,
         News,
         Network,
+        Crew,
         Services,
         Settings,
     }

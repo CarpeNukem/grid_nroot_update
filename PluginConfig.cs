@@ -58,6 +58,19 @@ public sealed class PluginConfig : IPluginConfiguration
     public bool AutoOpenOnBroadcast { get; set; } = true;
 
     /// <summary>
+    /// Whether the venue's furniture is applied while you are there.
+    ///
+    /// The mannequin assignment cannot carry these: housing VFX, the skybox and
+    /// the room textures resolve through Penumbra's Base collection, which is the
+    /// player's own. So the deck borrows Base rather than editing it — temporary
+    /// settings that are never written to their config and are taken off again on
+    /// the way out. On by default because a venue whose lights do not come up is
+    /// the thing everyone reports; the setting exists because borrowing someone's
+    /// Base collection at all should be refusable.
+    /// </summary>
+    public bool VenueFurnitureEnabled { get; set; } = true;
+
+    /// <summary>
     /// Newest broadcast this deck has already announced.
     ///
     /// Deliberately not <see cref="LastSeenNewsUnixMs"/>, which records that the
@@ -134,6 +147,13 @@ public sealed class PluginConfig : IPluginConfiguration
         // Anything that is not the venue relay is reset here.
         if (!string.Equals(BackendBaseUrl, VenueRelayUrl, System.StringComparison.OrdinalIgnoreCase))
             BackendBaseUrl = VenueRelayUrl;
+
+        // Raise the priority stored by builds that defaulted it to zero. Not a
+        // user setting — it is not editable anywhere — so there is no choice here
+        // to overwrite, and leaving it at zero would mean existing installs never
+        // get the fix that the new default exists for.
+        if (Mappings[0].Priority <= 0)
+            Mappings[0].Priority = ModMapping.DefaultPriority;
 
         // Migrate the old beta-specific asset pattern to "any .pmp".
         if (string.IsNullOrWhiteSpace(Mappings[0].AssetPattern)

@@ -26,6 +26,17 @@ public sealed class Plugin : IDalamudPlugin
     private const string PrimaryCommandName = "/grid";
     private const string TemporaryCollectionIdentity = "GridNrootUpdate";
     private const string TemporaryCollectionName = "The Grid Venue";
+
+    /// <summary>
+    /// Marks the temporary Base settings as this plugin's.
+    ///
+    /// A zero key leaves them open for anything to overwrite or remove, which is
+    /// fine for a collection the deck owns outright and not fine for the player's
+    /// Base. With a key, only this plugin can take them off — and taking them off
+    /// is the half that matters, because what gets left behind is the venue's
+    /// furniture in somebody else's house.
+    /// </summary>
+    private const int VenueFurnitureKey = 0x67726964;
     private static readonly string[] CommandNames = [PrimaryCommandName, "/thegrid", "/cyberdeck"];
     private static readonly string[] DataCenterNames =
     [
@@ -73,7 +84,29 @@ public sealed class Plugin : IDalamudPlugin
     private bool modAddedSubscribed;
     private bool penumbraStateSubscribed;
     private Guid? managedTemporaryCollectionId;
+
+    /// <summary>
+    /// The collection currently holding the venue's furniture settings, if any.
+    ///
+    /// Remembered rather than looked up again at withdrawal time: Base can be
+    /// reassigned while the settings are applied, and asking then would take them
+    /// off a collection that never had them and leave them on the one that does.
+    /// </summary>
+    private Guid? venueFurnitureCollectionId;
+
+    /// <summary>What the furniture was last applied for, so a reconcile that changed nothing reloads nothing.</summary>
+    private string? venueFurnitureSignature;
     private string? pendingReplacementModDirectory;
+
+    /// <summary>
+    /// Set by an install, cleared by the sweep that follows it.
+    ///
+    /// The sweep walks every mod Penumbra holds, which on a modder's machine is
+    /// thousands. That is cheap enough once after an install and pointless on
+    /// every arrival at the venue, which is how often the assignment it rides
+    /// along with actually runs.
+    /// </summary>
+    private bool staleEditionSweepPending;
 
     /// <summary>
     /// What the venue mannequins were last redrawn for.
@@ -127,6 +160,7 @@ public sealed class Plugin : IDalamudPlugin
             () => _ = AssignAllAsync(lifetime.Token),
             () => RunUpdateCheck(silent: false),
             OnAutoOpenSettingChanged,
+            OnVenueFurnitureSettingChanged,
             IsPenumbraAvailable,
             () => UpdateStatus,
             () => networkStatsTracker.Snapshot,
@@ -195,6 +229,7 @@ public sealed class Plugin : IDalamudPlugin
             penumbra.UnsubscribeInitialized(OnPenumbraInitialized);
             penumbra.UnsubscribeDisposed(OnPenumbraDisposed);
         }
+        WithdrawVenueFurniture();
         ReleaseManagedTemporaryCollection();
         PluginService.PluginInterface.UiBuilder.OpenConfigUi -= OpenConfigUi;
         PluginService.PluginInterface.UiBuilder.OpenMainUi -= OpenMainUi;
@@ -393,6 +428,7 @@ public sealed class Plugin : IDalamudPlugin
         cachedPenumbraAvailable = true;
         lastPenumbraAvailableCheckTick = Environment.TickCount64;
         managedTemporaryCollectionId = null;
+        ForgetVenueFurniture();
         startupActionDone = false;
         venueUpdateCheckDoneThisZone = false;
         QueueStartupAction();
@@ -404,6 +440,9 @@ public sealed class Plugin : IDalamudPlugin
         cachedPenumbraAvailable = false;
         lastPenumbraAvailableCheckTick = Environment.TickCount64;
         managedTemporaryCollectionId = null;
+        // Temporary settings do not survive a Penumbra reload, so there is
+        // nothing to remove — and nothing to remove it through.
+        ForgetVenueFurniture();
         startupActionDone = false;
         venueUpdateCheckDoneThisZone = false;
     }
@@ -426,16 +465,46 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private void OnLogout(int _, int __)
-        => networkStatsTracker.FinalizeSession(DateTimeOffset.UtcNow);
+    {
+        networkStatsTracker.FinalizeSession(DateTimeOffset.UtcNow);
+        // No reload on the way out — there is nothing on screen to reload.
+        RemoveVenueFurniture();
+    }
 
     private void OnTerritoryChanged(uint _)
     {
         venueUpdateCheckDoneThisZone = false;
         lastAutoOpenedTerritory = 0;
+        // Leaving takes the venue's furniture with you. Unlike the mannequin, which
+        // simply stops being in the object table, these settings sit on a
+        // collection that is still there and still the player's — nothing else
+        // would ever remove them, and the next thing they would see is the
+        // venue's skybox over their own house.
+        //
+        // Removed without a reload: the room those settings were dressing is gone
+        // with the zone, and asking Penumbra to redraw furniture across a loading
+        // screen is exactly the kind of thing its own help warns about.
+        RemoveVenueFurniture();
         cyberdeckWindow.InstallStatusItems.Clear();
         cyberdeckWindow.InstallStatusTimestamp = 0;
         QueueVenueUpdateCheck();
         QueueVenueAutoOpenCheck();
+    }
+
+    /// <summary>
+    /// Reacts to the venue-furniture toggle without waiting for the next reconcile.
+    ///
+    /// Turning it off has to take effect while the player is standing in the room
+    /// they just turned it off for. Turning it on runs the assignment, which is
+    /// where the address and mannequin gates live — this deliberately has no path
+    /// of its own to apply the furniture.
+    /// </summary>
+    private void OnVenueFurnitureSettingChanged(bool enabled)
+    {
+        if (enabled)
+            _ = AssignAllAsync(lifetime.Token);
+        else
+            WithdrawVenueFurniture();
     }
 
     private void OnAutoOpenSettingChanged(bool enabled)
@@ -1092,6 +1161,7 @@ public sealed class Plugin : IDalamudPlugin
             mapping.ModName = modsAfterInstall.TryGetValue(modDirectory, out var importedModName)
                 ? importedModName
                 : mapping.ModName;
+            staleEditionSweepPending = true;
             if (previousModDirectory is not null &&
                 !string.Equals(previousModDirectory, modDirectory, StringComparison.OrdinalIgnoreCase))
             {
@@ -1294,6 +1364,79 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    /// <summary>
+    /// Removes older editions of the venue pack that an install left behind.
+    ///
+    /// The pack ships as a family — see <see cref="ModMapping.ModFamily"/> — so a
+    /// new edition arrives under a new name and Penumbra keeps the previous one
+    /// indefinitely. Left alone they accumulate, and two editions enabled at once
+    /// fight over the same files.
+    ///
+    /// Scoped to the family and nothing else. The obvious alternative — clearing
+    /// out whatever is enabled in the Grid collection — is both unavailable
+    /// (Penumbra can report a mod's settings but cannot list a collection's
+    /// contents, so it would mean one call per installed mod) and unsafe: a player
+    /// may well have put their own work in that collection, and this deletes from
+    /// disk with no undo.
+    ///
+    /// Runs after the new pack is installed and assigned rather than before, so a
+    /// failure part-way through leaves the venue working rather than empty.
+    /// </summary>
+    private void RemoveStaleEditions(ModMapping mapping, string activeModDirectory)
+    {
+        if (!staleEditionSweepPending)
+            return;
+
+        staleEditionSweepPending = false;
+
+        Dictionary<string, string> mods;
+        try
+        {
+            mods = penumbra.GetModList();
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Warning(exception, "Could not list Penumbra mods to clean up older venue editions.");
+            return;
+        }
+
+        // The active pack is excluded before anything else is considered, so the
+        // mod that was just installed can never be the one removed.
+        var stale = mods
+            .Where(kvp => !string.Equals(kvp.Key, activeModDirectory, StringComparison.OrdinalIgnoreCase))
+            .Where(kvp => mapping.MatchesMod(kvp.Key, kvp.Value))
+            .ToList();
+
+        if (stale.Count == 0)
+            return;
+
+        // A sanity limit rather than a policy. Replacing one edition strands one
+        // or two; a double-digit match means the name rules caught something they
+        // should not have, and the right answer to that is to delete nothing and
+        // say so, not to work through somebody's mod library.
+        if (stale.Count > MaxStaleEditionsToRemove)
+        {
+            PluginService.Log.Warning(
+                "Left {Count} mods alone: too many matched the venue pack family '{Family}' to be right. Matched: {Matched}",
+                stale.Count,
+                mapping.ModFamily,
+                string.Join(", ", stale.Select(kvp => kvp.Key)));
+            return;
+        }
+
+        foreach (var (directory, name) in stale)
+        {
+            PluginService.Log.Information(
+                "Removing an older edition of the venue pack: {ModDirectory} ('{ModName}').",
+                directory,
+                name);
+            _ = DeleteManagedMod(directory, name);
+        }
+    }
+
+    /// <summary>How many strays a single install may leave behind before the sweep refuses to run.</summary>
+    private const int MaxStaleEditionsToRemove = 8;
+
     private void CorrectReleaseHealthAfterInstallFailure(ModMapping mapping, string latestVersion)
     {
         try
@@ -1326,8 +1469,18 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private static bool IsManagedDuplicateDirectory(string modDirectory)
-        => modDirectory.StartsWith("n_root_the_grid (", StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// A copy Penumbra made when the pack was imported by hand a second time.
+    ///
+    /// Penumbra suffixes " (2)", " (3)" and so on rather than replacing, so a
+    /// directory shaped like that is the newer import and the one worth adopting
+    /// when the recorded directory has gone. Recognised by shape plus the
+    /// mapping's own name rules, so it keeps working across an edition rename.
+    /// </summary>
+    private static bool IsManagedDuplicateDirectory(ModMapping mapping, string modDirectory)
+        => modDirectory.EndsWith(')') &&
+           modDirectory.LastIndexOf(" (", StringComparison.Ordinal) > 0 &&
+           mapping.MatchesMod(modDirectory, modDirectory);
 
     private async Task AssignAllAsync(CancellationToken cancellationToken)
     {
@@ -1448,6 +1601,7 @@ public sealed class Plugin : IDalamudPlugin
         if (modDirectory is null)
         {
             statusItems.Add((false, "Mod not found in Penumbra"));
+            WithdrawVenueFurniture();
             return PublishAssignmentResult(statusItems, mapping);
         }
 
@@ -1462,6 +1616,7 @@ public sealed class Plugin : IDalamudPlugin
             PluginService.Chat.PrintError(
                 "Automatic Penumbra setup failed. Create a permanent collection named Grid or TheGrid, then try again.",
                 "TheGrid");
+            WithdrawVenueFurniture();
             return PublishAssignmentResult(statusItems, mapping);
         }
 
@@ -1469,6 +1624,7 @@ public sealed class Plugin : IDalamudPlugin
             ? "Automatic Penumbra setup ready"
             : $"Using Penumbra collection '{assignmentCollection.Value.Name}'"));
         FinalizePendingModReplacement(modDirectory);
+        RemoveStaleEditions(mapping, modDirectory);
         _ = OrganizeModInPenumbra(mapping, modDirectory);
 
         var redrawSignature =
@@ -1493,9 +1649,18 @@ public sealed class Plugin : IDalamudPlugin
                 mapping.NpcName,
                 mismatchReason);
             statusItems.Add((false, $"Not at the venue address ({mismatchReason}); nothing was assigned"));
+            WithdrawVenueFurniture();
 
             return PublishAssignmentResult(statusItems, mapping, needsAttention);
         }
+
+        // Behind exactly the gates the assignment uses. The furniture goes on the
+        // player's own Base collection, so it has no business being applied
+        // anywhere the mannequin itself would not be.
+        if (targetObjects.Count > 0)
+            ApplyVenueFurniture(mapping, modDirectory, statusItems);
+        else
+            WithdrawVenueFurniture();
 
         foreach (var targetObject in targetObjects)
         {
@@ -1611,11 +1776,14 @@ public sealed class Plugin : IDalamudPlugin
                     managedTemporaryCollectionId = collectionId;
                 }
 
-                var configureCode = penumbra.EnableModInTemporaryCollection(
+                // Key 0 on purpose: this collection is created and deleted by the
+                // deck, so there is nothing to protect the settings from.
+                var configureCode = penumbra.SetTemporaryModSettings(
                     managedTemporaryCollectionId.Value,
                     modDirectory,
                     mapping.ModName,
-                    mapping.Priority);
+                    mapping.Priority,
+                    key: 0);
                 if (IsSuccess(configureCode))
                 {
                     return new AssignmentCollection(
@@ -1640,6 +1808,124 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Lends the venue's furniture to whatever collection Base points at.
+    ///
+    /// The mannequin assignment cannot reach these files. Housing VFX, the room
+    /// textures and the skybox are not drawn as part of a game object, so they
+    /// resolve through Base however correctly the mannequin is assigned — see
+    /// <see cref="PenumbraIpc.GetBaseCollection"/>.
+    ///
+    /// Borrowing Base at all is only defensible because of how it is done: the
+    /// settings are temporary, so nothing is written to the player's Penumbra
+    /// config, and they are locked to <see cref="VenueFurnitureKey"/> so only this
+    /// plugin can withdraw them. Every caller is behind the same address and
+    /// mannequin gates as the assignment itself.
+    /// </summary>
+    private void ApplyVenueFurniture(ModMapping mapping, string modDirectory, List<(bool? Ok, string Label)> statusItems)
+    {
+        if (!Config.VenueFurnitureEnabled)
+        {
+            WithdrawVenueFurniture();
+            return;
+        }
+
+        if (penumbra.GetBaseCollection() is not { } baseCollection)
+        {
+            WithdrawVenueFurniture();
+            statusItems.Add((null, "No Base collection is assigned, so the venue furniture stayed off"));
+            return;
+        }
+
+        // The version is in the signature because an update replaces the files
+        // underneath settings that already say "enabled" — the room has to be
+        // reloaded for that to show, and nothing else would notice.
+        var signature = $"{baseCollection.Id}|{modDirectory}|{mapping.LastAppliedVersion}";
+        if (string.Equals(signature, venueFurnitureSignature, StringComparison.Ordinal))
+        {
+            statusItems.Add((true, $"Venue furniture active in '{baseCollection.Name}'"));
+            return;
+        }
+
+        // Base may have been reassigned since these went on. Take them off the
+        // old collection first, quietly: the reload belongs to the apply below.
+        _ = RemoveVenueFurniture();
+
+        try
+        {
+            var code = penumbra.SetTemporaryModSettings(
+                baseCollection.Id,
+                modDirectory,
+                mapping.ModName,
+                mapping.Priority,
+                VenueFurnitureKey);
+            if (!IsSuccess(code))
+            {
+                PluginService.Log.Warning(
+                    "Penumbra would not lend the Base collection '{Collection}' to the venue furniture. Code {Code}.",
+                    baseCollection.Name,
+                    code);
+                statusItems.Add((false, "Penumbra would not apply the venue furniture"));
+                return;
+            }
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Warning(exception, "Could not apply the venue furniture to the Base collection.");
+            statusItems.Add((false, "Penumbra would not apply the venue furniture"));
+            return;
+        }
+
+        venueFurnitureCollectionId = baseCollection.Id;
+        venueFurnitureSignature = signature;
+        PenumbraIpc.RedrawFurniture();
+        statusItems.Add((true, $"Venue furniture active in '{baseCollection.Name}'"));
+    }
+
+    /// <summary>Takes the venue furniture back off, and reloads the room if there was anything to take off.</summary>
+    private void WithdrawVenueFurniture()
+    {
+        if (RemoveVenueFurniture())
+            PenumbraIpc.RedrawFurniture();
+    }
+
+    /// <summary>
+    /// Removes the settings without reloading anything. Returns whether there
+    /// were any to remove.
+    /// </summary>
+    private bool RemoveVenueFurniture()
+    {
+        if (venueFurnitureCollectionId is not { } collectionId)
+            return false;
+
+        // Cleared first. If the call throws, the deck must not go on believing it
+        // still owns settings on a collection it can no longer reach.
+        venueFurnitureCollectionId = null;
+        venueFurnitureSignature = null;
+
+        try
+        {
+            var code = penumbra.RemoveAllTemporaryModSettings(collectionId, VenueFurnitureKey);
+            if (IsSuccess(code))
+                return true;
+
+            PluginService.Log.Warning("Penumbra kept the venue furniture on the Base collection. Code {Code}.", code);
+            return false;
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Warning(exception, "Could not withdraw the venue furniture from the Base collection.");
+            return false;
+        }
+    }
+
+    /// <summary>Forgets the furniture settings without calling Penumbra, for when Penumbra has already dropped them.</summary>
+    private void ForgetVenueFurniture()
+    {
+        venueFurnitureCollectionId = null;
+        venueFurnitureSignature = null;
     }
 
     private bool ReleaseManagedTemporaryCollection()
@@ -1692,16 +1978,11 @@ public sealed class Plugin : IDalamudPlugin
         if (mods.ContainsKey(mapping.ModDirectory))
             return mapping.ModDirectory;
 
-        var duplicateDirectory = mods.Keys.FirstOrDefault(IsManagedDuplicateDirectory);
+        var duplicateDirectory = mods.Keys.FirstOrDefault(key => IsManagedDuplicateDirectory(mapping, key));
         if (!string.IsNullOrEmpty(duplicateDirectory))
             return duplicateDirectory;
 
-        var byName = mods.FirstOrDefault(kvp =>
-            string.Equals(kvp.Value, mapping.ModName, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(kvp.Value, mapping.Name, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(kvp.Key, mapping.Name, StringComparison.OrdinalIgnoreCase) ||
-            kvp.Value.Contains(mapping.Name, StringComparison.OrdinalIgnoreCase) ||
-            kvp.Key.Contains(mapping.Name, StringComparison.OrdinalIgnoreCase));
+        var byName = mods.FirstOrDefault(kvp => mapping.MatchesMod(kvp.Key, kvp.Value));
 
         return string.IsNullOrEmpty(byName.Key) ? null : byName.Key;
     }
@@ -1721,13 +2002,7 @@ public sealed class Plugin : IDalamudPlugin
             return addedMod.Key;
         }
 
-        var byName = mods.FirstOrDefault(kvp =>
-            string.Equals(kvp.Value, mapping.ModName, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(kvp.Value, mapping.Name, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(kvp.Key, mapping.Name, StringComparison.OrdinalIgnoreCase) ||
-            kvp.Value.Contains(mapping.Name, StringComparison.OrdinalIgnoreCase) ||
-            kvp.Key.Contains(mapping.Name, StringComparison.OrdinalIgnoreCase));
-
+        var byName = mods.FirstOrDefault(kvp => mapping.MatchesMod(kvp.Key, kvp.Value));
         if (!string.IsNullOrEmpty(byName.Key))
             return byName.Key;
 

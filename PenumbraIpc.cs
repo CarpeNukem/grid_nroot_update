@@ -147,7 +147,18 @@ internal sealed class PenumbraIpc
             .GetIpcSubscriber<Guid, int, bool, int>("Penumbra.AssignTemporaryCollection.V5")
             .InvokeFunc(collectionId, objectIndex, true);
 
-    public int EnableModInTemporaryCollection(Guid collectionId, string modDirectory, string modName, int priority)
+    /// <summary>
+    /// Turns the mod on in a collection without writing to the player's config.
+    ///
+    /// "Temporary" describes the settings, not the collection: this works on any
+    /// collection, permanent ones included. Penumbra never saves them to disk and
+    /// drops them when it reloads, which is what makes it safe to point at a
+    /// collection the venue does not own.
+    ///
+    /// A non-zero <paramref name="key"/> locks them to the holder, so only the
+    /// plugin that applied them can take them off again.
+    /// </summary>
+    public int SetTemporaryModSettings(Guid collectionId, string modDirectory, string modName, int priority, int key)
     {
         IReadOnlyDictionary<string, IReadOnlyList<string>> settings =
             new Dictionary<string, IReadOnlyList<string>>();
@@ -166,7 +177,86 @@ internal sealed class PenumbraIpc
                 modName,
                 (false, true, priority, settings),
                 "The Grid venue mod",
-                0);
+                key);
+    }
+
+    /// <summary>Removes every temporary setting applied to a collection under one key.</summary>
+    public int RemoveAllTemporaryModSettings(Guid collectionId, int key)
+        => pluginInterface
+            .GetIpcSubscriber<Guid, int, int>("Penumbra.RemoveAllTemporaryModSettings.V5")
+            .InvokeFunc(collectionId, key);
+
+    /// <summary>
+    /// The collection Penumbra's Base assignment currently points at.
+    ///
+    /// Base is where everything not drawn as part of a game object resolves —
+    /// Penumbra's own description of it is "World, Music, Furniture, baseline for
+    /// characters and monsters not specialized". The venue's furniture and the
+    /// effects it plays are exactly that, so a collection assigned to the mannequin
+    /// never sees those files however correctly it is assigned.
+    ///
+    /// The gate takes a plain byte rather than ApiCollectionType, which is why
+    /// this can ask without referencing Penumbra.Api at all.
+    ///
+    /// Null covers three cases that all mean the same thing here: the call is
+    /// unavailable, nothing is assigned, or the empty collection is. A player who
+    /// has put the empty collection on Base has said they want nothing applied
+    /// there, and that is not the venue's to overrule.
+    /// </summary>
+    public (Guid Id, string Name)? GetBaseCollection()
+    {
+        try
+        {
+            var assigned = pluginInterface
+                .GetIpcSubscriber<byte, (Guid Id, string Name)?>("Penumbra.GetCollection")
+                .InvokeFunc(BaseCollectionAssignment);
+
+            return assigned is { } collection && collection.Id != Guid.Empty ? collection : null;
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Penumbra could not report the Base collection.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Asks Penumbra to reload indoor housing furniture.
+    ///
+    /// Decoration loads with the room, so switching the venue's furniture on while
+    /// standing in it changes nothing until something reloads it — and
+    /// <see cref="RedrawObject"/> only redraws characters.
+    ///
+    /// Penumbra can do this, but only through its own chat command: the redraw
+    /// IPC surface is RedrawObject, RedrawAll and RedrawCollectionMembers, and
+    /// RedrawType has no furniture member. Dispatching the command is local and
+    /// sends nothing to the server, but it does sit outside the versioned API, so
+    /// a failure here is logged and never surfaced as a fault. Penumbra's own
+    /// help also calls it indoor-only and warns it "might break some customizable
+    /// decoration", which is another reason not to build anything on top of it.
+    /// </summary>
+    public static void RedrawFurniture()
+    {
+        if (!PluginService.Framework.IsInFrameworkUpdateThread)
+        {
+            // Dispatching a command reaches into the game, so it only happens on
+            // the framework thread. Skipped rather than queued: every caller is
+            // already on that thread, one of them is plugin teardown, and work
+            // scheduled from there would run after the plugin is gone. The reload
+            // is cosmetic — the settings behind it have already changed.
+            PluginService.Log.Debug("Skipped a furniture redraw requested off the framework thread.");
+            return;
+        }
+
+        try
+        {
+            if (!PluginService.Commands.ProcessCommand("/penumbra redraw furniture"))
+                PluginService.Log.Debug("Penumbra did not accept the furniture redraw command.");
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Could not ask Penumbra to redraw furniture.");
+        }
     }
 
     public bool IsModEnabled(Guid collectionId, string modDirectory, string modName)
@@ -257,4 +347,7 @@ internal sealed class PenumbraIpc
     }
 
     private const int RedrawTypeRedraw = 0;
+
+    /// <summary>ApiCollectionType.Default — what Penumbra's Collections tab labels "Base".</summary>
+    private const byte BaseCollectionAssignment = 0xE0;
 }
