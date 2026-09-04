@@ -3,20 +3,20 @@
     "Author": "Carpe Nukem",
     "Name": "The Grid Cyberdeck",
     "Punchline": "A cyberdeck companion for The Grid venue.",
-    "Description": "Opens a cyberdeck-style venue app with map, menu, syncshell, Discord, local network presence, and Penumbra update tools for The Grid.",
+    "Description": "Opens a cyberdeck-style venue app for The Grid: map, menu, syncshell, Discord, crew profiles, broadcasts, local network presence, and Penumbra install and update tools.",
     "Tags": [
       "penumbra",
       "modding",
       "utility"
     ],
     "InternalName": "GridNrootUpdate",
-    "AssemblyVersion": "0.10.3.0",
+    "AssemblyVersion": "0.11.0.0",
     "IconUrl": "https://raw.githubusercontent.com/CarpeNukem/grid_nroot_update/main/grid.png",
     "RepoUrl": "https://github.com/CarpeNukem/grid_nroot_update",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
-    "DownloadLinkInstall": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.10.3/GridNrootUpdate-0.10.3.zip",
-    "DownloadLinkUpdate": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.10.3/GridNrootUpdate-0.10.3.zip",
-    "DownloadLinkTesting": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.10.3/GridNrootUpdate-0.10.3.zip"
+    "DownloadLinkInstall": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.11.0/GridNrootUpdate-0.11.0.zip",
+    "DownloadLinkUpdate": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.11.0/GridNrootUpdate-0.11.0.zip",
+    "DownloadLinkTesting": "https://github.com/CarpeNukem/grid_nroot_update/releases/download/plugin-v0.11.0/GridNrootUpdate-0.11.0.zip"
   }
 ]
