@@ -24,6 +24,8 @@ The Cipher Vault creates a persistent seeded intrusion run with randomized techn
 
 The plugin uses Penumbra's public IPC to install venue mod packages and apply them to nearby venue mannequins. Existing permanent collections named `Grid`, `TheGrid`, or `The Grid` are supported. When none exists, the plugin uses a managed temporary collection and recreates it as needed.
 
+When a new edition of the venue pack installs, older editions are switched off in the Grid collection. Nothing is deleted from disk, and only mods named like a venue pack (`Grid CityScape…`, `n_root_the_grid`, `TheGrid`) are touched; anything else you keep in the collection stays as it is.
+
 ## Dalamud Repository
 
 Build the release package:
@@ -32,7 +34,7 @@ Build the release package:
 dotnet build GridNrootUpdate.csproj -c Release
 ```
 
-Upload `bin/Release/dist/GridNrootUpdate-0.10.3.zip` to a GitHub release named `plugin-v0.10.3`, then bump the Grid entry in the n_root feed to match. That feed is what users add in Dalamud:
+Upload `bin/Release/dist/GridNrootUpdate-1.0.0.zip` to a GitHub release named `plugin-v1.0.0`, then bump the Grid entry in the n_root feed to match. That feed is what users add in Dalamud:
 
 ```text
 https://raw.githubusercontent.com/CarpeNukem/n_root/main/repo.json
