@@ -1,4 +1,5 @@
 using System;
+using System.Text.RegularExpressions;
 
 namespace GridNrootUpdate;
 
@@ -49,6 +50,11 @@ public sealed class ModMapping
     ///
     /// Kept so an install from before the rename is still recognised rather than
     /// reported missing and reinstalled alongside itself.
+    ///
+    /// Matched whole, never as a prefix. Normalised, "n_root_the_grid" is
+    /// "nrootthegrid", which is also the start of every "[//n_root] The Grid's …"
+    /// mod — dotes, throws, props the venue crew publish and players keep — and
+    /// as a prefix it had the update path delete four of them as "older editions".
     /// </summary>
     private static readonly string[] LegacyModNames = ["n_root_the_grid", "TheGrid"];
 
@@ -59,10 +65,8 @@ public sealed class ModMapping
     /// dash and the spacing are all decoration, and Penumbra's " (2)" suffix on a
     /// re-import does not stop a pack being recognised.
     ///
-    /// A prefix and deliberately not a substring search. "grid" on its own also
-    /// matches mods like GridWeave and CYBER-TP (GRIDLESS), and being wrong here
-    /// is not cosmetic: when the update path decides which mod is the old one, it
-    /// deletes it.
+    /// Being wrong here is not cosmetic: when the update path decides which mod is
+    /// the old one, it switches it off in the venue collection.
     /// </summary>
     public bool MatchesMod(string? modDirectory, string? modName)
     {
@@ -74,33 +78,49 @@ public sealed class ModMapping
             string.Equals(modName, ModName, StringComparison.OrdinalIgnoreCase))
             return true;
 
-        return HasKnownPrefix(modDirectory) || HasKnownPrefix(modName);
+        return IsVenuePackName(modDirectory, modName);
     }
 
-    private bool HasKnownPrefix(string? candidate)
+    /// <summary>
+    /// Whether a mod is named like a venue pack, going by name alone.
+    ///
+    /// Unlike <see cref="MatchesMod"/> this ignores what the mapping currently
+    /// points at, which can be stale or wrong. It is what decides which mods an
+    /// update switches off as older editions.
+    /// </summary>
+    public bool IsVenuePackName(string? modDirectory, string? modName)
+        => IsVenuePackName(modDirectory) || IsVenuePackName(modName);
+
+    /// <summary>
+    /// The family as a prefix, the legacy names whole.
+    ///
+    /// The family prefix is deliberately not a substring search. "grid" on its own
+    /// also matches mods like GridWeave and CYBER-TP (GRIDLESS).
+    /// </summary>
+    private bool IsVenuePackName(string? candidate)
     {
-        var normalized = CollectionNameMatcher.Normalize(candidate);
+        var normalized = CollectionNameMatcher.Normalize(StripDuplicateSuffix(candidate));
         if (normalized.Length == 0)
             return false;
 
-        if (StartsWithName(normalized, ModFamily))
+        var family = CollectionNameMatcher.Normalize(ModFamily);
+        if (family.Length > 0 && normalized.StartsWith(family, StringComparison.Ordinal))
             return true;
 
         foreach (var legacy in LegacyModNames)
         {
-            if (StartsWithName(normalized, legacy))
+            if (string.Equals(normalized, CollectionNameMatcher.Normalize(legacy), StringComparison.Ordinal))
                 return true;
         }
 
         return false;
     }
 
-    private static bool StartsWithName(string normalizedCandidate, string? name)
-    {
-        var normalizedName = CollectionNameMatcher.Normalize(name);
+    /// <summary>Drops the " (2)" Penumbra appends to a directory on a repeat import.</summary>
+    private static string? StripDuplicateSuffix(string? candidate)
+        => candidate is null ? null : DuplicateSuffix.Replace(candidate.Trim(), string.Empty);
 
-        return normalizedName.Length > 0 && normalizedCandidate.StartsWith(normalizedName, StringComparison.Ordinal);
-    }
+    private static readonly Regex DuplicateSuffix = new(@"\s\(\d+\)$", RegexOptions.CultureInvariant);
 
     public static ModMapping CreateDefault()
         => new();

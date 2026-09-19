@@ -29,9 +29,6 @@ internal sealed class PenumbraIpc
     public int InstallMod(string packagePath)
         => pluginInterface.GetIpcSubscriber<string, int>("Penumbra.InstallMod.V5").InvokeFunc(packagePath);
 
-    public int DeleteMod(string modDirectory, string modName)
-        => pluginInterface.GetIpcSubscriber<string, string, int>("Penumbra.DeleteMod.V5").InvokeFunc(modDirectory, modName);
-
     public int SetModPath(string modDirectory, string modName, string newPath)
     {
         try
@@ -259,10 +256,16 @@ internal sealed class PenumbraIpc
         }
     }
 
+    /// <summary>
+    /// Whether the mod is on in the collection, inheritance included.
+    ///
+    /// The tuple matches Penumbra's exactly, trailing "inherited" flag and all,
+    /// rather than leaning on Dalamud to convert between tuple shapes.
+    /// </summary>
     public bool IsModEnabled(Guid collectionId, string modDirectory, string modName)
     {
         var (errorCode, settings) = pluginInterface
-            .GetIpcSubscriber<Guid, string, string, bool, (int, (bool Enabled, int Priority, Dictionary<string, List<string>> Settings)?)>("Penumbra.GetCurrentModSettings.V5")
+            .GetIpcSubscriber<Guid, string, string, bool, (int, (bool Enabled, int Priority, Dictionary<string, List<string>> Settings, bool Inherited)?)>("Penumbra.GetCurrentModSettings.V5")
             .InvokeFunc(collectionId, modDirectory, modName, false);
         return errorCode == 0 && settings?.Enabled == true;
     }

@@ -96,7 +96,6 @@ public sealed class Plugin : IDalamudPlugin
 
     /// <summary>What the furniture was last applied for, so a reconcile that changed nothing reloads nothing.</summary>
     private string? venueFurnitureSignature;
-    private string? pendingReplacementModDirectory;
 
     /// <summary>
     /// Set by an install, cleared by the sweep that follows it.
@@ -122,7 +121,6 @@ public sealed class Plugin : IDalamudPlugin
     /// Session state on purpose: redrawing once after a restart is harmless.
     /// </summary>
     private string? lastRedrawSignature;
-    private string? pendingReplacementModName;
     private CancellationTokenSource? zoneTickCts;
     private TaskCompletionSource<string>? pendingModAdded;
     private bool? cachedPenumbraAvailable;
@@ -1118,11 +1116,6 @@ public sealed class Plugin : IDalamudPlugin
         try
         {
             var modsBeforeInstall = penumbra.GetModList();
-            var previousModDirectory = FindInstalledModDirectory(mapping, modsBeforeInstall);
-            var previousModName = previousModDirectory is not null &&
-                                  modsBeforeInstall.TryGetValue(previousModDirectory, out var installedModName)
-                ? installedModName
-                : mapping.ModName;
 
             cancellationToken.ThrowIfCancellationRequested();
             var modAddedWaiter = PrepareForModAdded();
@@ -1162,12 +1155,6 @@ public sealed class Plugin : IDalamudPlugin
                 ? importedModName
                 : mapping.ModName;
             staleEditionSweepPending = true;
-            if (previousModDirectory is not null &&
-                !string.Equals(previousModDirectory, modDirectory, StringComparison.OrdinalIgnoreCase))
-            {
-                pendingReplacementModDirectory = previousModDirectory;
-                pendingReplacementModName = previousModName;
-            }
 
             var folderConfigured = OrganizeModInPenumbra(mapping, modDirectory);
             var collectionConfigured = collection is null || EnableImportedMod(mapping, collection.Value, modDirectory);
@@ -1331,58 +1318,25 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private bool DeleteManagedMod(string modDirectory, string modName)
-    {
-        var deleteCode = penumbra.DeleteMod(modDirectory, modName);
-        if (IsSuccess(deleteCode))
-        {
-            PluginService.Log.Information("Removed replaced Penumbra mod {ModDirectory}.", modDirectory);
-            return true;
-        }
-
-        PluginService.Log.Warning("Could not remove replaced Penumbra mod {ModDirectory}. Penumbra code {Code}.", modDirectory, deleteCode);
-        return false;
-    }
-
-    private void FinalizePendingModReplacement(string activeModDirectory)
-    {
-        if (pendingReplacementModDirectory is not { } previousDirectory ||
-            string.Equals(previousDirectory, activeModDirectory, StringComparison.OrdinalIgnoreCase))
-        {
-            pendingReplacementModDirectory = null;
-            pendingReplacementModName = null;
-            return;
-        }
-
-        var previousName = string.IsNullOrWhiteSpace(pendingReplacementModName)
-            ? Config.GetPrimaryMapping().ModName
-            : pendingReplacementModName;
-        if (DeleteManagedMod(previousDirectory, previousName))
-        {
-            pendingReplacementModDirectory = null;
-            pendingReplacementModName = null;
-        }
-    }
-
     /// <summary>
-    /// Removes older editions of the venue pack that an install left behind.
+    /// Switches older editions of the venue pack off in the venue collection.
     ///
     /// The pack ships as a family — see <see cref="ModMapping.ModFamily"/> — so a
-    /// new edition arrives under a new name and Penumbra keeps the previous one
-    /// indefinitely. Left alone they accumulate, and two editions enabled at once
-    /// fight over the same files.
+    /// new edition arrives under a new name and Penumbra keeps the previous one.
+    /// Two editions enabled at once fight over the same files.
     ///
-    /// Scoped to the family and nothing else. The obvious alternative — clearing
-    /// out whatever is enabled in the Grid collection — is both unavailable
-    /// (Penumbra can report a mod's settings but cannot list a collection's
-    /// contents, so it would mean one call per installed mod) and unsafe: a player
-    /// may well have put their own work in that collection, and this deletes from
-    /// disk with no undo.
+    /// Disabled, never deleted. Deciding which mod is an old edition goes by name,
+    /// and the name rules have been wrong before: 0.11.0 deleted players' own
+    /// "[//n_root] The Grid's …" mods from disk, with no undo. A wrong call here
+    /// costs a checkbox in one collection instead.
+    ///
+    /// Scoped to venue packs by name, not to everything enabled in the
+    /// collection: players keep their own mods in it too.
     ///
     /// Runs after the new pack is installed and assigned rather than before, so a
     /// failure part-way through leaves the venue working rather than empty.
     /// </summary>
-    private void RemoveStaleEditions(ModMapping mapping, string activeModDirectory)
+    private void DisableStaleEditions(ModMapping mapping, AssignmentCollection collection, string activeModDirectory)
     {
         if (!staleEditionSweepPending)
             return;
@@ -1396,46 +1350,82 @@ public sealed class Plugin : IDalamudPlugin
         }
         catch (Exception exception)
         {
-            PluginService.Log.Warning(exception, "Could not list Penumbra mods to clean up older venue editions.");
+            PluginService.Log.Warning(exception, "Could not list Penumbra mods to switch off older venue editions.");
             return;
         }
 
         // The active pack is excluded before anything else is considered, so the
-        // mod that was just installed can never be the one removed.
+        // mod that was just installed can never be the one switched off.
         var stale = mods
             .Where(kvp => !string.Equals(kvp.Key, activeModDirectory, StringComparison.OrdinalIgnoreCase))
-            .Where(kvp => mapping.MatchesMod(kvp.Key, kvp.Value))
+            .Where(kvp => mapping.IsVenuePackName(kvp.Key, kvp.Value))
             .ToList();
 
         if (stale.Count == 0)
             return;
 
-        // A sanity limit rather than a policy. Replacing one edition strands one
-        // or two; a double-digit match means the name rules caught something they
-        // should not have, and the right answer to that is to delete nothing and
-        // say so, not to work through somebody's mod library.
-        if (stale.Count > MaxStaleEditionsToRemove)
+        if (collection.IsTemporary)
         {
-            PluginService.Log.Warning(
-                "Left {Count} mods alone: too many matched the venue pack family '{Family}' to be right. Matched: {Matched}",
-                stale.Count,
-                mapping.ModFamily,
-                string.Join(", ", stale.Select(kvp => kvp.Key)));
+            ResetManagedTemporaryCollection(mapping, collection.Id, activeModDirectory);
             return;
         }
 
         foreach (var (directory, name) in stale)
         {
-            PluginService.Log.Information(
-                "Removing an older edition of the venue pack: {ModDirectory} ('{ModName}').",
-                directory,
-                name);
-            _ = DeleteManagedMod(directory, name);
+            try
+            {
+                // Directory only. Given a name, Penumbra falls back to the first
+                // mod carrying it when the directory is not found.
+                if (!penumbra.IsModEnabled(collection.Id, directory, string.Empty))
+                    continue;
+
+                var code = penumbra.TrySetMod(collection.Id, directory, string.Empty, false);
+                if (IsSuccess(code))
+                    PluginService.Log.Information(
+                        "Switched off an older edition of the venue pack in '{Collection}': {ModDirectory} ('{ModName}').",
+                        collection.Name,
+                        directory,
+                        name);
+                else
+                    PluginService.Log.Warning(
+                        "Could not switch off older venue edition {ModDirectory} in '{Collection}'. Penumbra code {Code}.",
+                        directory,
+                        collection.Name,
+                        code);
+            }
+            catch (Exception exception)
+            {
+                PluginService.Log.Warning(exception, "Could not switch off older venue edition {ModDirectory}.", directory);
+            }
         }
     }
 
-    /// <summary>How many strays a single install may leave behind before the sweep refuses to run.</summary>
-    private const int MaxStaleEditionsToRemove = 8;
+    /// <summary>
+    /// Leaves the deck's own temporary collection holding the active pack alone.
+    ///
+    /// Everything in it was put there by the deck under key 0, so clearing it all
+    /// and putting the active pack back is exact, and needs no per-mod lookup.
+    /// </summary>
+    private void ResetManagedTemporaryCollection(ModMapping mapping, Guid collectionId, string activeModDirectory)
+    {
+        try
+        {
+            var clearCode = penumbra.RemoveAllTemporaryModSettings(collectionId, 0);
+            if (!IsSuccess(clearCode))
+            {
+                PluginService.Log.Warning("Could not clear older venue editions from the managed temporary collection. Code {Code}.", clearCode);
+                return;
+            }
+
+            var code = penumbra.SetTemporaryModSettings(collectionId, activeModDirectory, mapping.ModName, mapping.Priority, key: 0);
+            if (!IsSuccess(code))
+                PluginService.Log.Warning("Could not put the venue pack back in the managed temporary collection. Code {Code}.", code);
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Warning(exception, "Could not reset the managed temporary collection.");
+        }
+    }
 
     private void CorrectReleaseHealthAfterInstallFailure(ModMapping mapping, string latestVersion)
     {
@@ -1623,8 +1613,7 @@ public sealed class Plugin : IDalamudPlugin
         statusItems.Add((true, assignmentCollection.Value.IsTemporary
             ? "Automatic Penumbra setup ready"
             : $"Using Penumbra collection '{assignmentCollection.Value.Name}'"));
-        FinalizePendingModReplacement(modDirectory);
-        RemoveStaleEditions(mapping, modDirectory);
+        DisableStaleEditions(mapping, assignmentCollection.Value, modDirectory);
         _ = OrganizeModInPenumbra(mapping, modDirectory);
 
         var redrawSignature =
