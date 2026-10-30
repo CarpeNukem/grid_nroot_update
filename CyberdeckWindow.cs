@@ -3621,7 +3621,7 @@ internal sealed partial class CyberdeckWindow
                 queueReconcile();
         }
         ImGui.EndDisabled();
-        DrawMutedWrapped("When disabled, updates are only installed after you press Update.");
+        DrawMutedWrapped("When disabled, updates are only installed after you press Update. A waiting update is still downloaded at login so the install is quick.");
 
         ImGui.Spacing();
         if (ImGui.SmallButton(showInstallationDetails ? "Hide Details" : "Show Details"))
@@ -3631,6 +3631,8 @@ internal sealed partial class CyberdeckWindow
             ImGui.Spacing();
             DrawInstallationDetails(mapping, penumbraAvailable, modDirectory, collection);
         }
+
+        DrawProtectedPacks(mapping, modDirectory, penumbraAvailable);
 
         ImGui.Spacing();
         DrawNeonSeparator();
@@ -3992,7 +3994,12 @@ internal sealed partial class CyberdeckWindow
 
         if (status.Phase == UpdateOperationPhase.Success)
         {
-            var completedThrough = status.Operation == UpdateOperationKind.UpdateCheck ? 0 : 3;
+            var completedThrough = status.Operation switch
+            {
+                UpdateOperationKind.UpdateCheck => 0,
+                UpdateOperationKind.Prefetch => 1,
+                _ => 3,
+            };
             return stageIndex <= completedThrough ? UpdatePipelineState.Complete : UpdatePipelineState.Pending;
         }
 
@@ -4002,6 +4009,7 @@ internal sealed partial class CyberdeckWindow
                              (status.Operation switch
                              {
                                  UpdateOperationKind.UpdateCheck => 0,
+                                 UpdateOperationKind.Prefetch => 1,
                                  UpdateOperationKind.Assignment => 3,
                                  _ when status.ReleaseAvailability == UpdateReleaseAvailability.Unknown => 0,
                                  _ when status.ReleaseAvailability == UpdateReleaseAvailability.UpToDate => 3,
@@ -4103,6 +4111,69 @@ internal sealed partial class CyberdeckWindow
     private static void DrawSettingsGroupHeader(string label)
         => ImGui.TextColored(CyberdeckTheme.Palette.Cyan, label);
 
+    private long protectedPackCandidatesRefreshedAt;
+    private List<(string Directory, string Name)> protectedPackCandidates = [];
+
+    /// <summary>
+    /// Every mod named like a venue pack other than the active one, with a
+    /// checkbox each. A ticked pack is left alone by the updater: not removed,
+    /// not switched off, not taken for the installed pack. Meant for the crew
+    /// keeping an edition in progress beside the release; players with only the
+    /// release pack see nothing here.
+    ///
+    /// Penumbra's list is read every couple of seconds rather than every frame;
+    /// on a modder's machine it is thousands of entries.
+    /// </summary>
+    private void DrawProtectedPacks(ModMapping mapping, string? activeModDirectory, bool penumbraAvailable)
+    {
+        if (penumbraAvailable)
+        {
+            var now = Environment.TickCount64;
+            if (now - protectedPackCandidatesRefreshedAt > 2000)
+            {
+                protectedPackCandidatesRefreshedAt = now;
+                try
+                {
+                    protectedPackCandidates = penumbra.GetModList()
+                        .Where(kvp => !string.Equals(kvp.Key, activeModDirectory, StringComparison.OrdinalIgnoreCase))
+                        .Where(kvp => mapping.IsVenuePackName(kvp.Key, kvp.Value))
+                        .Select(kvp => (Directory: kvp.Key, Name: kvp.Value))
+                        .OrderBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                }
+                catch (Exception ex)
+                {
+                    PluginService.Log.Debug(ex, "Could not list venue packs for the protected list.");
+                }
+            }
+        }
+
+        // A protected pack that is no longer installed stays visible so it can
+        // be unticked; otherwise the entry would sit in the config for good.
+        var rows = protectedPackCandidates.ToList();
+        foreach (var directory in config.ProtectedModDirectories)
+        {
+            if (rows.All(row => !string.Equals(row.Directory, directory, StringComparison.OrdinalIgnoreCase)))
+                rows.Add((directory, $"{directory} (not installed)"));
+        }
+
+        if (rows.Count == 0)
+            return;
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Other venue packs in Penumbra");
+        DrawMutedWrapped("Tick a pack to keep the updater away from it. It is then never removed, switched off, or taken for the installed pack. For editions you are working on yourself.");
+        foreach (var (directory, name) in rows)
+        {
+            var isProtected = config.IsProtectedMod(directory);
+            if (ImGui.Checkbox($"{name}##protect_{directory}", ref isProtected))
+            {
+                config.SetProtectedMod(directory, isProtected);
+                config.Save();
+            }
+        }
+    }
+
     private string? GetImportedModDirectory(ModMapping mapping, bool penumbraAvailable)
     {
         if (!penumbraAvailable)
@@ -4110,7 +4181,7 @@ internal sealed partial class CyberdeckWindow
 
         try
         {
-            return Plugin.FindInstalledModDirectory(mapping, penumbra.GetModList());
+            return Plugin.FindInstalledModDirectory(mapping, penumbra.GetModList(), penumbra.GetModRootDirectory(), config.IsProtectedMod);
         }
         catch (Exception ex)
         {

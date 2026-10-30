@@ -75,6 +75,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly object reconcileQueueLock = new();
     private bool reconcileQueued;
     private bool reconcileForceDownload;
+    /// <summary>Whether the queued reconcile was asked for by the player, so its outcome is told in chat even when nothing changed.</summary>
+    private bool reconcileAnnounce;
     private bool reconcileRunning;
     private int updateCheckPending;
     private int assignmentPending;
@@ -98,14 +100,13 @@ public sealed class Plugin : IDalamudPlugin
     private string? venueFurnitureSignature;
 
     /// <summary>
-    /// Set by an install, cleared by the sweep that follows it.
+    /// How many assignments the edition handover gets before it gives up.
     ///
-    /// The sweep walks every mod Penumbra holds, which on a modder's machine is
-    /// thousands. That is cheap enough once after an install and pointless on
-    /// every arrival at the venue, which is how often the assignment it rides
-    /// along with actually runs.
+    /// It walks every mod Penumbra holds, which on a modder's machine is
+    /// thousands: fine a few times after an install, not on every arrival at the
+    /// venue for the rest of time because one removal keeps failing.
     /// </summary>
-    private bool staleEditionSweepPending;
+    private const int MaxHandoverAttempts = 5;
 
     /// <summary>
     /// What the venue mannequins were last redrawn for.
@@ -153,8 +154,8 @@ public sealed class Plugin : IDalamudPlugin
             penumbra,
             textures,
             textureLoadSource,
-            () => QueueReconcile(),
-            () => QueueReconcile(forceDownload: true),
+            () => QueueReconcile(announce: true),
+            QueueRepair,
             () => _ = AssignAllAsync(lifetime.Token),
             () => RunUpdateCheck(silent: false),
             OnAutoOpenSettingChanged,
@@ -177,7 +178,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             PluginService.Commands.AddHandler(commandName, new CommandInfo(OnCommand)
             {
-                HelpMessage = "Open The Grid Cyberdeck. Aliases: /thegrid, /cyberdeck. Subcommands: update, config, vault.",
+                HelpMessage = "Open The Grid Cyberdeck. Aliases: /thegrid, /cyberdeck. Subcommands: update, repair, config, vault.",
                 ShowInHelp = commandName == PrimaryCommandName,
             });
         }
@@ -252,16 +253,23 @@ public sealed class Plugin : IDalamudPlugin
         {
             case "":
                 OpenMainUi();
+                PluginService.Chat.Print("Opening The Grid Cyberdeck. Subcommands: update, repair, config, vault.", "TheGrid");
                 break;
             case "update":
-                QueueReconcile();
-                PluginService.Chat.Print("Update queued. Checking Penumbra and latest The Grid release...", "TheGrid");
+                QueueReconcile(announce: true);
+                PluginService.Chat.Print("Update queued. Checking Penumbra and the latest The Grid release...", "TheGrid");
+                break;
+            case "repair":
+                QueueRepair();
+                PluginService.Chat.Print("Repair queued. The venue pack will be downloaded again, reinstalled, and its Penumbra setup redone.", "TheGrid");
                 break;
             case "config":
                 OpenConfigUi();
+                PluginService.Chat.Print("Opening Cyberdeck settings: venue mod, updates, services and interface.", "TheGrid");
                 break;
             case "vault":
                 cyberdeckWindow.OpenCipherVault();
+                PluginService.Chat.Print("Opening the Cipher Vault terminal.", "TheGrid");
                 break;
 #if DEBUG
             case "debug":
@@ -269,7 +277,7 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 #endif
             default:
-                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /grid, or /cyberdeck with optional update/config/vault.", "TheGrid");
+                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /grid, or /cyberdeck with optional update/repair/config/vault.", "TheGrid");
                 break;
         }
     }
@@ -521,6 +529,7 @@ public sealed class Plugin : IDalamudPlugin
 
         var startReconcile = false;
         var forceDownload = false;
+        var announce = false;
         lock (reconcileQueueLock)
         {
             if (reconcileQueued && !reconcileRunning)
@@ -528,13 +537,15 @@ public sealed class Plugin : IDalamudPlugin
                 reconcileQueued = false;
                 reconcileRunning = true;
                 forceDownload = reconcileForceDownload;
+                announce = reconcileAnnounce;
                 reconcileForceDownload = false;
+                reconcileAnnounce = false;
                 startReconcile = true;
             }
         }
 
         if (startReconcile)
-            _ = Task.Run(() => ReconcileAsync(forceDownload));
+            _ = Task.Run(() => ReconcileAsync(forceDownload, announce));
 
         var nowTick = Environment.TickCount64;
         if (nowTick >= nextNetworkStatsSampleAt)
@@ -600,7 +611,12 @@ public sealed class Plugin : IDalamudPlugin
             : VenuePresence.Unknown;
     }
 
-    private void RunUpdateCheck(bool silent)
+    /// <param name="prefetchIfAvailable">
+    /// Whether a release that is waiting to be installed is downloaded now, so
+    /// that the install, when the player asks for it, does not start with a
+    /// wait. Only meaningful in manual mode; automatic mode installs instead.
+    /// </param>
+    private void RunUpdateCheck(bool silent, bool prefetchIfAvailable = false)
     {
         if (disposed)
             return;
@@ -622,6 +638,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             var enteredGate = false;
             var queueAutomaticInstall = false;
+            ReleaseAssetInfo? prefetchAsset = null;
             try
             {
                 await operationGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
@@ -677,6 +694,8 @@ public sealed class Plugin : IDalamudPlugin
                                 : $"The Grid mod v{latestAsset.Version} is available (not installed). Press Update to install.";
                     updateUiState.Complete("UPDATE AVAILABLE", message);
                     queueAutomaticInstall = installAutomatically;
+                    if (!installAutomatically && prefetchIfAvailable)
+                        prefetchAsset = latestAsset;
                     PluginService.Chat.Print(message, "TheGrid");
                 }
             }
@@ -705,10 +724,141 @@ public sealed class Plugin : IDalamudPlugin
                 if (enteredGate)
                     operationGate.Release();
                 Volatile.Write(ref updateCheckPending, 0);
-                if (queueAutomaticInstall && !disposed && !lifetime.IsCancellationRequested)
-                    QueueReconcile();
+                if (!disposed && !lifetime.IsCancellationRequested)
+                {
+                    if (queueAutomaticInstall)
+                        QueueReconcile();
+                    else if (prefetchAsset is { } asset)
+                        _ = PrefetchAsync(asset);
+                }
             }
         });
+    }
+
+    /// <summary>
+    /// Downloads a release that is waiting to be installed, so that pressing
+    /// Update later is an install and not a wait.
+    ///
+    /// Manual mode only; automatic mode installs at login anyway. Nothing is put
+    /// into Penumbra here. The file sits in the deck's cache until an install
+    /// picks it up, and the install trusts it only while it is exactly as long
+    /// as GitHub says the asset is.
+    /// </summary>
+    private async Task PrefetchAsync(ReleaseAssetInfo asset)
+    {
+        var cacheDirectory = GetCacheDirectory();
+        if (GitHubReleaseClient.TryGetCachedAsset(Config.GetPrimaryMapping(), asset, cacheDirectory) is not null)
+        {
+            PluginService.Log.Information("Release v{Version} is already in the cache; nothing to pre-fetch.", asset.Version);
+            return;
+        }
+
+        var enteredGate = false;
+        try
+        {
+            await operationGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
+            enteredGate = true;
+            var detail = $"{asset.Name} // release v{asset.Version}";
+            updateUiState.Begin(UpdateOperationKind.Prefetch, UpdateOperationPhase.Downloading, "PRE-FETCHING", detail);
+            PluginService.Log.Information("Pre-fetching release v{Version} ('{Asset}') for a later install.", asset.Version, asset.Name);
+            PluginService.Chat.Print(
+                $"Downloading The Grid mod v{asset.Version} in the background ({FormatBytes(asset.Size)}). Nothing is installed until you press Update.",
+                "TheGrid");
+            var milestones = new DownloadMilestones($"Download v{asset.Version}");
+            var download = await github.DownloadReleaseAssetAsync(
+                Config.GetPrimaryMapping(),
+                asset,
+                cacheDirectory,
+                reuseCached: true,
+                progress =>
+                {
+                    updateUiState.ReportDownloadProgress(progress.BytesDownloaded, progress.TotalBytes, detail);
+                    milestones.Report(progress.BytesDownloaded, progress.TotalBytes);
+                },
+                lifetime.Token).ConfigureAwait(false);
+            CleanupCacheDirectory(cacheDirectory, download.Path);
+            updateUiState.Complete("UPDATE READY", $"Release v{asset.Version} is downloaded. Press Update to install it.");
+            PluginService.Chat.Print($"The Grid mod v{asset.Version} is downloaded and ready. Press Update in the Cyberdeck to install it.", "TheGrid");
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception) when (disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            PluginService.Log.Warning(ex, "Pre-fetching release v{Version} failed.", asset.Version);
+            updateUiState.Fail("PRE-FETCH FAILED", ex, "The release will be downloaded when you install it.");
+            PluginService.Chat.PrintError($"Background download of v{asset.Version} failed: {ex.Message}. It will be downloaded when you install it.", "TheGrid");
+        }
+        finally
+        {
+            if (enteredGate)
+                operationGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// A full pass, whatever the deck thinks the state is: the current release
+    /// is downloaded afresh, installed, older editions are handed over again,
+    /// and the collection, mannequins and furniture are re-applied.
+    ///
+    /// For the player whose venue is wrong and who does not want to work out
+    /// why. Everything in the pass is idempotent, so the cost of running it when
+    /// nothing was wrong is one download.
+    /// </summary>
+    private void QueueRepair()
+    {
+        if (disposed)
+            return;
+
+        var mapping = Config.GetPrimaryMapping();
+        mapping.HandoverPending = true;
+        mapping.HandoverAttempts = 0;
+        Config.Save();
+        lastRedrawSignature = null;
+        venueFurnitureSignature = null;
+        PluginService.Log.Information("Repair requested; forcing a fresh download, handover and assignment.");
+        QueueReconcile(forceDownload: true, announce: true);
+    }
+
+    private static string GetCacheDirectory()
+        => Path.Combine(PluginService.PluginInterface.ConfigDirectory.FullName, "cache");
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes <= 0)
+            return "size unknown";
+        if (bytes < 1024 * 1024)
+            return $"{bytes / 1024.0:0.#} KB";
+        if (bytes < 1024L * 1024 * 1024)
+            return $"{bytes / (1024.0 * 1024):0.#} MB";
+        return $"{bytes / (1024.0 * 1024 * 1024):0.##} GB";
+    }
+
+    /// <summary>
+    /// A chat line at 25, 50 and 75 percent of a download. The bar in the deck
+    /// has the rest; chat gets enough to know a long download is still moving.
+    /// </summary>
+    private sealed class DownloadMilestones(string label)
+    {
+        private int announced;
+
+        public void Report(long bytesDownloaded, long? totalBytes)
+        {
+            if (totalBytes is not > 0)
+                return;
+
+            var quarter = (int)Math.Min(bytesDownloaded * 4 / totalBytes.Value, 3);
+            if (quarter <= announced)
+                return;
+
+            announced = quarter;
+            PluginService.Chat.Print(
+                $"{label}: {quarter * 25}% ({FormatBytes(bytesDownloaded)} of {FormatBytes(totalBytes.Value)}).",
+                "TheGrid");
+        }
     }
 
     private void QueueStartupAction()
@@ -736,10 +886,10 @@ public sealed class Plugin : IDalamudPlugin
         if (Config.FullAuto)
             QueueReconcile();
         else
-            RunUpdateCheck(silent: true);
+            RunUpdateCheck(silent: true, prefetchIfAvailable: true);
     }
 
-    private void QueueReconcile(bool forceDownload = false)
+    private void QueueReconcile(bool forceDownload = false, bool announce = false)
     {
         if (disposed)
             return;
@@ -749,6 +899,8 @@ public sealed class Plugin : IDalamudPlugin
         {
             if (forceDownload)
                 reconcileForceDownload = true;
+            if (announce)
+                reconcileAnnounce = true;
 
             if (!reconcileQueued)
             {
@@ -948,7 +1100,13 @@ public sealed class Plugin : IDalamudPlugin
     private static string EscapeChatCommandArgument(string value)
         => value.Replace("\"", string.Empty, StringComparison.Ordinal);
 
-    private async Task ReconcileAsync(bool forceDownload)
+    /// <param name="announce">
+    /// Whether the player asked for this run. Downloads and installs always say
+    /// what they are doing in chat; a run that finds nothing to do is told only
+    /// when someone is waiting for the answer, so a login in automatic mode stays
+    /// quiet.
+    /// </param>
+    private async Task ReconcileAsync(bool forceDownload, bool announce)
     {
         var enteredGate = false;
         try
@@ -972,7 +1130,7 @@ public sealed class Plugin : IDalamudPlugin
             TrySubscribePenumbraEvents();
 
             var mapping = Config.GetPrimaryMapping();
-            var canAssign = await ReconcileMappingAsync(mapping, lifetime.Token, forceDownload).ConfigureAwait(false);
+            var canAssign = await ReconcileMappingAsync(mapping, lifetime.Token, forceDownload, announce).ConfigureAwait(false);
 
             await PluginService.Framework.RunOnFrameworkThread(Config.Save);
             updateUiState.SetRelease(
@@ -1016,6 +1174,7 @@ public sealed class Plugin : IDalamudPlugin
             updateUiState.Complete(
                 forceDownload ? "REPAIR COMPLETE" : "INSTALLATION COMPLETE",
                 assignmentResult.Detail);
+            PluginService.Chat.Print($"{(forceDownload ? "Repair" : "Installation")} complete. {assignmentResult.Detail}", "TheGrid");
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
@@ -1043,9 +1202,9 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private async Task<bool> ReconcileMappingAsync(ModMapping mapping, CancellationToken cancellationToken, bool forceDownload)
+    private async Task<bool> ReconcileMappingAsync(ModMapping mapping, CancellationToken cancellationToken, bool forceDownload, bool announce)
     {
-        var cacheDirectory = Path.Combine(PluginService.PluginInterface.ConfigDirectory.FullName, "cache");
+        var cacheDirectory = GetCacheDirectory();
         PluginService.Log.Information("Checking for updates; matching asset pattern '{Pattern}'.", mapping.AssetPattern);
         var latestAsset = await github.GetLatestReleaseAssetInfoAsync(mapping, cancellationToken).ConfigureAwait(false);
         var installedMods = penumbra.GetModList();
@@ -1079,7 +1238,20 @@ public sealed class Plugin : IDalamudPlugin
                     $"Venue mod v{latestAsset.Version} is already installed; completing its Penumbra setup.");
                 mapping.ModDirectory = installedModDirectory;
                 mapping.ModName = installedMods[installedModDirectory];
-                return ReconcileAlreadyImportedMapping(mapping, latestAsset.Version, installedModDirectory);
+                // Older editions beside an already-installed current pack get
+                // the same handover an install would give them. Without this a
+                // config reset, or a crash before the first handover ran, left
+                // them enabled next to it until the next release.
+                if (installedMods.Any(kvp =>
+                        !string.Equals(kvp.Key, installedModDirectory, StringComparison.OrdinalIgnoreCase) &&
+                        mapping.IsVenuePackName(kvp.Key, kvp.Value) &&
+                        !Config.IsProtectedMod(kvp.Key)))
+                {
+                    mapping.HandoverPending = true;
+                    mapping.HandoverAttempts = 0;
+                }
+
+                return ReconcileAlreadyImportedMapping(mapping, latestAsset.Version, installedModDirectory, announce);
             }
 
             if (installedModDirectory is not null && missingVersionRecord)
@@ -1097,14 +1269,34 @@ public sealed class Plugin : IDalamudPlugin
             UpdateOperationPhase.Downloading,
             "DOWNLOADING",
             $"{latestAsset.Name} // release v{latestAsset.Version}");
+        var fromCache = !forceDownload && GitHubReleaseClient.TryGetCachedAsset(mapping, latestAsset, cacheDirectory) is not null;
+        if (fromCache)
+        {
+            PluginService.Log.Information("Release v{Version} was pre-fetched; installing from the cache.", latestAsset.Version);
+            PluginService.Chat.Print($"The Grid mod v{latestAsset.Version} is already downloaded; installing it from the cache.", "TheGrid");
+        }
+        else
+        {
+            PluginService.Chat.Print(
+                $"Downloading The Grid mod v{latestAsset.Version}{(forceDownload ? " again" : string.Empty)} ({FormatBytes(latestAsset.Size)})...",
+                "TheGrid");
+        }
+
+        var milestones = new DownloadMilestones($"Download v{latestAsset.Version}");
         var download = await github.DownloadReleaseAssetAsync(
             mapping,
             latestAsset,
             cacheDirectory,
-            progress => updateUiState.ReportDownloadProgress(
-                progress.BytesDownloaded,
-                progress.TotalBytes,
-                $"{latestAsset.Name} // release v{latestAsset.Version}"),
+            reuseCached: !forceDownload,
+            progress =>
+            {
+                updateUiState.ReportDownloadProgress(
+                    progress.BytesDownloaded,
+                    progress.TotalBytes,
+                    $"{latestAsset.Name} // release v{latestAsset.Version}");
+                if (!fromCache)
+                    milestones.Report(progress.BytesDownloaded, progress.TotalBytes);
+            },
             cancellationToken).ConfigureAwait(false);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -1112,6 +1304,11 @@ public sealed class Plugin : IDalamudPlugin
             UpdateOperationPhase.Importing,
             "INSTALLING IN PENUMBRA",
             $"Installing {Path.GetFileName(download.Path)}.");
+        PluginService.Chat.Print(
+            fromCache
+                ? $"Installing The Grid mod v{latestAsset.Version} in Penumbra..."
+                : $"Download complete. Installing The Grid mod v{latestAsset.Version} in Penumbra...",
+            "TheGrid");
 
         try
         {
@@ -1150,11 +1347,17 @@ public sealed class Plugin : IDalamudPlugin
             if (modDirectory is null)
                 throw new InvalidOperationException($"Penumbra accepted '{Path.GetFileName(download.Path)}', but the imported mod did not appear in IPC within 30 seconds.");
 
+            if (!string.Equals(mapping.ModDirectory, modDirectory, StringComparison.OrdinalIgnoreCase))
+                mapping.PreviousModDirectory = mapping.ModDirectory;
             mapping.ModDirectory = modDirectory;
             mapping.ModName = modsAfterInstall.TryGetValue(modDirectory, out var importedModName)
                 ? importedModName
                 : mapping.ModName;
-            staleEditionSweepPending = true;
+            PluginService.Chat.Print($"Penumbra installed '{mapping.ModName}'. Finishing the Penumbra setup...", "TheGrid");
+            // Saved with the config before the assignment that acts on it, so a
+            // crash in between no longer leaves two editions enabled side by side.
+            mapping.HandoverPending = true;
+            mapping.HandoverAttempts = 0;
 
             var folderConfigured = OrganizeModInPenumbra(mapping, modDirectory);
             var collectionConfigured = collection is null || EnableImportedMod(mapping, collection.Value, modDirectory);
@@ -1176,7 +1379,7 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private bool ReconcileAlreadyImportedMapping(ModMapping mapping, string version, string modDirectory)
+    private bool ReconcileAlreadyImportedMapping(ModMapping mapping, string version, string modDirectory, bool announce)
     {
         var collection = FindCollection(mapping.CollectionName);
         var folderConfigured = OrganizeModInPenumbra(mapping, modDirectory);
@@ -1189,7 +1392,7 @@ public sealed class Plugin : IDalamudPlugin
             mapping.LastStatus += $" Penumbra did not confirm placement under '{mapping.PenumbraFolderPath}'.";
         if (!collectionConfigured)
             mapping.LastStatus += " Penumbra did not confirm the collection enable/priority settings.";
-        if (!Config.FullAuto)
+        if (announce || !Config.FullAuto)
             PluginService.Chat.Print($"{mapping.Name}: {mapping.LastStatus}", "TheGrid");
         return collectionConfigured;
     }
@@ -1319,29 +1522,49 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     /// <summary>
-    /// Switches older editions of the venue pack off in the venue collection.
+    /// Hands the venue over from older editions of the pack to the one just
+    /// installed, then retires them.
     ///
     /// The pack ships as a family — see <see cref="ModMapping.ModFamily"/> — so a
     /// new edition arrives under a new name and Penumbra keeps the previous one.
-    /// Two editions enabled at once fight over the same files.
+    /// Two editions enabled at once fight over the same files, and a disabled
+    /// one is a checkbox away from fighting again.
     ///
-    /// Disabled, never deleted. Deciding which mod is an old edition goes by name,
-    /// and the name rules have been wrong before: 0.11.0 deleted players' own
-    /// "[//n_root] The Grid's …" mods from disk, with no undo. A wrong call here
-    /// costs a checkbox in one collection instead.
+    /// Three steps, in this order. The previous pack's settings are copied onto
+    /// the new one in every collection, so a player who had the venue enabled in
+    /// a collection of their own keeps it through the update. The venue
+    /// collection's own enable is then re-asserted, since the copy may have
+    /// brought "off" with it. Only then is each older pack retired: deleted when
+    /// its own meta.json names it a member of the family with a plain release
+    /// number lower than the active pack's, switched off otherwise.
     ///
-    /// Scoped to venue packs by name, not to everything enabled in the
-    /// collection: players keep their own mods in it too.
+    /// Deletion goes by what the pack says about itself, never by the legacy
+    /// names: 0.11.0 deleted players' own "[//n_root] The Grid's …" mods by
+    /// matching those as a prefix, with no undo. A version that does not parse —
+    /// "1.4.1-halloween.4" is a real one — is someone's work in progress and is
+    /// kept.
     ///
-    /// Runs after the new pack is installed and assigned rather than before, so a
-    /// failure part-way through leaves the venue working rather than empty.
+    /// Runs with the assignment after the new pack is installed and enabled, so
+    /// a failure part-way leaves the venue working rather than empty, and keeps
+    /// running until nothing is left or it has tried enough times.
     /// </summary>
-    private void DisableStaleEditions(ModMapping mapping, AssignmentCollection collection, string activeModDirectory)
+    private void HandOverStaleEditions(
+        ModMapping mapping,
+        AssignmentCollection collection,
+        string activeModDirectory,
+        List<(bool? Ok, string Label)> statusItems)
     {
-        if (!staleEditionSweepPending)
+        if (!mapping.HandoverPending)
             return;
 
-        staleEditionSweepPending = false;
+        if (mapping.HandoverAttempts >= MaxHandoverAttempts)
+        {
+            PluginService.Log.Warning("Giving up on retiring older venue editions after {Attempts} attempts.", mapping.HandoverAttempts);
+            mapping.HandoverPending = false;
+            return;
+        }
+
+        mapping.HandoverAttempts++;
 
         Dictionary<string, string> mods;
         try
@@ -1350,55 +1573,263 @@ public sealed class Plugin : IDalamudPlugin
         }
         catch (Exception exception)
         {
-            PluginService.Log.Warning(exception, "Could not list Penumbra mods to switch off older venue editions.");
+            PluginService.Log.Warning(exception, "Could not list Penumbra mods to retire older venue editions.");
+            return;
+        }
+
+        // Nothing is retired unless the pack that replaces it is really there.
+        if (!mods.ContainsKey(activeModDirectory))
+        {
+            PluginService.Log.Warning("The active venue pack {ModDirectory} is not in Penumbra's mod list; older editions are left alone.", activeModDirectory);
             return;
         }
 
         // The active pack is excluded before anything else is considered, so the
-        // mod that was just installed can never be the one switched off.
-        var stale = mods
+        // mod that was just installed can never be the one retired.
+        var others = mods
             .Where(kvp => !string.Equals(kvp.Key, activeModDirectory, StringComparison.OrdinalIgnoreCase))
             .Where(kvp => mapping.IsVenuePackName(kvp.Key, kvp.Value))
             .ToList();
 
-        if (stale.Count == 0)
-            return;
+        // Protected packs are not stale: not retired, not switched off, not even
+        // a source for settings. Reported, so the crew can see the list is honoured.
+        var protectedPacks = others.Where(kvp => Config.IsProtectedMod(kvp.Key)).ToList();
+        if (protectedPacks.Count > 0)
+            statusItems.Add((true, $"Left {protectedPacks.Count} protected pack(s) alone: {string.Join(", ", protectedPacks.Select(kvp => $"'{kvp.Value}'"))}"));
 
-        if (collection.IsTemporary)
+        var stale = others.Where(kvp => !Config.IsProtectedMod(kvp.Key)).ToList();
+        if (stale.Count == 0)
         {
-            ResetManagedTemporaryCollection(mapping, collection.Id, activeModDirectory);
+            mapping.HandoverPending = false;
+            mapping.PreviousModDirectory = string.Empty;
             return;
         }
 
+        var penumbraRoot = penumbra.GetModRootDirectory();
+        var activeVersion = ResolveActiveVersion(mapping, penumbraRoot, activeModDirectory);
+
+        CarrySettingsOver(mapping, collection, activeModDirectory, stale);
+
+        var removed = new List<(string Directory, string Name)>();
+        var kept = new List<string>();
+        var unfinished = false;
         foreach (var (directory, name) in stale)
+        {
+            var meta = PenumbraModMeta.TryRead(penumbraRoot, directory);
+            var replacesOwnInstall = string.Equals(directory, mapping.PreviousModDirectory, StringComparison.OrdinalIgnoreCase);
+            var blocker = DeletionBlocker(mapping, directory, name, meta, activeVersion, replacesOwnInstall);
+            if (blocker is null)
+            {
+                if (TryDeleteRetiredPack(directory, name, meta?.Version))
+                    removed.Add((directory, name));
+                else
+                    unfinished = true;
+                continue;
+            }
+
+            kept.Add($"'{name}' ({blocker})");
+            if (!collection.IsTemporary)
+                SwitchOffInCollection(collection, directory, name);
+        }
+
+        // Penumbra's success means the request was taken, not that the folder is
+        // gone. Read the list back; anything still there gets another attempt.
+        if (removed.Count > 0)
         {
             try
             {
-                // Directory only. Given a name, Penumbra falls back to the first
-                // mod carrying it when the directory is not found.
-                if (!penumbra.IsModEnabled(collection.Id, directory, string.Empty))
-                    continue;
-
-                var code = penumbra.TrySetMod(collection.Id, directory, string.Empty, false);
-                if (IsSuccess(code))
-                    PluginService.Log.Information(
-                        "Switched off an older edition of the venue pack in '{Collection}': {ModDirectory} ('{ModName}').",
-                        collection.Name,
-                        directory,
-                        name);
-                else
+                var after = penumbra.GetModList();
+                var lingering = removed.Where(entry => after.ContainsKey(entry.Directory)).ToList();
+                if (lingering.Count > 0)
+                {
+                    unfinished = true;
                     PluginService.Log.Warning(
-                        "Could not switch off older venue edition {ModDirectory} in '{Collection}'. Penumbra code {Code}.",
-                        directory,
-                        collection.Name,
-                        code);
+                        "Penumbra still lists {Count} venue pack(s) after removal: {Directories}.",
+                        lingering.Count,
+                        string.Join(", ", lingering.Select(entry => entry.Directory)));
+                }
             }
             catch (Exception exception)
             {
-                PluginService.Log.Warning(exception, "Could not switch off older venue edition {ModDirectory}.", directory);
+                unfinished = true;
+                PluginService.Log.Warning(exception, "Could not confirm that older venue packs were removed.");
             }
         }
+
+        if (removed.Count > 0)
+            statusItems.Add((true, $"Removed {removed.Count} older venue pack(s): {string.Join(", ", removed.Select(entry => $"'{entry.Name}'"))}"));
+
+        if (kept.Count > 0)
+            statusItems.Add((true, $"Kept {kept.Count} older pack(s) switched off: {string.Join(", ", kept)}"));
+
+        mapping.HandoverPending = unfinished;
+        if (!unfinished)
+            mapping.PreviousModDirectory = string.Empty;
     }
+
+    /// <summary>
+    /// Copies the previous pack's settings onto the active one, everywhere, then
+    /// re-asserts the venue's own enable.
+    ///
+    /// Everywhere, because the point is the collection the deck does not manage:
+    /// a player who enabled the venue in their own Base so it shows without the
+    /// deck would otherwise lose it when the old pack is retired. Penumbra fixes
+    /// up option choices the new edition no longer has.
+    /// </summary>
+    private void CarrySettingsOver(
+        ModMapping mapping,
+        AssignmentCollection collection,
+        string activeModDirectory,
+        List<KeyValuePair<string, string>> stale)
+    {
+        var source = ChooseHandoverSource(mapping, stale);
+        if (source is not null)
+        {
+            try
+            {
+                var code = penumbra.CopyModSettings(null, source, activeModDirectory);
+                if (IsSuccess(code))
+                    PluginService.Log.Information("Carried the venue pack's settings over from {Previous} to {Active}.", source, activeModDirectory);
+                else
+                    PluginService.Log.Warning("Penumbra would not copy settings from {Previous} to {Active}. Code {Code}.", source, activeModDirectory, code);
+            }
+            catch (Exception exception)
+            {
+                PluginService.Log.Warning(exception, "Could not copy the venue pack's settings from {Previous}.", source);
+            }
+        }
+
+        // The copy wrote the old pack's state into the venue collection too, and
+        // that state may be "off". The venue's own enable is not negotiable.
+        if (collection.IsTemporary)
+            ResetManagedTemporaryCollection(mapping, collection.Id, activeModDirectory);
+        else
+            _ = EnableImportedMod(mapping, (collection.Id, collection.Name), activeModDirectory);
+    }
+
+    /// <summary>
+    /// The pack whose settings travel to the new one: the directory the deck was
+    /// managing before the install, while it is still there. Nothing else. A
+    /// handover that did not come from an install — the current pack was found
+    /// already installed beside older ones — copies nothing, because the player
+    /// may have set the current pack up themselves and an older pack's settings
+    /// would overwrite that.
+    /// </summary>
+    private static string? ChooseHandoverSource(ModMapping mapping, List<KeyValuePair<string, string>> stale)
+    {
+        var previous = mapping.PreviousModDirectory;
+        return !string.IsNullOrWhiteSpace(previous) &&
+               stale.Any(kvp => string.Equals(kvp.Key, previous, StringComparison.OrdinalIgnoreCase))
+            ? previous
+            : null;
+    }
+
+    /// <summary>The active pack's version from its own meta.json, falling back to what the deck recorded at install.</summary>
+    private static ModVersion? ResolveActiveVersion(ModMapping mapping, string? penumbraRoot, string activeModDirectory)
+    {
+        if (ReadVersion(penumbraRoot, activeModDirectory) is { } fromMeta)
+            return fromMeta;
+
+        return ModVersion.TryParse(NormalizeVersionForComparison(mapping.LastAppliedVersion), out var fromConfig)
+            ? fromConfig
+            : null;
+    }
+
+    /// <summary>
+    /// Why an older pack must not be deleted, or null when every condition for
+    /// deleting it holds.
+    ///
+    /// Lower version than the active pack is the rule. The one exception is a
+    /// repair: the fresh copy carries the same version as the one it replaces,
+    /// and that one is deleted too, but only when it is the directory the deck
+    /// itself was managing before the install. The deck deletes what the deck
+    /// installed; a same-version pack from anywhere else is switched off.
+    /// </summary>
+    private static string? DeletionBlocker(
+        ModMapping mapping,
+        string directory,
+        string name,
+        PenumbraModMeta? meta,
+        ModVersion? activeVersion,
+        bool replacesOwnInstall)
+    {
+        if (!mapping.IsFamilyName(directory, name))
+            return "legacy name, switched off only";
+
+        if (meta is null)
+            return "its meta.json could not be read";
+
+        if (!ModVersion.TryParse(meta.Value.Version, out var version))
+            return $"version '{meta.Value.Version}' is not a plain release number";
+
+        if (activeVersion is null)
+            return "the current pack's version is unknown";
+
+        var comparison = version.CompareTo(activeVersion.Value);
+        if (comparison > 0)
+            return $"v{version} is newer than the current v{activeVersion.Value}";
+
+        if (comparison == 0 && !replacesOwnInstall)
+            return $"v{version} is the same as the current v{activeVersion.Value}, switched off only";
+
+        return null;
+    }
+
+    private bool TryDeleteRetiredPack(string directory, string name, string? version)
+    {
+        try
+        {
+            var code = penumbra.DeleteMod(directory);
+            if (IsSuccess(code))
+            {
+                PluginService.Log.Information("Removed older venue pack {ModDirectory} ('{ModName}' v{Version}).", directory, name, version ?? "?");
+                PluginService.Chat.Print($"Removed older venue pack '{name}' v{version}.", "TheGrid");
+                return true;
+            }
+
+            PluginService.Log.Warning("Could not remove older venue pack {ModDirectory}. Penumbra code {Code}.", directory, code);
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Warning(exception, "Could not remove older venue pack {ModDirectory}.", directory);
+        }
+
+        return false;
+    }
+
+    private void SwitchOffInCollection(AssignmentCollection collection, string directory, string name)
+    {
+        try
+        {
+            // Directory only. Given a name, Penumbra falls back to the first
+            // mod carrying it when the directory is not found.
+            if (!penumbra.IsModEnabled(collection.Id, directory, string.Empty))
+                return;
+
+            var code = penumbra.TrySetMod(collection.Id, directory, string.Empty, false);
+            if (IsSuccess(code))
+                PluginService.Log.Information(
+                    "Switched off an older edition of the venue pack in '{Collection}': {ModDirectory} ('{ModName}').",
+                    collection.Name,
+                    directory,
+                    name);
+            else
+                PluginService.Log.Warning(
+                    "Could not switch off older venue edition {ModDirectory} in '{Collection}'. Penumbra code {Code}.",
+                    directory,
+                    collection.Name,
+                    code);
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Warning(exception, "Could not switch off older venue edition {ModDirectory}.", directory);
+        }
+    }
+
+    private static ModVersion? ReadVersion(string? penumbraRoot, string directory)
+        => PenumbraModMeta.TryRead(penumbraRoot, directory) is { } meta && ModVersion.TryParse(meta.Version, out var version)
+            ? version
+            : null;
 
     /// <summary>
     /// Leaves the deck's own temporary collection holding the active pack alone.
@@ -1546,6 +1977,8 @@ public sealed class Plugin : IDalamudPlugin
                 afterSync
                     ? $"The venue mod is installed, but setup needs attention. {result.Detail}"
                     : result.Detail);
+            if (afterSync)
+                PluginService.Chat.PrintError($"The venue mod is installed, but its setup needs attention. {result.Detail}", "TheGrid");
             return true;
         }
 
@@ -1554,6 +1987,8 @@ public sealed class Plugin : IDalamudPlugin
             updateUiState.NeedsAttention(
                 afterSync ? "INSTALLATION NEEDS ATTENTION" : "SETUP NEEDS ATTENTION",
                 result.Detail);
+            if (afterSync)
+                PluginService.Chat.Print($"The venue mod is installed; one step needs attention. {result.Detail}", "TheGrid");
             return true;
         }
 
@@ -1562,6 +1997,8 @@ public sealed class Plugin : IDalamudPlugin
             updateUiState.Complete(
                 afterSync ? "INSTALLATION COMPLETE" : "READY AT VENUE",
                 "The venue mod is installed and will activate automatically when you enter The Grid.");
+            if (afterSync)
+                PluginService.Chat.Print("Installation complete. The venue mod will activate automatically when you enter The Grid.", "TheGrid");
             return true;
         }
 
@@ -1613,7 +2050,7 @@ public sealed class Plugin : IDalamudPlugin
         statusItems.Add((true, assignmentCollection.Value.IsTemporary
             ? "Automatic Penumbra setup ready"
             : $"Using Penumbra collection '{assignmentCollection.Value.Name}'"));
-        DisableStaleEditions(mapping, assignmentCollection.Value, modDirectory);
+        HandOverStaleEditions(mapping, assignmentCollection.Value, modDirectory, statusItems);
         _ = OrganizeModInPenumbra(mapping, modDirectory);
 
         var redrawSignature =
@@ -1962,7 +2399,23 @@ public sealed class Plugin : IDalamudPlugin
     private (Guid Id, string Name)? FindCollection(string collectionName)
         => penumbra.FindCollectionByName(collectionName);
 
-    internal static string? FindInstalledModDirectory(ModMapping mapping, Dictionary<string, string> mods)
+    private string? FindInstalledModDirectory(ModMapping mapping, Dictionary<string, string> mods)
+        => FindInstalledModDirectory(mapping, mods, penumbra.GetModRootDirectory(), Config.IsProtectedMod);
+
+    /// <summary>
+    /// The pack the deck should treat as installed.
+    ///
+    /// The recorded directory wins while it exists. Failing that, when several
+    /// mods are named like the pack, the one with the highest release number in
+    /// its own meta.json is taken rather than whichever Penumbra lists first:
+    /// first-match once adopted an older edition, enabled it, and reported the
+    /// venue up to date.
+    /// </summary>
+    internal static string? FindInstalledModDirectory(
+        ModMapping mapping,
+        Dictionary<string, string> mods,
+        string? penumbraRoot,
+        Func<string, bool>? isProtected = null)
     {
         if (mods.ContainsKey(mapping.ModDirectory))
             return mapping.ModDirectory;
@@ -1971,9 +2424,22 @@ public sealed class Plugin : IDalamudPlugin
         if (!string.IsNullOrEmpty(duplicateDirectory))
             return duplicateDirectory;
 
-        var byName = mods.FirstOrDefault(kvp => mapping.MatchesMod(kvp.Key, kvp.Value));
+        // A protected pack is someone's work in progress, never the venue's
+        // installed pack by name alone; the recorded directory above still wins.
+        var byName = mods
+            .Where(kvp => mapping.MatchesMod(kvp.Key, kvp.Value))
+            .Where(kvp => !(isProtected?.Invoke(kvp.Key) ?? false))
+            .Select(kvp => kvp.Key)
+            .ToList();
+        if (byName.Count <= 1)
+            return byName.Count == 0 ? null : byName[0];
 
-        return string.IsNullOrEmpty(byName.Key) ? null : byName.Key;
+        return byName
+            .Select(directory => (Directory: directory, Version: ReadVersion(penumbraRoot, directory)))
+            .OrderByDescending(entry => entry.Version.HasValue)
+            .ThenByDescending(entry => entry.Version ?? default)
+            .First()
+            .Directory;
     }
 
     private static string? TryResolveModDirectory(ModMapping mapping, Dictionary<string, string> mods, Dictionary<string, string> modsBeforeInstall, string? addedDirectory)

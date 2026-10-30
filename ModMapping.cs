@@ -34,6 +34,25 @@ public sealed class ModMapping
     public string LastStatus { get; set; } = "Not applied yet.";
 
     /// <summary>
+    /// The pack the deck was managing before the latest install, so its settings
+    /// can be carried over to the new one. Cleared once the handover is done.
+    /// </summary>
+    public string PreviousModDirectory { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Whether an install still has older editions to hand over and retire.
+    ///
+    /// Saved with the config rather than kept for the session: the handover runs
+    /// with the assignment that follows an install, and a crash or a Penumbra
+    /// reload in between used to lose it, leaving two editions enabled side by
+    /// side until the next release.
+    /// </summary>
+    public bool HandoverPending { get; set; }
+
+    /// <summary>Assignments the handover has run on; it gives up after a few rather than walking the mod list forever.</summary>
+    public int HandoverAttempts { get; set; }
+
+    /// <summary>
     /// The product family the venue mod ships under.
     ///
     /// The pack is not one fixed name: it is "Grid CityScape" plus an edition —
@@ -114,6 +133,22 @@ public sealed class ModMapping
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Whether a mod is named as a member of the current family: the only names
+    /// the update path is allowed to delete, and even then only with a plain
+    /// release number lower than the active pack's. Legacy names are deliberately
+    /// not included; those are switched off and left on disk.
+    /// </summary>
+    public bool IsFamilyName(string? modDirectory, string? modName)
+        => IsFamilyName(modDirectory) || IsFamilyName(modName);
+
+    private bool IsFamilyName(string? candidate)
+    {
+        var normalized = CollectionNameMatcher.Normalize(StripDuplicateSuffix(candidate));
+        var family = CollectionNameMatcher.Normalize(ModFamily);
+        return normalized.Length > 0 && family.Length > 0 && normalized.StartsWith(family, StringComparison.Ordinal);
     }
 
     /// <summary>Drops the " (2)" Penumbra appends to a directory on a repeat import.</summary>

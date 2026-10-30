@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using Dalamud.Configuration;
 
@@ -71,6 +73,29 @@ public sealed class PluginConfig : IPluginConfiguration
     public bool VenueFurnitureEnabled { get; set; } = true;
 
     /// <summary>
+    /// Penumbra mod directories the updater must leave alone.
+    ///
+    /// For the venue crew: an edition under development sits beside the release
+    /// pack under a family name, and without this the handover switched it off
+    /// at every start and reported it as kept. A listed pack is never deleted,
+    /// never switched off, never counted as an older edition, and never taken
+    /// for the installed pack by name. The pack the deck installed itself is
+    /// managed regardless of this list.
+    /// </summary>
+    public List<string> ProtectedModDirectories { get; set; } = [];
+
+    public bool IsProtectedMod(string? modDirectory)
+        => !string.IsNullOrEmpty(modDirectory) &&
+           ProtectedModDirectories.Contains(modDirectory, StringComparer.OrdinalIgnoreCase);
+
+    public void SetProtectedMod(string modDirectory, bool isProtected)
+    {
+        ProtectedModDirectories.RemoveAll(entry => string.Equals(entry, modDirectory, StringComparison.OrdinalIgnoreCase));
+        if (isProtected)
+            ProtectedModDirectories.Add(modDirectory);
+    }
+
+    /// <summary>
     /// Newest broadcast this deck has already announced.
     ///
     /// Deliberately not <see cref="LastSeenNewsUnixMs"/>, which records that the
@@ -121,6 +146,7 @@ public sealed class PluginConfig : IPluginConfiguration
     public ModMapping GetPrimaryMapping()
     {
         NetworkSessionHistory ??= [];
+        ProtectedModDirectories ??= [];
         ActiveNetworkSession?.OccupancyBuckets ??= [];
         foreach (var summary in NetworkSessionHistory)
             summary.OccupancyBuckets ??= [];
@@ -145,7 +171,7 @@ public sealed class PluginConfig : IPluginConfiguration
         // would stay there forever — and since the address is no longer shown
         // as a field, there is no way to correct it from inside the game.
         // Anything that is not the venue relay is reset here.
-        if (!string.Equals(BackendBaseUrl, VenueRelayUrl, System.StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(BackendBaseUrl, VenueRelayUrl, StringComparison.OrdinalIgnoreCase))
             BackendBaseUrl = VenueRelayUrl;
 
         // Raise the priority stored by builds that defaulted it to zero. Not a
@@ -157,7 +183,7 @@ public sealed class PluginConfig : IPluginConfiguration
 
         // Migrate the old beta-specific asset pattern to "any .pmp".
         if (string.IsNullOrWhiteSpace(Mappings[0].AssetPattern)
-            || string.Equals(Mappings[0].AssetPattern, ModMapping.LegacyAssetPattern, System.StringComparison.OrdinalIgnoreCase))
+            || string.Equals(Mappings[0].AssetPattern, ModMapping.LegacyAssetPattern, StringComparison.OrdinalIgnoreCase))
             Mappings[0].AssetPattern = ModMapping.DefaultAssetPattern;
 
         return Mappings[0];

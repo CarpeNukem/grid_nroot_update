@@ -15,8 +15,11 @@ The release source is locked to `CarpeNukem/grid_nroot_update`. The plugin check
 
 - `/thegrid`, `/grid`, or `/cyberdeck` opens The Grid Cyberdeck.
 - `/thegrid update`, `/grid update`, or `/cyberdeck update` checks GitHub releases and applies the latest matching venue mod.
+- `/thegrid repair`, `/grid repair`, or `/cyberdeck repair` downloads the current venue mod again, reinstalls it, retires the copy it replaces, and redoes the collection, mannequin and furniture setup. Use it when the venue looks wrong and you do not want to work out why.
 - `/thegrid config`, `/grid config`, or `/cyberdeck config` opens the configuration window.
 - `/thegrid vault`, `/grid vault`, or `/cyberdeck vault` opens the encrypted Cipher Vault authentication terminal.
+
+Every command answers in chat, and an install reports each step there as well as in the deck: the release found, the download with its size and progress at every quarter, the Penumbra import, the setup, and the result.
 
 The Cipher Vault creates a persistent seeded intrusion run with randomized technical packet frames, manual multi-layer decoding, forensic honeypots, trace penalties, graded clearance, and an S-rank encrypted payload. Closing the terminal preserves the current run; completing or explicitly aborting it permits a newly generated archive.
 
@@ -24,7 +27,11 @@ The Cipher Vault creates a persistent seeded intrusion run with randomized techn
 
 The plugin uses Penumbra's public IPC to install venue mod packages and apply them to nearby venue mannequins. Existing permanent collections named `Grid`, `TheGrid`, or `The Grid` are supported. When none exists, the plugin uses a managed temporary collection and recreates it as needed.
 
-When a new edition of the venue pack installs, older editions are switched off in the Grid collection. Nothing is deleted from disk, and only mods named like a venue pack (`Grid CityScape…`, `n_root_the_grid`, `TheGrid`) are touched; anything else you keep in the collection stays as it is.
+When a new edition of the venue pack installs, the previous pack's settings are copied onto the new one in every collection, so the venue stays enabled wherever you had it. Older `Grid CityScape` editions are then removed from Penumbra and from disk, but only when their own meta.json carries a plain release number lower than the new pack's. Anything else named like a venue pack is switched off in the Grid collection and kept: the legacy `n_root_the_grid` and `TheGrid` packs, and any build whose version has a suffix (a work in progress such as `1.4.1-halloween.4`). Mods that are not venue packs are never touched. A repair is the one case where a pack with the same version as the new one is removed, and only when it is the copy the plugin itself installed before.
+
+Packs ticked under **Other venue packs in Penumbra** in Settings are protected: the updater never removes them, switches them off, or mistakes them for the installed pack. This is for an edition under development kept beside the release pack.
+
+With automatic updates off, a release that is waiting to be installed is still downloaded at login, so pressing **Update** later is an install rather than a wait. The cached file is used only while it is exactly the size GitHub reports for the asset.
 
 ## Dalamud Repository
 

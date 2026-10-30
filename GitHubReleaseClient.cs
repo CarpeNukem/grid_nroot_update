@@ -26,18 +26,55 @@ internal sealed class GitHubReleaseClient : IDisposable
     {
         var release = await GetLatestUsableReleaseAsync(mapping, cancellationToken).ConfigureAwait(false);
         var asset = release.Assets.First(a => Glob.IsMatch(a.Name, mapping.AssetPattern));
-        return new ReleaseAssetInfo(NormalizeVersion(release.TagName), asset.Name, asset.BrowserDownloadUrl);
+        return new ReleaseAssetInfo(NormalizeVersion(release.TagName), asset.Name, asset.BrowserDownloadUrl, asset.Size);
     }
 
+    /// <summary>
+    /// The cached download for a release, when a complete one is there.
+    ///
+    /// Complete means the file is exactly as long as GitHub says the asset is.
+    /// A download that was cut short never reaches this name, but a file with
+    /// the right name and the wrong length is still not trusted, and neither is
+    /// one GitHub reports no size for.
+    /// </summary>
+    public static DownloadedAsset? TryGetCachedAsset(ModMapping mapping, ReleaseAssetInfo asset, string cacheDirectory)
+    {
+        var targetPath = GetCachePath(mapping, asset, cacheDirectory);
+        try
+        {
+            var file = new FileInfo(targetPath);
+            if (!file.Exists || asset.Size <= 0 || file.Length != asset.Size)
+                return null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        return new DownloadedAsset(targetPath, asset.Version);
+    }
+
+    /// <param name="reuseCached">
+    /// Whether a complete download already in the cache is handed back instead
+    /// of fetching again. A repair passes false: the point of a repair is a
+    /// fresh copy.
+    /// </param>
     public async Task<DownloadedAsset> DownloadReleaseAssetAsync(
         ModMapping mapping,
         ReleaseAssetInfo asset,
         string cacheDirectory,
+        bool reuseCached,
         Action<DownloadProgress>? progress,
         CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(cacheDirectory);
-        var targetPath = Path.Combine(cacheDirectory, $"{SanitizeFileName(mapping.Name)}-{asset.Version}-{asset.Name}");
+        if (reuseCached && TryGetCachedAsset(mapping, asset, cacheDirectory) is { } cached)
+        {
+            progress?.Invoke(new DownloadProgress(asset.Size, asset.Size));
+            return cached;
+        }
+
+        var targetPath = GetCachePath(mapping, asset, cacheDirectory);
         var partialPath = $"{targetPath}.{Guid.NewGuid():N}.partial";
 
         try
@@ -110,9 +147,18 @@ internal sealed class GitHubReleaseClient : IDisposable
         var releases = await JsonSerializer.DeserializeAsync<List<GitHubRelease>>(releasesStream, cancellationToken: cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("GitHub returned an empty releases payload.");
 
+        // Highest release number, not first in the list. GitHub orders releases
+        // by creation time, several tags published in one go share it, and a
+        // re-published older tag would otherwise win over the current one.
         var release = releases
             .Where(r => !r.Draft && r.TagName.StartsWith("mod-v", StringComparison.OrdinalIgnoreCase))
-            .FirstOrDefault(r => r.Assets.Any(a => Glob.IsMatch(a.Name, mapping.AssetPattern)));
+            .Where(r => r.Assets.Any(a => Glob.IsMatch(a.Name, mapping.AssetPattern)))
+            .Select((r, index) => (Release: r, Index: index, Version: ParseTagVersion(r.TagName)))
+            .OrderByDescending(entry => entry.Version.HasValue)
+            .ThenByDescending(entry => entry.Version ?? default)
+            .ThenBy(entry => entry.Index)
+            .Select(entry => entry.Release)
+            .FirstOrDefault();
 
         return release
             ?? throw new InvalidOperationException($"No published GitHub release in {ModMapping.FixedGitHubOwner}/{ModMapping.FixedGitHubRepo} has a 'mod-v*' tag with an asset matching '{mapping.AssetPattern}'.");
@@ -121,11 +167,17 @@ internal sealed class GitHubReleaseClient : IDisposable
     public void Dispose()
         => httpClient.Dispose();
 
+    private static string GetCachePath(ModMapping mapping, ReleaseAssetInfo asset, string cacheDirectory)
+        => Path.Combine(cacheDirectory, $"{SanitizeFileName(mapping.Name)}-{asset.Version}-{asset.Name}");
+
     private static string SanitizeFileName(string value)
     {
         var invalid = Path.GetInvalidFileNameChars();
         return string.Concat(value.Select(c => invalid.Contains(c) ? '_' : c));
     }
+
+    private static ModVersion? ParseTagVersion(string tagName)
+        => ModVersion.TryParse(NormalizeVersion(tagName), out var version) ? version : null;
 
     private static string NormalizeVersion(string tagName)
     {
@@ -160,9 +212,12 @@ internal sealed class GitHubReleaseClient : IDisposable
 
         [JsonPropertyName("browser_download_url")]
         public string BrowserDownloadUrl { get; set; } = string.Empty;
+
+        [JsonPropertyName("size")]
+        public long Size { get; set; }
     }
 }
 
 internal readonly record struct DownloadedAsset(string Path, string Version);
-internal readonly record struct ReleaseAssetInfo(string Version, string Name, string DownloadUrl);
+internal readonly record struct ReleaseAssetInfo(string Version, string Name, string DownloadUrl, long Size);
 internal readonly record struct DownloadProgress(long BytesDownloaded, long? TotalBytes);

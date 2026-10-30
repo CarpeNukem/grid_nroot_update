@@ -29,6 +29,46 @@ internal sealed class PenumbraIpc
     public int InstallMod(string packagePath)
         => pluginInterface.GetIpcSubscriber<string, int>("Penumbra.InstallMod.V5").InvokeFunc(packagePath);
 
+    /// <summary>
+    /// Penumbra's root mod folder, or null when it cannot say.
+    ///
+    /// Used to read a mod's own meta.json, which is the only place a pack's
+    /// version lives; nothing is ever written under it.
+    /// </summary>
+    public string? GetModRootDirectory()
+    {
+        try
+        {
+            var root = pluginInterface.GetIpcSubscriber<string>("Penumbra.GetModDirectory").InvokeFunc();
+            return string.IsNullOrWhiteSpace(root) ? null : root;
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Penumbra could not report its mod directory.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Deletes a mod from Penumbra and from disk. There is no undo.
+    ///
+    /// Directory only, never by name: given a name, Penumbra falls back to the
+    /// first mod carrying it. The one caller is the edition handover in
+    /// <see cref="Plugin"/>, and it reaches here only for a mod whose own
+    /// meta.json names it a venue pack with a release number older than the
+    /// pack just installed.
+    /// </summary>
+    public int DeleteMod(string modDirectory)
+        => pluginInterface.GetIpcSubscriber<string, string, int>("Penumbra.DeleteMod.V5").InvokeFunc(modDirectory, string.Empty);
+
+    /// <summary>
+    /// Copies one mod's settings onto another: enabled state, priority and
+    /// option choices, in every collection when <paramref name="collectionId"/>
+    /// is null. Penumbra fixes up option choices the target no longer has.
+    /// </summary>
+    public int CopyModSettings(Guid? collectionId, string fromModDirectory, string toModDirectory)
+        => pluginInterface.GetIpcSubscriber<Guid?, string, string, int>("Penumbra.CopyModSettings.V5").InvokeFunc(collectionId, fromModDirectory, toModDirectory);
+
     public int SetModPath(string modDirectory, string modName, string newPath)
     {
         try

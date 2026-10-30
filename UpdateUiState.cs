@@ -10,6 +10,8 @@ public enum UpdateOperationKind
     Reconcile,
     Repair,
     Assignment,
+    /// <summary>A download of a release that is waiting to be installed; nothing reaches Penumbra.</summary>
+    Prefetch,
 }
 
 public enum UpdateOperationPhase
