@@ -99,6 +99,70 @@ describe("posting a score", () => {
 		expect(await boards(caller)).toEqual({ firewall: [{ initials: "CRPNKM", score: 26406 }] });
 	});
 
+	it.each([
+		"neon-nibbles",
+		"toast-last-call-prototype",
+		"max-tac-lockdown-v1",
+		"shots-fired-rooms-v2",
+		"no-fly-zone-v2",
+		"night-circuit",
+		"firewall",
+	])("shares the current cabinet board %s", async (board) => {
+		const caller = newCaller();
+		const response = await submit([{ id: idFor(1), board, initials: "GRID", score: 1234 }], caller);
+		expect(response.status).toBe(200);
+		expect(await outcomes(response)).toEqual({ [idFor(1)]: "placed" });
+		expect((await boards(caller))[board]).toEqual([{ initials: "GRID", score: 1234 }]);
+	});
+
+	it.each(["night-circuit-daily-", "neon-nibbles-daily-", "no-fly-zone-v2.daily."])(
+		"shares live daily boards and expires old ones for %s",
+		async (prefix) => {
+			const caller = newCaller();
+			await env.DB.prepare(
+				"INSERT INTO arcade_scores (id, board, initials, score, created_at) VALUES (?, ?, ?, ?, ?)",
+			)
+				.bind(idFor(99), prefix + utcDay(3), "OLD", 500, new Date().toISOString())
+				.run();
+			const response = await submit(
+				[
+					{ id: idFor(1), board: prefix + utcDay(), initials: "TODAY", score: 100 },
+					{ id: idFor(2), board: prefix + utcDay(1), initials: "YDAY", score: 200 },
+					{ id: idFor(3), board: prefix + utcDay(3), initials: "OLD", score: 300 },
+					{ id: idFor(4), board: prefix + utcDay(-1), initials: "FUTURE", score: 400 },
+				],
+				caller,
+			);
+			expect(await outcomes(response)).toEqual({
+				[idFor(1)]: "placed",
+				[idFor(2)]: "placed",
+				[idFor(3)]: "rejected",
+				[idFor(4)]: "rejected",
+			});
+			expect(Object.keys(await boards(caller)).sort()).toEqual(
+				[prefix + utcDay(), prefix + utcDay(1)].sort(),
+			);
+			expect(await rowCount()).toBe(2);
+		},
+	);
+
+	it("keeps scores from different game rules on separate boards", async () => {
+		const caller = newCaller();
+		const ids = ["shots-fired", "shots-fired-rooms-v2", "no-fly-zone", "no-fly-zone-v2"];
+		await submit(
+			ids.map((board, index) => ({
+				id: idFor(index + 1),
+				board,
+				initials: "GRID",
+				score: 100 + index,
+			})),
+			caller,
+		);
+		const catalogue = await boards(caller);
+		for (const [index, board] of ids.entries())
+			expect(catalogue[board]).toEqual([{ initials: "GRID", score: 100 + index }]);
+	});
+
 	it("ranks a board best first", async () => {
 		const caller = newCaller();
 		await submit(

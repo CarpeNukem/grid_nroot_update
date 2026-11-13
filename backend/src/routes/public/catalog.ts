@@ -1,10 +1,10 @@
+import { cachedRead } from "../../cache.js";
 import { BOARD_DEPTH, listAllScores, toPublicBoards } from "../../data/arcade.js";
 import { listPublishedMenuItems, toPublicMenuItem } from "../../data/menu.js";
 import { listPublishedNewsPosts, toPublicNewsPost } from "../../data/news.js";
 import { listPublishedPages, toPublicPage } from "../../data/pages.js";
 import { listPublishedProfiles, toPublicProfile } from "../../data/profiles.js";
 import { SCHEMA_VERSION } from "../../data/schema.js";
-import { cachedRead } from "../../cache.js";
 import { conditionalReadResponse } from "../../http.js";
 import { logUnhandledError } from "../../observability/log.js";
 import type { Route } from "../router.js";

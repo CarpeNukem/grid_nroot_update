@@ -169,7 +169,10 @@ that was answered for.
 - `id` is 32 hex characters chosen by the deck, so a retry of a request whose
   answer was lost does not put the run on the board twice.
 - `board` is a game's id from the allowlist in `src/data/arcade.ts`, or today's
-  or yesterday's `night-circuit-daily-<yyyymmdd>` (UTC). **A new game needs its
+  or yesterday's daily board (UTC): `night-circuit-daily-<yyyymmdd>`,
+  `neon-nibbles-daily-<yyyymmdd>`, or `no-fly-zone-v2.daily.<yyyymmdd>`.
+  All current cabinets are registered, including LAST CALL and MAX-TAC;
+  versioned game IDs retain separate rankings. **A new game needs its
   id added there and a deploy** before its scores are accepted; until then they
   are `rejected` and stay on the player's machine.
 - `initials` is one to six of `A-Z`, `0-9` and `-`. `score` is a whole number

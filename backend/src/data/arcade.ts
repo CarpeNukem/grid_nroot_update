@@ -41,13 +41,21 @@ const GAME_BOARDS: ReadonlySet<string> = new Set([
 	"firewall",
 	"no-fly-zone",
 	"night-circuit",
+	"neon-nibbles",
+	"toast-last-call-prototype",
+	"max-tac-lockdown-v1",
+	"shots-fired-rooms-v2",
+	"no-fly-zone-v2",
 	"last-call",
 	"redline-rush",
 ]);
 
-/** NIGHT CIRCUIT's daily challenge keeps a board per UTC day: `night-circuit-daily-20261110`. */
-const DAILY_PREFIX = "night-circuit-daily-";
-const DAILY_BOARD = /^night-circuit-daily-\d{8}$/;
+/** Daily challenges keep separate boards for each game and UTC date. */
+const DAILY_PREFIXES = [
+	"night-circuit-daily-",
+	"neon-nibbles-daily-",
+	"no-fly-zone-v2.daily.",
+] as const;
 
 /** The name typed at the cabinet: up to six capitals or digits, or dashes for a name left blank. */
 const INITIALS = /^[A-Z0-9-]{1,6}$/;
@@ -70,12 +78,14 @@ function utcDay(now: Date, daysBack = 0): string {
  * it is.
  */
 function liveDailyBoards(now: Date): ReadonlySet<string> {
-	return new Set([`${DAILY_PREFIX}${utcDay(now)}`, `${DAILY_PREFIX}${utcDay(now, 1)}`]);
+	return new Set(
+		DAILY_PREFIXES.flatMap((prefix) => [`${prefix}${utcDay(now)}`, `${prefix}${utcDay(now, 1)}`]),
+	);
 }
 
 /** Whether a board is shown and takes scores right now: a game's board, or a live daily one. */
 export function isOpenBoard(board: string, now: Date): boolean {
-	return GAME_BOARDS.has(board) || (DAILY_BOARD.test(board) && liveDailyBoards(now).has(board));
+	return GAME_BOARDS.has(board) || liveDailyBoards(now).has(board);
 }
 
 export const isSubmissionId = (value: unknown): value is string =>
@@ -201,11 +211,13 @@ export async function submitScores(
 
 	// The prefix test matters: a bare `board < ?` would also match every game
 	// board that sorts before the date.
-	statements.push(
-		db
-			.prepare("DELETE FROM arcade_scores WHERE board LIKE ?1 AND board < ?2")
-			.bind(`${DAILY_PREFIX}%`, `${DAILY_PREFIX}${utcDay(now, 1)}`),
-	);
+	for (const prefix of DAILY_PREFIXES) {
+		statements.push(
+			db
+				.prepare("DELETE FROM arcade_scores WHERE board LIKE ?1 AND board < ?2")
+				.bind(`${prefix}%`, `${prefix}${utcDay(now, 1)}`),
+		);
+	}
 
 	// Asked last, after every trim, so a score this same batch pushed back off
 	// its board is reported as not placed.

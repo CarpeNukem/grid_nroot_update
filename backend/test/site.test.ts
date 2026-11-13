@@ -160,7 +160,7 @@ describe("public site", () => {
 		// Read-only by construction: the deck's controls navigate between views
 		// or copy to the clipboard, and nothing submits. Enforced by the policy
 		// as well as by the markup, so a future edit cannot quietly add one.
-		expect(html).not.toMatch(/<form/);
+		expect(html).not.toMatch(/<form\b/);
 		expect(response.headers.get("content-security-policy")).toContain("form-action 'none'");
 	});
 
