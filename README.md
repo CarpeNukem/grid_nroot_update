@@ -52,7 +52,7 @@ dotnet build GridNrootUpdate.csproj -c Release
 
 When the private arcade repository is checked out beside this one as `../grid_arcade`, the build compiles it too and puts `GridArcade.dll` in the package. Without it, the package is built without the arcade.
 
-Upload `bin/Release/dist/GridNrootUpdate-2.0.0.zip` to a GitHub release named `plugin-v2.0.0`, then bump the Grid entry in the n_root feed to match. That feed is what users add in Dalamud:
+Upload `bin/Release/dist/GridNrootUpdate-2.0.1.zip` to a GitHub release named `plugin-v2.0.1`, then bump the Grid entry in the n_root feed to match. That feed is what users add in Dalamud:
 
 ```text
 https://raw.githubusercontent.com/CarpeNukem/n_root/main/repo.json
