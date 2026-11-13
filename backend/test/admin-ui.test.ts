@@ -48,4 +48,14 @@ describe("admin UI", () => {
 
 		expect(html).not.toMatch(/CF_ACCESS|api[_-]?key|secret|Bearer\s/i);
 	});
+
+	it("reaches the arcade scores through the admin API, like everything else it edits", async () => {
+		// The moderation tab is only useful if it calls the route that exists,
+		// and only safe if that route is one that authenticates.
+		const html = await (await SELF.fetch("https://example.com/admin")).text();
+		expect(html).toContain("/v1/admin/arcade/scores");
+
+		const listing = await SELF.fetch("https://example.com/v1/admin/arcade/scores");
+		expect(listing.status).toBe(401);
+	});
 });

@@ -3,12 +3,14 @@ import { ApiError, ErrorCode } from "./errors.js";
 import { isAdminPath } from "./headers.js";
 
 /**
- * Per-caller limits on the public read API.
+ * Per-caller limits on the public API.
  *
- * Writes are already behind Cloudflare Access, so the exposure that remains is
- * anonymous reads: every public route costs a D1 query, and an unthrottled
- * client can burn the account's read quota until the venue screens go blank.
- * That is the failure this prevents — not a breach, an outage.
+ * Editing is behind Cloudflare Access, so the exposure that remains is
+ * anonymous: the reads, and the arcade's score submission, which is the one
+ * anonymous write and has a tighter limit of its own further down. Every
+ * public route costs a D1 query, and an unthrottled client can burn the
+ * account's read quota until the venue screens go blank. That is the failure
+ * this prevents — not a breach, an outage.
  *
  * Media is deliberately exempt. Objects are immutable and edge-cached for a
  * year, so repeat fetches rarely reach the Worker at all, and throttling them
@@ -59,5 +61,36 @@ export async function enforceRateLimit(request: Request, env: Env): Promise<void
 
 	throw new ApiError(429, ErrorCode.RATE_LIMITED, "Too many requests. Try again shortly.", {
 		limit: REQUESTS_PER_MINUTE,
+	});
+}
+
+/**
+ * A deck posts a score only when it would make a board, and batches anything
+ * it could not send, so even a run of record-breaking games is a request a
+ * game. Six a minute is still a ceiling no honest player meets — a game lasts
+ * longer than ten seconds — while capping what a script can write.
+ */
+const SUBMISSIONS_PER_MINUTE = 6;
+
+/**
+ * The tighter limit on arcade score submissions, on top of the public one.
+ *
+ * Writes are what the free plan has least of, and this is the only route an
+ * anonymous caller can write through. Same keying and the same fail-open when
+ * no binding is present, for the same reasons.
+ */
+export async function enforceSubmitLimit(request: Request, env: Env): Promise<void> {
+	const limiter = env.ARCADE_SUBMIT_LIMITER;
+	if (limiter === undefined) {
+		return;
+	}
+
+	const { success } = await limiter.limit({ key: callerKey(request) });
+	if (success) {
+		return;
+	}
+
+	throw new ApiError(429, ErrorCode.RATE_LIMITED, "Too many scores. Try again shortly.", {
+		limit: SUBMISSIONS_PER_MINUTE,
 	});
 }

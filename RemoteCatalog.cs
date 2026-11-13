@@ -29,6 +29,13 @@ internal sealed record CatalogSnapshot(
     public static readonly CatalogSnapshot Empty =
         new([], [], [], [], CatalogSource.None, null, null, false);
 
+    /// <summary>
+    /// The arcade's shared high-score boards, which ride in the catalogue so
+    /// that showing them never costs a request of its own. Null when the relay
+    /// sent none.
+    /// </summary>
+    public ArcadeBoardSet? Arcade { get; init; }
+
     /// <summary>Announcements, under the name the broadcast UI reads them by.</summary>
     public IReadOnlyList<NewsPost> Posts => News;
 
@@ -71,6 +78,25 @@ internal sealed record CatalogSnapshot(
 internal sealed class CatalogService : IDisposable
 {
     private const string CacheFileName = "catalog_cache.json";
+
+    /// <summary>
+    /// How much of the catalogue this build reads, as a number the disk cache
+    /// is stamped with. Raise it whenever the deck starts reading a part of the
+    /// catalogue that earlier builds ignored.
+    ///
+    /// The cache stores the feed as the build that fetched it understood it,
+    /// next to the relay's tag for the whole response. A build that reads more
+    /// would find its new part missing from the file, send the tag anyway, and
+    /// be told 304, nothing has changed: true of the response, not of what this
+    /// build knows. That is exactly how the arcade's boards failed to arrive on
+    /// a deck updated from a build without them, and stayed missing, because
+    /// the boards were also the only thing that could have changed the tag. So
+    /// a cache stamped lower than this is still shown, but its tag is not sent,
+    /// and the first check after an update fetches the catalogue in full.
+    ///
+    /// 2: the arcade's shared high-score boards.
+    /// </summary>
+    private const int CacheReads = 2;
     private static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(20);
 
     /// <summary>
@@ -231,7 +257,10 @@ internal sealed class CatalogService : IDisposable
                     CatalogSource.Remote,
                     DateTimeOffset.UtcNow,
                     null,
-                    false);
+                    false)
+                {
+                    Arcade = ArcadeBoardSet.From(feed.Arcade),
+                };
                 SaveCache(feed, result.ETag);
                 PluginService.Log.Debug(
                     "Catalogue refreshed: {Profiles} profile(s), {Menu} drink(s), {News} post(s).",
@@ -267,7 +296,9 @@ internal sealed class CatalogService : IDisposable
             cached.Feed.Menu ??= [];
             cached.Feed.News ??= [];
             cached.Feed.Pages ??= [];
-            etag = cached.ETag;
+            // The tag is only good for what the build that wrote it could
+            // read; see CacheReads.
+            etag = cached.Reads >= CacheReads ? cached.ETag : null;
             snapshot = new CatalogSnapshot(
                 cached.Feed.Profiles,
                 cached.Feed.Menu,
@@ -276,7 +307,10 @@ internal sealed class CatalogService : IDisposable
                 CatalogSource.Cache,
                 cached.FetchedAt,
                 null,
-                false);
+                false)
+            {
+                Arcade = ArcadeBoardSet.From(cached.Feed.Arcade),
+            };
         }
         catch (Exception exception)
         {
@@ -301,7 +335,7 @@ internal sealed class CatalogService : IDisposable
         {
             Directory.CreateDirectory(Path.GetDirectoryName(cachePath)!);
             var payload = JsonSerializer.Serialize(
-                new CachedCatalog { ETag = responseETag, FetchedAt = DateTimeOffset.UtcNow, Feed = feed },
+                new CachedCatalog { ETag = responseETag, FetchedAt = DateTimeOffset.UtcNow, Feed = feed, Reads = CacheReads },
                 JsonOptions);
 
             File.WriteAllText(temporaryPath, payload);
@@ -363,5 +397,8 @@ internal sealed class CatalogService : IDisposable
         [JsonPropertyName("etag")] public string? ETag { get; set; }
         [JsonPropertyName("fetchedAt")] public DateTimeOffset FetchedAt { get; set; }
         [JsonPropertyName("feed")] public RemoteCatalogFeed? Feed { get; set; }
+
+        /// <summary>The <see cref="CacheReads"/> of the build that wrote this. Absent, and so zero, from builds before it existed.</summary>
+        [JsonPropertyName("reads")] public int Reads { get; set; }
     }
 }

@@ -63,6 +63,14 @@
 			"name": "PUBLIC_READ_LIMITER",
 			"namespace_id": "1001",
 			"simple": { "limit": 60, "period": 60 }
+		},
+		// Arcade score submissions: the one write an anonymous caller can make,
+		// and writes are what the free plan has least of. A deck posts only when
+		// a score makes a board, so six a minute is a ceiling no player meets.
+		{
+			"name": "ARCADE_SUBMIT_LIMITER",
+			"namespace_id": "1002",
+			"simple": { "limit": 6, "period": 60 }
 		}
 	],
 
@@ -129,6 +137,11 @@
 					"name": "PUBLIC_READ_LIMITER",
 					"namespace_id": "1001",
 					"simple": { "limit": 60, "period": 60 }
+				},
+				{
+					"name": "ARCADE_SUBMIT_LIMITER",
+					"namespace_id": "1002",
+					"simple": { "limit": 6, "period": 60 }
 				}
 			]
 		}

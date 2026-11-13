@@ -73,6 +73,24 @@ public sealed class PluginConfig : IPluginConfiguration
     public bool VenueFurnitureEnabled { get; set; } = true;
 
     /// <summary>
+    /// Whether the venue's activation zones are drawn and clickable.
+    ///
+    /// The zones are an overlay on the game world, so someone filming or who
+    /// simply prefers a clean screen has to be able to turn them off.
+    /// </summary>
+    public bool VenueZonesEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Whether the arcade shares high scores with The Grid's relay.
+    ///
+    /// On, the cabinets show the venue-wide tables and a score that makes one
+    /// is posted: the name signed at the cabinet and the score, nothing else.
+    /// It is a setting because posting anything at all is the player's call;
+    /// off, scores stay in a file on this machine, as they did before.
+    /// </summary>
+    public bool ArcadeScoresShared { get; set; } = true;
+
+    /// <summary>
     /// Penumbra mod directories the updater must leave alone.
     ///
     /// For the venue crew: an edition under development sits beside the release

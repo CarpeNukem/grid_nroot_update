@@ -252,6 +252,8 @@ internal sealed partial class CyberdeckWindow
             DrawTarotDebugWindow();
         if (tarotCardViewerOpen)
             DrawTarotCardViewerWindow();
+        if (vendingWindowOpen)
+            DrawVendingWindow();
     }
 
     private void DrawCyberdeckWindow()
@@ -4319,6 +4321,26 @@ internal sealed partial class CyberdeckWindow
             "Applies the venue's furniture and the effects it plays while you are at The Grid. These live in "
             + "Penumbra's Base collection rather than the mannequin's, so the deck borrows it temporarily - nothing "
             + "is written to your Penumbra settings, and it is taken back off when you leave.");
+
+        var venueZones = config.VenueZonesEnabled;
+        if (ImGui.Checkbox("Activation zones", ref venueZones))
+        {
+            config.VenueZonesEnabled = venueZones;
+            config.Save();
+        }
+        DrawMutedWrapped(
+            "Marks the venue's interactive spots, the vending machines and the arcade cabinets, with a ring on the floor. "
+            + $"Click the marker while standing within {VenueZones.ActivationRange:0} yalms to use it.");
+
+        var arcadeScoresShared = config.ArcadeScoresShared;
+        if (ImGui.Checkbox("Shared arcade high scores", ref arcadeScoresShared))
+        {
+            config.ArcadeScoresShared = arcadeScoresShared;
+            config.Save();
+        }
+        DrawMutedWrapped(
+            "Shows The Grid's own high-score tables on the arcade cabinets, and posts a score of yours when it makes one: "
+            + "the name you sign at the cabinet and the score, nothing else. Off, your scores stay on this machine.");
 
         DrawBroadcastSettings();
     }

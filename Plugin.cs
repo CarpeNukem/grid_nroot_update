@@ -71,6 +71,17 @@ public sealed class Plugin : IDalamudPlugin
     private readonly RemoteAssetCache remoteAssets;
     private readonly PenumbraIpc penumbra;
     private readonly CyberdeckWindow cyberdeckWindow;
+    private readonly VenueZones venueZones;
+
+    /// <summary>The closed arcade module, when it shipped beside the plugin; see <see cref="ArcadeModule"/>.</summary>
+    private readonly IGridArcade? arcade;
+    private readonly string arcadeStatus;
+
+    /// <summary>The Grid's shared high-score boards, handed to the arcade module; see <see cref="ArcadeScoreboard"/>.</summary>
+    private readonly ArcadeScoreboard arcadeScoreboard;
+
+    /// <summary>The last venue check, refreshed every second, so the zones do not repeat it every frame.</summary>
+    private VenuePresence lastVenuePresence = VenuePresence.Unknown;
     private readonly object modAddedLock = new();
     private readonly object reconcileQueueLock = new();
     private bool reconcileQueued;
@@ -168,6 +179,22 @@ public sealed class Plugin : IDalamudPlugin
             catalogService.RequestRefreshIfOlderThan,
             remoteAssets);
 
+        arcadeScoreboard = new ArcadeScoreboard(Config, catalogService);
+        arcade = ArcadeModule.TryLoad(
+            pluginInterface.AssemblyLocation.DirectoryName,
+            new ArcadeHost(Config, pluginInterface.ConfigDirectory.FullName, cyberdeckWindow.ArcadeMenu, arcadeScoreboard),
+            out arcadeStatus);
+        PluginService.Log.Information("Arcade module: {Status}.", arcadeStatus);
+
+        venueZones = new VenueZones(
+            Config,
+            () => lastVenuePresence == VenuePresence.Confirmed,
+            IsMannequinObject,
+            cabinet => arcade?.CabinetTitle(cabinet),
+            OpenVenueZone,
+            CloseVenueZone,
+            IsVenueZoneOpen);
+
         remoteAssets.LoadExisting();
         broadcastAlert = new BroadcastAlert(Config, OpenMainUi);
         catalogService.Updated += broadcastAlert.OnCatalogUpdated;
@@ -233,6 +260,17 @@ public sealed class Plugin : IDalamudPlugin
         PluginService.PluginInterface.UiBuilder.OpenConfigUi -= OpenConfigUi;
         PluginService.PluginInterface.UiBuilder.OpenMainUi -= OpenMainUi;
         PluginService.PluginInterface.UiBuilder.Draw -= DrawUi;
+        try
+        {
+            arcade?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Could not shut the arcade module down.");
+        }
+
+        arcadeScoreboard.Dispose();
+
         foreach (var commandName in CommandNames)
             PluginService.Commands.RemoveHandler(commandName);
         github.Dispose();
@@ -285,7 +323,28 @@ public sealed class Plugin : IDalamudPlugin
 #if DEBUG
     private void HandleDebugCommand(string args)
     {
-        switch (args.Trim().ToLowerInvariant())
+        var command = args.Trim().ToLowerInvariant();
+        if (command.StartsWith("arcade", StringComparison.Ordinal))
+        {
+            var number = command["arcade".Length..].Trim();
+            var cabinet = int.TryParse(number, out var parsed) ? parsed : 1;
+            var title = arcade?.CabinetTitle(cabinet);
+            if (arcade is null || title is null)
+            {
+                PluginService.Chat.PrintError(
+                    arcade is null
+                        ? $"DEBUG: The arcade module is {arcadeStatus}."
+                        : $"DEBUG: Cabinet {cabinet} runs nothing. Use /grid debug arcade 1-6.",
+                    "TheGrid");
+                return;
+            }
+
+            arcade.Open(cabinet);
+            PluginService.Chat.Print($"DEBUG: Arcade cabinet {cabinet} ({title}) opened without its zone.", "TheGrid");
+            return;
+        }
+
+        switch (command)
         {
             case "blackice-clear":
                 cyberdeckWindow.DebugClearBlackIce();
@@ -326,9 +385,24 @@ public sealed class Plugin : IDalamudPlugin
                 cyberdeckWindow.ResetTarotLoopback();
                 PluginService.Chat.Print("DEBUG: Local Tarot session reset.", "TheGrid");
                 break;
+            case "vending":
+                cyberdeckWindow.OpenVendingMachine();
+                PluginService.Chat.Print("DEBUG: Vending machine opened without its zone.", "TheGrid");
+                break;
+            case "zones":
+                PluginService.Chat.Print($"DEBUG: Venue zones: arcade module {arcadeStatus} | {venueZones.Describe()}", "TheGrid");
+                break;
+            case "zones-anywhere":
+                venueZones.ShowAnywhere = !venueZones.ShowAnywhere;
+                PluginService.Chat.Print(
+                    venueZones.ShowAnywhere
+                        ? "DEBUG: Venue zones now show in any house, at a Vending Machine Nine or a mannequin wearing the arcade earrings."
+                        : "DEBUG: Venue zones back to The Grid only.",
+                    "TheGrid");
+                break;
             default:
                 PluginService.Chat.PrintError(
-                    "Debug usage: /grid debug tarot-invite | tarot-next | tarot-host | tarot-reset | tarot | blackice-clear | vault-s-clear | vault-a-clear | vault-b-clear | vault-c-clear",
+                    "Debug usage: /grid debug tarot-invite | tarot-next | tarot-host | tarot-reset | tarot | blackice-clear | vault-s-clear | vault-a-clear | vault-b-clear | vault-c-clear | vending | arcade 1-6 | zones | zones-anywhere",
                     "TheGrid");
                 break;
         }
@@ -457,7 +531,61 @@ public sealed class Plugin : IDalamudPlugin
         => cyberdeckWindow.OpenSettings();
 
     private void DrawUi()
-        => cyberdeckWindow.Draw();
+    {
+        try
+        {
+            venueZones.Draw();
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Could not draw the venue zones.");
+        }
+
+        cyberdeckWindow.Draw();
+
+        try
+        {
+            arcade?.Draw();
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Could not draw the arcade.");
+        }
+    }
+
+    private void OpenVenueZone(VenueZoneDefinition zone)
+    {
+        switch (zone.Kind)
+        {
+            case VenueZoneKind.VendingMachine:
+                cyberdeckWindow.OpenVendingMachine();
+                break;
+            case VenueZoneKind.Arcade:
+                arcade?.Open(zone.Cabinet);
+                break;
+        }
+    }
+
+    private void CloseVenueZone(VenueZoneKind kind)
+    {
+        switch (kind)
+        {
+            case VenueZoneKind.VendingMachine:
+                cyberdeckWindow.CloseVendingMachine();
+                break;
+            case VenueZoneKind.Arcade:
+                arcade?.Close();
+                break;
+        }
+    }
+
+    private bool IsVenueZoneOpen(VenueZoneKind kind)
+        => kind switch
+        {
+            VenueZoneKind.VendingMachine => cyberdeckWindow.IsVendingMachineOpen,
+            VenueZoneKind.Arcade => arcade?.IsOpen == true,
+            _ => false,
+        };
 
     private void OnLogin()
     {
@@ -481,6 +609,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         venueUpdateCheckDoneThisZone = false;
         lastAutoOpenedTerritory = 0;
+        lastVenuePresence = VenuePresence.Unknown;
         // Leaving takes the venue's furniture with you. Unlike the mannequin, which
         // simply stops being in the object table, these settings sit on a
         // collection that is still there and still the player's — nothing else
@@ -554,6 +683,7 @@ public sealed class Plugin : IDalamudPlugin
             try
             {
                 var presence = GetVenuePresence();
+                lastVenuePresence = presence;
                 var people = presence == VenuePresence.Confirmed
                     ? NetworkGuestScanner.Capture()
                     : [];

@@ -1,7 +1,9 @@
+import { adminArcadeRoutes } from "./admin/arcade.js";
 import { adminRoutes } from "./admin/index.js";
 import { adminMediaRoutes } from "./admin/media.js";
 import { adminUiRoute } from "./admin/ui.js";
 import { healthRoute } from "./health.js";
+import { arcadeSubmitRoute } from "./public/arcade.js";
 import { siteAssetRoute } from "./public/assets.js";
 import { catalogRoute } from "./public/catalog.js";
 import { mediaObjectRoute } from "./public/media.js";
@@ -41,7 +43,12 @@ export const routes: readonly Route[] = [
 	pageDetailRoute,
 	mediaObjectRoute,
 
+	// The one anonymous write. The boards it fills are read through the
+	// catalogue, so there is no arcade read route to go with it.
+	arcadeSubmitRoute,
+
 	adminUiRoute,
 	...adminRoutes,
 	...adminMediaRoutes,
+	...adminArcadeRoutes,
 ];

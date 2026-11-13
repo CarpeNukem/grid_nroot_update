@@ -143,6 +143,32 @@ describe("news_posts", () => {
 	});
 });
 
+describe("arcade_scores", () => {
+	it("has the documented columns", async () => {
+		expect(await columnsOf("arcade_scores")).toEqual([
+			"id",
+			"board",
+			"initials",
+			"score",
+			"created_at",
+		]);
+	});
+
+	it("indexes a board in rank order", async () => {
+		expect(await indexesOf("arcade_scores")).toContain("arcade_scores_board_rank");
+	});
+
+	it("refuses a score that is not positive", async () => {
+		await expect(
+			env.DB.prepare(
+				"INSERT INTO arcade_scores (id, board, initials, score, created_at) VALUES (?, ?, ?, ?, ?)",
+			)
+				.bind("0".repeat(32), "firewall", "AAA", 0, "now")
+				.run(),
+		).rejects.toThrow();
+	});
+});
+
 describe.each(["profiles", "menu_items", "news_posts"])("%s publication flag", (table) => {
 	it("defaults to unpublished", async () => {
 		const { results } = await env.DB.prepare(`PRAGMA table_info(${table})`).all<ColumnInfo>();

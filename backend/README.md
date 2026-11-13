@@ -131,6 +131,61 @@ makes traversal impossible and every object immutable, so uploads can be cached
 for a year and a replaced image is always a new key. The response carries
 `x-content-sha256` so a client can verify what it downloaded.
 
+### Arcade scores
+
+The arcade's venue-wide high-score boards. Shaped around traffic: the venue is
+on the free plan, and a feature every deck uses must not add a request every
+deck makes.
+
+- **Reading costs nothing.** There is no arcade read route. The boards are the
+  `arcade` field of `/v1/catalog`, which every deck already fetches, so showing
+  them adds no request. What it does add is bytes: a new score changes the
+  catalogue, so each deck's next check is a full response rather than a `304`.
+- **Writing is one request, and only for a score that would make a board.** The
+  deck compares against the board it already has and posts nothing otherwise.
+  Scores it could not send go up together in the next request.
+- **A board keeps its best ten.** Every write trims the board, so the table
+  stays a few dozen rows and the catalogue's extra query stays cheap.
+
+```json
+"arcade": {
+  "depth": 10,
+  "boards": {
+    "firewall": [{ "initials": "CRPNKM", "score": 26406 }]
+  }
+}
+```
+
+| Route | Effect |
+| --- | --- |
+| `POST /v1/arcade/scores` | Public. `{"scores": [{"id", "board", "initials", "score"}]}`, up to 25. |
+| `GET /v1/admin/arcade/scores` | Every score with its id, for moderation. |
+| `DELETE /v1/admin/arcade/scores/:id` | Removes one. The next score down moves up. |
+
+`POST` answers `{"results": [{"id", "outcome"}]}`, where the outcome is `placed`,
+`not-placed` or `rejected`. All three are final: a deck never resends a score
+that was answered for.
+
+- `id` is 32 hex characters chosen by the deck, so a retry of a request whose
+  answer was lost does not put the run on the board twice.
+- `board` is a game's id from the allowlist in `src/data/arcade.ts`, or today's
+  or yesterday's `night-circuit-daily-<yyyymmdd>` (UTC). **A new game needs its
+  id added there and a deploy** before its scores are accepted; until then they
+  are `rejected` and stay on the player's machine.
+- `initials` is one to six of `A-Z`, `0-9` and `-`. `score` is a whole number
+  from 1 to 999,999,999.
+- A malformed envelope or id is a `400`. A bad board, name or score fails that
+  one entry and not the batch.
+- Throttled to six a minute per address, on top of the public limit.
+
+**These scores are not trustworthy and are not meant to be.** The games run on
+the player's machine, so a forged score only needs a `curl`. Nothing identifies
+a player either: a row is a name typed at a cabinet, a number and a time, with
+no character, account or address. Moderation is the admin `DELETE`, which the
+admin page's **Arcade** tab puts behind a Remove button on each line of each
+board. The change is in the catalogue within half a minute, and reaches each
+deck the next time it checks in, which for a deck left closed is up to an hour.
+
 ### Errors
 
 Always `{ "error": { "code": "...", "message": "..." } }`. Causes, stack traces,
@@ -218,12 +273,14 @@ src/
   routes/
     router.ts           pattern matching, 404 vs 405
     health.ts           GET /v1/health
-    public/             catalog, profiles, menu, news
-    admin/              resource.ts builds CRUD; index.ts wires the three
+    public/             catalog, profiles, menu, news, arcade (score submit)
+    admin/              resource.ts builds CRUD; index.ts wires the three;
+                        arcade.ts lists and removes scores
   data/
     schema.ts           row and public types
     validation.ts       write-payload rules, shared with the importer
     profiles.ts menu.ts news.ts    parameterised SQL
+    arcade.ts           score boards: allowlist, limits, SQL
   security/
     auth.ts             Cloudflare Access JWT verification
     errors.ts validate.ts headers.ts
@@ -238,6 +295,10 @@ test/                   vitest, running inside workerd
 
 - **The plugin is an untrusted public client.** No permanent write key ships in
   the DLL. Every public route assumes modified clients and bots.
+- **There is exactly one anonymous write**, the arcade score submission. It can
+  only add a row to an allowlisted board that trims itself to ten, it is
+  throttled separately, and everything it stores is checked against a narrow
+  pattern first. See "Arcade scores" above.
 - **Admin is a separate boundary.** Cloudflare Access fronts `/v1/admin/*`, and
   the Worker re-verifies the JWT itself — signature against the team's published
   keys, then issuer, audience, expiry, and the staff email allowlist. A

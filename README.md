@@ -31,6 +31,15 @@ When a new edition of the venue pack installs, the previous pack's settings are 
 
 Packs ticked under **Other venue packs in Penumbra** in Settings are protected: the updater never removes them, switches them off, or mistakes them for the installed pack. This is for an edition under development kept beside the release pack.
 
+At The Grid, the venue's interactive spots are marked with an activation zone: a ring on the floor with a holographic marker over it. The deck finds them itself, so a zone follows its machine if it is moved:
+
+- **Vending machines.** Activation zones are disabled for now.
+- **Arcade cabinets.** The row of six cabinets the venue mod draws in place of a mannequin's Copper Earrings. Each cabinet gets a small pad in front of its controls and a marker above its marquee, placed from the mannequin's own position, facing and size. Clicking one opens the game it runs. The games are a closed module, `GridArcade.dll`, shipped in the release package; a build without it has no arcade zones.
+
+Click a marker while standing within 3 yalms of its ring and the machine opens; from further away the marker tells you to move closer. Walking away closes the window again. The zones can be turned off under **Activation zones** in Settings.
+
+The arcade's high scores are shared across The Grid. A cabinet's table shows the venue's best five with your own scores among them, and when a score of yours would make the venue's board it is posted to the relay: the name you signed at the cabinet and the score, nothing else. The boards arrive with the content the deck already fetches, so showing them costs the relay no extra request, and a score that would not make the board is never sent. Every score you sign is also kept in `arcade_scores.json` in the plugin's config folder. Turn **Shared arcade high scores** off in Settings and nothing is posted and the tables show only your own.
+
 With automatic updates off, a release that is waiting to be installed is still downloaded at login, so pressing **Update** later is an install rather than a wait. The cached file is used only while it is exactly the size GitHub reports for the asset.
 
 ## Dalamud Repository
@@ -41,7 +50,9 @@ Build the release package:
 dotnet build GridNrootUpdate.csproj -c Release
 ```
 
-Upload `bin/Release/dist/GridNrootUpdate-1.1.0.zip` to a GitHub release named `plugin-v1.1.0`, then bump the Grid entry in the n_root feed to match. That feed is what users add in Dalamud:
+When the private arcade repository is checked out beside this one as `../grid_arcade`, the build compiles it too and puts `GridArcade.dll` in the package. Without it, the package is built without the arcade.
+
+Upload `bin/Release/dist/GridNrootUpdate-2.0.0.zip` to a GitHub release named `plugin-v2.0.0`, then bump the Grid entry in the n_root feed to match. That feed is what users add in Dalamud:
 
 ```text
 https://raw.githubusercontent.com/CarpeNukem/n_root/main/repo.json

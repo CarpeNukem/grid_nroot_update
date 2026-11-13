@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -111,7 +112,35 @@ internal sealed class RemoteCatalogFeed : ISchemaVersioned
     [JsonPropertyName("menu")] public List<RemoteMenuItem> Menu { get; set; } = [];
     [JsonPropertyName("news")] public List<NewsPost> News { get; set; } = [];
     [JsonPropertyName("pages")] public List<RemotePage> Pages { get; set; } = [];
+
+    /// <summary>
+    /// The arcade's shared high-score boards. Null from a relay that does not
+    /// keep any, which is how the deck knows not to post scores to it.
+    /// </summary>
+    [JsonPropertyName("arcade")] public RemoteArcade? Arcade { get; set; }
 }
+
+internal sealed class RemoteArcadeLine
+{
+    [JsonPropertyName("initials")] public string Initials { get; set; } = string.Empty;
+    [JsonPropertyName("score")] public int Score { get; set; }
+}
+
+internal sealed class RemoteArcade
+{
+    /// <summary>How many scores a board keeps; a score that would not make that many is not worth sending.</summary>
+    [JsonPropertyName("depth")] public int Depth { get; set; }
+
+    /// <summary>Board id to its scores, best first.</summary>
+    [JsonPropertyName("boards")] public Dictionary<string, List<RemoteArcadeLine>> Boards { get; set; } = [];
+}
+
+/// <param name="Answered">
+/// True when the relay took a decision on the scores, so they must not be sent
+/// again; false when it could not be reached and they are worth another try.
+/// </param>
+/// <param name="Placed">How many of them are on a board now.</param>
+internal readonly record struct ArcadeSubmitResult(bool Answered, int Placed, string? Error);
 
 internal enum NewsFetchOutcome
 {
@@ -193,6 +222,95 @@ internal sealed class BackendClient : IDisposable
         }
 
         return new CatalogFetchResult(result.Outcome, result.Feed, result.ETag, result.Error, result.Detail);
+    }
+
+    /// <summary>
+    /// Posts arcade scores to the shared boards, all in one request.
+    ///
+    /// The deck's only write to the relay. The answer is read for a count and
+    /// nothing else: the boards themselves come back with the catalogue, so a
+    /// posted score costs no second request to see.
+    /// </summary>
+    public async Task<ArcadeSubmitResult> SubmitArcadeScoresAsync(
+        string baseUrl,
+        IReadOnlyList<ArcadeSubmission> scores,
+        CancellationToken cancellationToken)
+    {
+        if (!TryBuildUri(baseUrl, "/v1/arcade/scores", out var uri))
+            return new ArcadeSubmitResult(false, 0, "Backend address is not a valid URL.");
+
+        try
+        {
+            var payload = new ArcadeSubmitRequest();
+            foreach (var score in scores)
+                payload.Scores.Add(new ArcadeSubmitScore { Id = score.Id, Board = score.Board, Initials = score.Initials, Score = score.Score });
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, uri)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json"),
+            };
+
+            using var response = await httpClient
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+
+            var status = (int)response.StatusCode;
+            if (response.IsSuccessStatusCode)
+            {
+                var body = await ReadBoundedAsync(response, cancellationToken).ConfigureAwait(false);
+                var answer = body is null ? null : JsonSerializer.Deserialize<ArcadeSubmitAnswer>(body, JsonOptions);
+                var placed = answer?.Results?.Count(result => string.Equals(result.Outcome, "placed", StringComparison.Ordinal)) ?? 0;
+                return new ArcadeSubmitResult(true, placed, null);
+            }
+
+            // A request the relay calls malformed would be called malformed
+            // again, so it counts as answered. Anything else — throttled, down,
+            // a relay without the route yet — is worth offering again later.
+            return status is 400 or 413 or 422
+                ? new ArcadeSubmitResult(true, 0, $"The relay refused the scores ({status}).")
+                : new ArcadeSubmitResult(false, 0, $"The relay returned {status}.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return new ArcadeSubmitResult(false, 0, "The relay did not respond in time.");
+        }
+        catch (JsonException)
+        {
+            // The relay answered 200 with something unreadable. The scores
+            // were taken; only the count is unknown.
+            return new ArcadeSubmitResult(true, 0, null);
+        }
+        catch (Exception exception)
+        {
+            return new ArcadeSubmitResult(false, 0, Describe(exception));
+        }
+    }
+
+    private sealed class ArcadeSubmitRequest
+    {
+        [JsonPropertyName("scores")] public List<ArcadeSubmitScore> Scores { get; } = [];
+    }
+
+    private sealed class ArcadeSubmitScore
+    {
+        [JsonPropertyName("id")] public string Id { get; set; } = string.Empty;
+        [JsonPropertyName("board")] public string Board { get; set; } = string.Empty;
+        [JsonPropertyName("initials")] public string Initials { get; set; } = string.Empty;
+        [JsonPropertyName("score")] public int Score { get; set; }
+    }
+
+    private sealed class ArcadeSubmitAnswer
+    {
+        [JsonPropertyName("results")] public List<ArcadeSubmitOutcome>? Results { get; set; }
+    }
+
+    private sealed class ArcadeSubmitOutcome
+    {
+        [JsonPropertyName("outcome")] public string Outcome { get; set; } = string.Empty;
     }
 
     public async Task<NewsFetchResult> FetchNewsAsync(string baseUrl, string? etag, CancellationToken cancellationToken)

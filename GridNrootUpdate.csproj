@@ -7,7 +7,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <Version>1.1.0</Version>
+    <Version>2.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -26,9 +26,30 @@
     <Content Include="snd\*.wav" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <Target Name="PackagePlugin" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+  <!-- The arcade games are a closed module, built from a private repository
+       checked out beside this one (see ArcadeModule.cs). When it is there,
+       every build compiles it against the DLL just built and puts
+       GridArcade.dll next to the plugin, for a dev plugin to load and for the
+       release package to carry. When it is not, this builds and runs without
+       the arcade. -->
+  <PropertyGroup>
+    <GridArcadeProject>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\grid_arcade\GridArcade.csproj'))</GridArcadeProject>
+  </PropertyGroup>
+
+  <Target Name="BuildArcadeModule" AfterTargets="Build" Condition="Exists('$(GridArcadeProject)')">
+    <PropertyGroup>
+      <_GridArcadeProperties>Configuration=$(Configuration);GridNrootUpdateAssembly=$(TargetPath)</_GridArcadeProperties>
+    </PropertyGroup>
+    <!-- Build in the module's directory so compiler source paths resolve there. -->
+    <Exec WorkingDirectory="$([System.IO.Path]::GetDirectoryName('$(GridArcadeProject)'))"
+          Command="dotnet build &quot;$(GridArcadeProject)&quot; -c $(Configuration) -p:GridNrootUpdateAssembly=&quot;$(TargetPath)&quot;" />
+    <Copy SourceFiles="$([System.IO.Path]::GetDirectoryName('$(GridArcadeProject)'))\bin\$(Configuration)\GridArcade.dll" DestinationFolder="$(OutDir)" />
+  </Target>
+
+  <Target Name="PackagePlugin" AfterTargets="Build" DependsOnTargets="BuildArcadeModule" Condition="'$(Configuration)' == 'Release'">
     <ItemGroup>
       <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).dll" />
+      <PluginPackageFiles Include="$(OutputPath)GridArcade.dll" Condition="Exists('$(GridArcadeProject)') And Exists('$(OutputPath)GridArcade.dll')" />
       <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).json" />
       <PluginPackageFiles Include="$(OutputPath)$(AssemblyName).deps.json" />
       <PluginPackageFiles Include="$(OutputPath)staff_profiles.json" />

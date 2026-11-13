@@ -18,4 +18,6 @@ internal sealed class PluginService
     [PluginService] public static ITextureProvider TextureProvider { get; private set; } = null!;
     [PluginService] public static IDataManager Data { get; private set; } = null!;
     [PluginService] public static ICondition Condition { get; private set; } = null!;
+    [PluginService] public static IGameGui GameGui { get; private set; } = null!;
+    [PluginService] public static IKeyState KeyState { get; private set; } = null!;
 }

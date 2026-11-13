@@ -33,6 +33,9 @@ export interface Env {
 	 * pool do not always provide one; production always does.
 	 */
 	readonly PUBLIC_READ_LIMITER?: RateLimit;
+
+	/** Arcade score submissions, the one anonymous write. Optional for the same reason. */
+	readonly ARCADE_SUBMIT_LIMITER?: RateLimit;
 }
 
 /** Per-request state threaded through route handlers. */

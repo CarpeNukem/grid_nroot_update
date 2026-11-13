@@ -30,6 +30,12 @@ internal sealed partial class CyberdeckWindow
         string Description,
         string Taste);
 
+    /// <summary>The drinks card as the arcade module sees it, for the bartending game.</summary>
+    internal IReadOnlyList<ArcadeDrink> ArcadeMenu()
+        => GetMenuEntries()
+            .Select(entry => new ArcadeDrink(entry.Name, entry.PriceLabel, entry.Ingredients))
+            .ToArray();
+
     private IReadOnlyList<MenuEntry> GetMenuEntries()
     {
         var catalog = getCatalog();

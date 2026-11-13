@@ -84,6 +84,18 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: v
 .slotTitle { font-size: 12px; color: var(--amber); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px; }
 .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .filters button { padding: 4px 9px; font-size: 12px; }
+.scores { width: 100%; border-collapse: collapse; }
+.scores th {
+  text-align: left; font-size: 11px; font-weight: 400; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--muted); padding: 0 8px 6px;
+}
+.scores td { padding: 7px 8px; border-top: 1px solid var(--line); }
+.scores .num { text-align: right; font-variant-numeric: tabular-nums; }
+.scores .name { font-family: ui-monospace, Consolas, monospace; letter-spacing: .08em; color: var(--cyan); }
+.scores tr.reserve td, .scores tr.reserve .name { color: var(--muted); }
+.scores td:last-child { text-align: right; width: 1%; white-space: nowrap; }
+.scores button { padding: 3px 10px; font-size: 12px; }
+.tag.off { color: var(--amber); }
 </style>
 </head>
 <body>
@@ -212,10 +224,24 @@ const COLLECTIONS = {
   },
 };
 
+/*
+ * The arcade's high-score boards are the one tab that is not a collection of
+ * editable records. Scores are written by players' decks, not by staff, so
+ * there is nothing here to create, edit or publish: the tab lists each board
+ * and lets a score be removed, which is all moderation is.
+ */
+const ARCADE = "arcade";
+
+/** How many lines a cabinet draws. A board keeps more, so the next score moves up when one is removed. */
+const CABINET_LINES = 5;
+
 let collection = "news";
 let records = [];
 let selectedId = null;
 let draft = null;
+
+/** The board on screen in the arcade tab. */
+let selectedBoard = null;
 
 const $ = (id) => document.getElementById(id);
 const identity = () => $("identity").value.trim();
@@ -467,9 +493,171 @@ function renderTabs() {
     button.onclick = () => { collection = key; selectedId = null; draft = null; load(); };
     $("tabs").append(button);
   }
+
+  const arcade = document.createElement("button");
+  arcade.textContent = "Arcade";
+  arcade.setAttribute("aria-selected", String(collection === ARCADE));
+  arcade.onclick = () => { collection = ARCADE; selectedId = null; draft = null; load(); };
+  $("tabs").append(arcade);
+}
+
+/** The arcade's scores grouped by board, in the order the API returns them: best first. */
+function boardsOf(scores) {
+  const boards = new Map();
+  for (const score of scores) {
+    if (!boards.has(score.board)) boards.set(score.board, []);
+    boards.get(score.board).push(score);
+  }
+  return boards;
+}
+
+/**
+ * Whether a daily challenge board's day has passed.
+ *
+ * The relay stops showing a day's board after the following day (UTC) and
+ * deletes it on the next score anyone posts, so until then it can still be
+ * listed here with nothing on any cabinet to match it.
+ */
+function isExpiredBoard(board) {
+  const daily = /-daily-(\d{8})$/.exec(board);
+  if (!daily) return false;
+
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10).replaceAll("-", "");
+  return daily[1] < yesterday;
+}
+
+function renderBoardList() {
+  const boards = boardsOf(records);
+  if (!boards.has(selectedBoard)) selectedBoard = boards.keys().next().value ?? null;
+
+  $("filters").innerHTML = "";
+  $("listTitle").textContent = `Boards (${boards.size})`;
+  $("list").innerHTML = "";
+
+  if (boards.size === 0) {
+    const empty = document.createElement("li");
+    const note = document.createElement("div");
+    note.className = "empty";
+    note.textContent = "No scores yet.";
+    empty.append(note);
+    $("list").append(empty);
+    return;
+  }
+
+  for (const [board, scores] of boards) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.setAttribute("aria-current", String(board === selectedBoard));
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const name = document.createElement("span");
+    name.textContent = board;
+    const count = document.createElement("span");
+    count.className = "tag draft";
+    count.textContent = `${scores.length} score${scores.length === 1 ? "" : "s"}`;
+    row.append(name, count);
+    button.append(row);
+
+    const best = document.createElement("div");
+    best.className = isExpiredBoard(board) ? "tag off" : "tag draft";
+    best.textContent = isExpiredBoard(board)
+      ? "day passed — no longer shown"
+      : `best ${scores[0].initials} ${scores[0].score.toLocaleString("en-US")}`;
+    button.append(best);
+
+    button.onclick = () => { selectedBoard = board; renderList(); renderEditor(); };
+    item.append(button);
+    $("list").append(item);
+  }
+}
+
+/**
+ * One board's scores, each with a way to remove it.
+ *
+ * Built from DOM nodes with textContent throughout: a name is typed by a
+ * player, and although the relay only takes capitals, digits and dashes, this
+ * page does not rely on that to stay free of markup.
+ */
+function renderBoard() {
+  const form = $("editor");
+  form.innerHTML = "";
+
+  const scores = boardsOf(records).get(selectedBoard);
+  if (!scores) {
+    $("editorTitle").textContent = "Arcade";
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "Scores appear here once players post them from the cabinets.";
+    form.append(empty);
+    return;
+  }
+
+  $("editorTitle").textContent = selectedBoard;
+
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.style.margin = "0 0 12px";
+  hint.textContent = `A cabinet shows the top ${CABINET_LINES}. The rest are held in reserve, greyed below, and move up when a score above them is removed. A removal reaches the decks the next time each one checks in, which can take up to an hour.`;
+  form.append(hint);
+
+  const table = document.createElement("table");
+  table.className = "scores";
+
+  const head = document.createElement("tr");
+  for (const [label, className] of [["#", "num"], ["Name", ""], ["Score", "num"], ["Received", ""], ["", ""]]) {
+    const cell = document.createElement("th");
+    cell.textContent = label;
+    if (className) cell.className = className;
+    head.append(cell);
+  }
+  table.append(head);
+
+  scores.forEach((score, index) => {
+    const row = document.createElement("tr");
+    if (index >= CABINET_LINES) row.className = "reserve";
+
+    const cell = (text, className) => {
+      const element = document.createElement("td");
+      element.textContent = text;
+      if (className) element.className = className;
+      row.append(element);
+      return element;
+    };
+
+    cell(String(index + 1), "num");
+    cell(score.initials, "name");
+    cell(score.score.toLocaleString("en-US"), "num");
+
+    const received = new Date(score.created_at);
+    cell(Number.isNaN(received.getTime()) ? score.created_at : received.toLocaleString());
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Remove";
+    remove.onclick = async () => {
+      const line = `${score.initials} ${score.score.toLocaleString("en-US")}`;
+      if (!confirm(`Remove ${line} from ${score.board}? This cannot be undone.`)) return;
+      try {
+        await api(`/v1/admin/arcade/scores/${score.id}`, { method: "DELETE" });
+        say(`Removed ${line} from ${score.board}.`);
+        await load();
+      } catch (error) { say(error.message, "error"); }
+    };
+    cell("").append(remove);
+
+    table.append(row);
+  });
+
+  form.append(table);
 }
 
 function renderList() {
+  // Scores come from the cabinets; there is nothing for staff to create.
+  $("newRecord").hidden = collection === ARCADE;
+  if (collection === ARCADE) { renderBoardList(); return; }
+
   const config = COLLECTIONS[collection];
   renderFilters();
 
@@ -575,6 +763,8 @@ function toEditable(record) {
 }
 
 function renderEditor() {
+  if (collection === ARCADE) { renderBoard(); return; }
+
   const config = COLLECTIONS[collection];
   const raw = currentRecord();
   const form = $("editor");
@@ -890,14 +1080,26 @@ async function save(record, overrides, successMessage) {
 
 async function load() {
   renderTabs();
+
+  // The tab this answer is for. Switching tabs while a list is still loading
+  // would otherwise let the slower answer land in the other tab's view, and
+  // the arcade's rows and the collections' records are not the same shape.
+  const requested = collection;
   try {
-    const body = await api(`/v1/admin/${collection}`);
+    const body = await api(requested === ARCADE ? "/v1/admin/arcade/scores" : `/v1/admin/${requested}`);
+    if (requested !== collection) return;
+
     records = body.items || [];
     renderList();
     renderEditor();
   } catch (error) {
+    if (requested !== collection) return;
+
     records = [];
     renderList();
+    // A board that could not be loaded must not stay on screen with live
+    // Remove buttons. The record editors are left as they were.
+    if (collection === ARCADE) renderEditor();
     say(error.message, "error");
   }
 }
