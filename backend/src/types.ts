@@ -1,3 +1,5 @@
+import type { PoolHall } from "./pool/hall.js";
+
 /**
  * Bindings and configuration available to the Worker.
  *
@@ -36,6 +38,12 @@ export interface Env {
 
 	/** Arcade score submissions, the one anonymous write. Optional for the same reason. */
 	readonly ARCADE_SUBMIT_LIMITER?: RateLimit;
+
+	/** The venue's pool hall: one Durable Object holding the lobby and every table. */
+	readonly POOL_HALL: DurableObjectNamespace<PoolHall>;
+
+	/** WebSocket connections to the pool hall. Optional for the same reason as the others. */
+	readonly POOL_CONNECT_LIMITER?: RateLimit;
 }
 
 /** Per-request state threaded through route handlers. */

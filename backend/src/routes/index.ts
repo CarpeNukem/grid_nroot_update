@@ -10,6 +10,7 @@ import { mediaObjectRoute } from "./public/media.js";
 import { menuDetailRoute, menuListRoute } from "./public/menu.js";
 import { newsDetailRoute, newsListRoute } from "./public/news.js";
 import { pageDetailRoute, pageListRoute } from "./public/pages.js";
+import { poolConnectRoute } from "./public/pool.js";
 import { profileDetailRoute, profileListRoute } from "./public/profiles.js";
 import { robotsRoute, siteRoute } from "./public/site.js";
 import type { Route } from "./router.js";
@@ -46,6 +47,9 @@ export const routes: readonly Route[] = [
 	// The one anonymous write. The boards it fills are read through the
 	// catalogue, so there is no arcade read route to go with it.
 	arcadeSubmitRoute,
+
+	// A WebSocket into the pool hall. The game itself is messages on it.
+	poolConnectRoute,
 
 	adminUiRoute,
 	...adminRoutes,

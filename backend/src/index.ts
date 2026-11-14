@@ -8,6 +8,9 @@ import { isAdminHostname, isAdminSurface } from "./security/hosts.js";
 import { enforceRateLimit, isRateLimited } from "./security/ratelimit.js";
 import type { Env, RequestContext } from "./types.js";
 
+// Durable Object classes are found by name among the main module's exports.
+export { PoolHall } from "./pool/hall.js";
+
 /**
  * Entry point.
  *

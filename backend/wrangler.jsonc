@@ -71,8 +71,24 @@
 			"name": "ARCADE_SUBMIT_LIMITER",
 			"namespace_id": "1002",
 			"simple": { "limit": 6, "period": 60 }
+		},
+		// WebSocket connections to the pool hall. A deck connects once a visit to
+		// the table and again only after a dropped connection.
+		{
+			"name": "POOL_CONNECT_LIMITER",
+			"namespace_id": "1003",
+			"simple": { "limit": 10, "period": 60 }
 		}
 	],
+
+	// The venue's pool hall: one hibernating Durable Object for the lobby and
+	// every table (src/pool/hall.ts). SQLite-backed, which is what the free
+	// plan offers and what lets the hall sleep between messages without losing
+	// a table.
+	"durable_objects": {
+		"bindings": [{ "name": "POOL_HALL", "class_name": "PoolHall" }]
+	},
+	"migrations": [{ "tag": "pool-hall-v1", "new_sqlite_classes": ["PoolHall"] }],
 
 	// Deployed environments are declared explicitly so `wrangler deploy` alone
 	// cannot ship the development settings above. That matters more than it
@@ -142,8 +158,19 @@
 					"name": "ARCADE_SUBMIT_LIMITER",
 					"namespace_id": "1002",
 					"simple": { "limit": 6, "period": 60 }
+				},
+				{
+					"name": "POOL_CONNECT_LIMITER",
+					"namespace_id": "1003",
+					"simple": { "limit": 10, "period": 60 }
 				}
-			]
+			],
+
+			// Bindings are not inherited by an environment, so the hall is named again.
+			// The migration above is shared by every environment.
+			"durable_objects": {
+				"bindings": [{ "name": "POOL_HALL", "class_name": "PoolHall" }]
+			}
 		}
 	}
 }

@@ -36,6 +36,73 @@ internal interface IGridArcade : IDisposable
     void Draw();
 }
 
+/// <summary>
+/// The arcade's pool table, for a module that has one. Kept apart from
+/// <see cref="IGridArcade"/> so a module without it still loads, and so the
+/// deck can tell whether there is a table to open.
+/// </summary>
+internal interface IGridArcadePool
+{
+    /// <summary>Whether the pool table's window is open.</summary>
+    bool PoolOpen { get; }
+
+    /// <summary>Shows the pool table, at its menu: online play or practice. Closes any cabinet that is open.</summary>
+    void OpenPool();
+
+    /// <summary>Closes the pool table. A game in play is left, which hands it to the opponent.</summary>
+    void ClosePool();
+}
+
+/// <summary>
+/// The deck's WebSocket to The Grid's relay, for the arcade's games that are
+/// played between decks.
+///
+/// The deck owns the network here as it does for the boards: the module asks
+/// for a socket to one of the relay's routes, and the deck decides where that
+/// is. It only ever connects to the venue relay, or to a loopback relay while
+/// developing, whatever path the module names.
+/// </summary>
+internal interface IArcadeLink
+{
+    /// <summary>Whether the deck talks to the relay at all. When false, <see cref="Connect"/> returns a socket that is already closed.</summary>
+    bool Enabled { get; }
+
+    /// <summary>
+    /// Opens a socket to a relay route such as "/v1/pool", with the query
+    /// given. Returns at once; the socket connects in the background and its
+    /// <see cref="IArcadeSocket.State"/> says when it is open.
+    /// </summary>
+    IArcadeSocket Connect(string path, IReadOnlyDictionary<string, string> query);
+}
+
+internal enum ArcadeSocketState
+{
+    Connecting,
+    Open,
+    Closed,
+}
+
+/// <summary>
+/// One WebSocket to the relay, read and written from the draw thread without
+/// ever blocking it. Text messages only.
+/// </summary>
+internal interface IArcadeSocket : IDisposable
+{
+    ArcadeSocketState State { get; }
+
+    /// <summary>Why the socket closed, as a sentence for the player. Null while it is open, or when the module closed it.</summary>
+    string? Error { get; }
+
+    /// <summary>Queues a message to send. False when the socket is not open, in which case nothing is sent.</summary>
+    bool Send(string text);
+
+    /// <summary>Takes the next message received, oldest first, if one is waiting.</summary>
+    bool TryReceive(out string text);
+
+    /// <summary>Closes the socket. Messages already queued may not be sent.</summary>
+    void Close();
+}
+
 /// <summary>A drink on the venue's menu, as the arcade sees it.</summary>
 /// <param name="Price">The price as the menu prints it, such as "10 000".</param>
 /// <param name="Ingredients">The menu's ingredient line, comma separated, exactly as guests read it.</param>
@@ -99,11 +166,13 @@ internal interface IArcadeScoreboard
 /// asks when it starts and gets tonight's menu.
 /// </param>
 /// <param name="Scoreboard">The Grid's shared high-score boards. Null on a deck that has none, where scores stay on this machine.</param>
+/// <param name="Link">WebSockets to the relay, for games played between decks. Null on a deck that has none, where those games are offline only.</param>
 internal sealed record ArcadeHost(
     PluginConfig Config,
     string DataDirectory,
     Func<IReadOnlyList<ArcadeDrink>>? Menu = null,
-    IArcadeScoreboard? Scoreboard = null);
+    IArcadeScoreboard? Scoreboard = null,
+    IArcadeLink? Link = null);
 
 internal static class ArcadeModule
 {

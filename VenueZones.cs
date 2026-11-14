@@ -24,6 +24,9 @@ internal enum VenueZoneKind
 {
     VendingMachine,
     Arcade,
+
+    /// <summary>The arcade module's pool table, on a Billiard Table furnishing.</summary>
+    Pool,
 }
 
 /// <summary>The icon drawn in a zone's marker.</summary>
@@ -31,6 +34,7 @@ internal enum VenueZoneGlyph
 {
     Vending,
     Arcade,
+    Pool,
 }
 
 /// <summary>
@@ -44,6 +48,11 @@ internal enum VenueZoneGlyph
 /// hovered, so neighbours do not pile labels on top of each other.
 /// </param>
 /// <param name="Cabinet">For an arcade cabinet, its number in the row, counted from the left as you face it.</param>
+/// <param name="FloorRing">
+/// Whether the zone is marked on the floor, with a ring and a line up to its
+/// marker. The cabinets and the pool table go without: the furniture itself
+/// shows where to stand, and the marker over it is enough.
+/// </param>
 internal sealed record VenueZoneDefinition(
     string Id,
     VenueZoneKind Kind,
@@ -51,7 +60,8 @@ internal sealed record VenueZoneDefinition(
     VenueZoneGlyph Glyph,
     float Radius,
     bool Compact,
-    int Cabinet = 0);
+    int Cabinet = 0,
+    bool FloorRing = true);
 
 /// <summary>
 /// A zone pinned to a piece of housing furniture.
@@ -106,7 +116,26 @@ internal readonly record struct ResolvedVenueZone(VenueZoneDefinition Definition
 internal sealed class VenueZones
 {
     // Vending machine activation zones are disabled for now.
-    internal static readonly FurnitureZoneAnchor[] FurnitureZones = [];
+    //
+    // The pool table is the game's own Billiard Table (Item 44896,
+    // HousingFurniture 198164): every one in the room gets a zone, found again
+    // on each scan, so the table can be moved, added or taken away without
+    // anything here changing. The zone sits on the table itself, so the
+    // three-yalm reach covers every side of it.
+    internal const uint BilliardTableFurnitureRow = 198164;
+    internal const uint BilliardTableItem = 44896;
+
+    internal static readonly FurnitureZoneAnchor[] FurnitureZones =
+    [
+        new(
+            new VenueZoneDefinition("pool", VenueZoneKind.Pool, "8-BALL", VenueZoneGlyph.Pool, Radius: 1.6f, Compact: false, FloorRing: false),
+            BilliardTableFurnitureRow,
+            BilliardTableItem,
+            FrontOffset: 0f),
+    ];
+
+    /// <summary>How high over a pool table its marker floats: over the cloth, below a standing player's eye.</summary>
+    private const float PoolMarkerHeight = 1.35f;
 
     // The arcade row the venue mod draws in place of a mannequin's earrings
     // (a0001, Copper Earrings, any variant). Measured from c0901a0001_ear.mdl,
@@ -165,6 +194,7 @@ internal sealed class VenueZones
     private readonly Func<bool> isAtVenue;
     private readonly Func<IGameObject, bool> isMannequin;
     private readonly Func<int, string?> cabinetTitle;
+    private readonly Func<bool> hasPool;
     private readonly Action<VenueZoneDefinition> open;
     private readonly Action<VenueZoneKind> close;
     private readonly Func<VenueZoneKind, bool> isOpen;
@@ -213,6 +243,7 @@ internal sealed class VenueZones
         Func<bool> isAtVenue,
         Func<IGameObject, bool> isMannequin,
         Func<int, string?> cabinetTitle,
+        Func<bool> hasPool,
         Action<VenueZoneDefinition> open,
         Action<VenueZoneKind> close,
         Func<VenueZoneKind, bool> isOpen)
@@ -221,6 +252,7 @@ internal sealed class VenueZones
         this.isAtVenue = isAtVenue;
         this.isMannequin = isMannequin;
         this.cabinetTitle = cabinetTitle;
+        this.hasPool = hasPool;
         this.open = open;
         this.close = close;
         this.isOpen = isOpen;
@@ -287,7 +319,8 @@ internal sealed class VenueZones
                 VenueZoneGlyph.Arcade,
                 Radius: 0.3f,
                 Compact: true,
-                cabinet);
+                cabinet,
+                FloorRing: false);
             var x = ArcadeCabinetX[index];
             anchors[index] = new MannequinZoneAnchor(
                 zone,
@@ -507,11 +540,16 @@ internal sealed class VenueZones
                     if (!Matches(anchor, gameObject->BaseId) && !Matches(anchor, recordId))
                         continue;
 
+                    // A pool table with no pool game to open gets no zone.
+                    if (anchor.Zone.Kind == VenueZoneKind.Pool && !hasPool())
+                        break;
+
                     Vector3 position = gameObject->Position;
                     var rotation = gameObject->Rotation;
                     var facing = new Vector3(MathF.Sin(rotation), 0f, MathF.Cos(rotation));
                     var center = position + (facing * anchor.FrontOffset);
-                    found.Add((anchor, new ResolvedVenueZone(anchor.Zone, center, center + new Vector3(0f, FurnitureMarkerHeight, 0f), ShowLeader: true)));
+                    var height = anchor.Zone.Kind == VenueZoneKind.Pool ? PoolMarkerHeight : FurnitureMarkerHeight;
+                    found.Add((anchor, new ResolvedVenueZone(anchor.Zone, center, center + new Vector3(0f, height, 0f), ShowLeader: anchor.Zone.FloorRing)));
                     break;
                 }
             }
@@ -696,11 +734,11 @@ internal sealed class VenueZones
             return;
 
         var uiScale = CyberdeckTheme.ResolveUiScale(config.UiScale);
-        var size = (definition.Compact ? 13f : 17f) * uiScale * Math.Clamp(6f / MathF.Max(cameraDistance, 0.5f), 0.8f, 1.3f);
+        var size = (definition.Compact ? 26f : 34f) * uiScale * Math.Clamp(6f / MathF.Max(cameraDistance, 0.5f), 0.8f, 1.3f);
         var tooFar = tooFarZone == index && now < tooFarUntil;
         var label = definition.Label;
         var status = inRange
-            ? definition.Kind == VenueZoneKind.Arcade ? "CLICK TO PLAY" : "CLICK TO ACCESS"
+            ? definition.Kind is VenueZoneKind.Arcade or VenueZoneKind.Pool ? "CLICK TO PLAY" : "CLICK TO ACCESS"
             : tooFar
                 ? $"MOVE CLOSER // {tooFarDistance:0.0}y"
                 : "STEP INTO THE ZONE";
@@ -761,9 +799,10 @@ internal sealed class VenueZones
         var primary = CyberdeckTheme.Palette.Cyan;
         var secondary = CyberdeckTheme.Palette.Magenta;
         var ringColor = inRange ? primary : Vector4.Lerp(primary, CyberdeckTheme.Palette.TextMuted, 0.45f);
-        DrawGroundRing(drawList, zone.Center, definition.Radius, ringColor, secondary, inRange, detailed, definition.Compact && hovered, alpha, seconds, uiScale);
+        if (definition.FloorRing)
+            DrawGroundRing(drawList, zone.Center, definition.Radius, ringColor, secondary, inRange, detailed, definition.Compact && hovered, alpha, seconds, uiScale);
 
-        if (zone.ShowLeader && Project(zone.Center, out var ground) && ground.Y > marker.Y + size)
+        if (zone.ShowLeader && definition.FloorRing && Project(zone.Center, out var ground) && ground.Y > marker.Y + size)
         {
             var leaderStart = new Vector2(marker.X, marker.Y + size);
             if (detailed)
@@ -962,10 +1001,18 @@ internal sealed class VenueZones
         drawList.AddConvexPolyFilled(ref hexagon[0], 6, Color(CyberdeckTheme.Palette.Background, 0.86f * alpha));
         drawList.AddPolyline(ref hexagon[0], 6, Color(color, alpha), ImDrawFlags.Closed, (hovered ? 2.4f : 1.8f) * uiScale);
 
-        if (glyph == VenueZoneGlyph.Arcade)
-            DrawArcadeGlyph(drawList, center, size * 0.62f, color, secondary, alpha, uiScale);
-        else
-            DrawVendingGlyph(drawList, center, size * 0.62f, color, secondary, alpha, uiScale);
+        switch (glyph)
+        {
+            case VenueZoneGlyph.Arcade:
+                DrawArcadeGlyph(drawList, center, size * 0.62f, color, secondary, alpha, uiScale);
+                break;
+            case VenueZoneGlyph.Pool:
+                DrawPoolGlyph(drawList, center, size * 0.62f, color, secondary, alpha, uiScale);
+                break;
+            default:
+                DrawVendingGlyph(drawList, center, size * 0.62f, color, secondary, alpha, uiScale);
+                break;
+        }
 
         if (!hovered && !inRange)
             return;
@@ -1026,6 +1073,22 @@ internal sealed class VenueZones
         drawList.AddCircleFilled(center + new Vector2(-0.3f, 0.34f) * size, MathF.Max(1.5f, 0.1f * size), accent);
         drawList.AddCircleFilled(center + new Vector2(0.12f, 0.52f) * size, MathF.Max(1.2f, 0.08f * size), body);
         drawList.AddCircleFilled(center + new Vector2(0.34f, 0.52f) * size, MathF.Max(1.2f, 0.08f * size), body);
+    }
+
+    /// <summary>The 8 ball with a cue laid across behind it.</summary>
+    private static void DrawPoolGlyph(ImDrawListPtr drawList, Vector2 center, float size, Vector4 color, Vector4 secondary, float alpha, float uiScale)
+    {
+        var line = MathF.Max(1f, 1.3f * uiScale);
+        var body = Color(color, alpha);
+        var accent = Color(secondary, alpha);
+        drawList.AddLine(center + new Vector2(-0.95f, 0.78f) * size, center + new Vector2(0.95f, -0.78f) * size, accent, MathF.Max(1.5f, 2f * uiScale));
+        var ball = center + new Vector2(-0.14f, 0.1f) * size;
+        drawList.AddCircleFilled(ball, 0.62f * size, Color(CyberdeckTheme.Palette.Background, alpha), 20);
+        drawList.AddCircle(ball, 0.62f * size, body, 20, line);
+        drawList.AddCircleFilled(ball, 0.3f * size, body, 16);
+        var eight = ImGui.CalcTextSize("8");
+        var scale = MathF.Min(1f, 0.44f * size / MathF.Max(1f, eight.Y));
+        drawList.AddText(ImGui.GetFont(), ImGui.GetFontSize() * scale, ball - (eight * scale / 2f), Color(CyberdeckTheme.Palette.Background, alpha), "8");
     }
 
     private static void DrawShadowedText(ImDrawListPtr drawList, Vector2 position, string text, Vector4 color, float alpha)

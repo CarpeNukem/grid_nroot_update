@@ -94,3 +94,29 @@ export async function enforceSubmitLimit(request: Request, env: Env): Promise<vo
 		limit: SUBMISSIONS_PER_MINUTE,
 	});
 }
+
+/**
+ * A deck connects to the pool hall once when a guest opens the table and
+ * again only if the connection drops, so ten a minute is far above any
+ * player. What it caps is a script reconnecting each time the hall closes it
+ * for flooding, which would otherwise spend the hall's message budget at the
+ * rate of the public limit.
+ */
+const POOL_CONNECTS_PER_MINUTE = 10;
+
+/** The limit on WebSocket connections to the pool hall, on top of the public one. */
+export async function enforcePoolConnectLimit(request: Request, env: Env): Promise<void> {
+	const limiter = env.POOL_CONNECT_LIMITER;
+	if (limiter === undefined) {
+		return;
+	}
+
+	const { success } = await limiter.limit({ key: callerKey(request) });
+	if (success) {
+		return;
+	}
+
+	throw new ApiError(429, ErrorCode.RATE_LIMITED, "Too many connections. Try again shortly.", {
+		limit: POOL_CONNECTS_PER_MINUTE,
+	});
+}

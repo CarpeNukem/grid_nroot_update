@@ -189,6 +189,58 @@ admin page's **Arcade** tab puts behind a Remove button on each line of each
 board. The change is in the catalogue within half a minute, and reaches each
 deck the next time it checks in, which for a deck left closed is up to an hour.
 
+### Pool hall
+
+Multiplayer 8-ball for the arcade's pool table: one hibernating Durable Object,
+`PoolHall` (`src/pool/hall.ts`), holding the lobby and every table. Shaped around
+the free plan like the boards:
+
+- **One Worker request per player per visit.** `GET /v1/pool?name=ABC` with a
+  WebSocket upgrade, plus `&resume=<seat token>` to get back to a kept seat.
+  Everything after that is messages on the socket, which go to the Durable
+  Object and never through the Worker again.
+- **About two incoming messages a shot.** The shooter's deck plays the shot and
+  sends it, then sends the table once the balls stop. The hall checks the turn
+  and the shot number, stores the settled table and passes both on. It never
+  simulates anything. Cue previews add at most two and a half a second while a
+  player aims. Incoming messages are what the hall is billed for, at twenty to
+  a request; outgoing ones are free. A measured game: 36 shots, 74 messages,
+  17 KB.
+- **Nothing between messages.** The hibernation API keeps the sockets open at
+  the edge while the object is evicted, so an idle table costs no duration.
+  Keep-alives are protocol pings, answered by the runtime; a text `ping` gets a
+  `pong` from the auto-response, also without waking it. Tables live in the
+  object's SQLite storage and each socket carries its own attachment, so
+  nothing is lost when it sleeps.
+
+| Deck sends | Hall does |
+| --- | --- |
+| `open` `{private}` | Opens a table with a four-letter code and seats the sender. Public tables are listed in the lobby. |
+| `join` `{code}` | Seats the sender opposite the host and starts the game, host to break. |
+| `aim` `{seq, a, p, cx?, cy?}` | Passes a cue preview to the opponent. Dropped if closer than 250 ms to the last. |
+| `shot` `{seq, shot}` | Passes the shot to the opponent. Only the player whose turn it is, for the shot the table is on. |
+| `settle` `{seq, turn, winner, state}` | Stores the settled table, moves the turn on, ends the game on a winner, and passes it on. |
+| `rematch` | Racks a new game once both players ask. The break alternates. |
+| `leave` | Gives up the seat. A game in play goes to the opponent. |
+| `sync` | Sends the sender's table again. |
+
+The hall sends `welcome` (protocol version, seat token, lobby), `lobby`,
+`table` (one seat's view: players, status, seed, shot number, turn, winner,
+settled state), the opponent's `aim`/`shot`/`settle`, and `error` with a code.
+
+- **Dropped connections.** A seat is kept for a minute. A deck that reconnects
+  with its seat token gets its table back. After that, a game in play goes to the
+  player who stayed, and an open table is cleared. A table nobody has touched
+  for two hours is cleared too. Both happen on the object's one alarm.
+- **Its own budget.** Text frames only, up to 4,096 characters, a settled state
+  up to 2,500. A socket sending more than 40 messages in 10 seconds is closed
+  (1008), and so is one sending an oversized frame (1009) or binary (1003).
+  At most 200 sockets and 64 tables. Connections are throttled to ten a minute
+  per address, on top of the public limit.
+- **Not trustworthy, and not scored.** The shooter's deck judges its own shots,
+  so a modified deck could claim anything. Nothing is ranked, and nothing
+  identifies a player beyond the name they type.
+
 ### Errors
 
 Always `{ "error": { "code": "...", "message": "..." } }`. Causes, stack traces,

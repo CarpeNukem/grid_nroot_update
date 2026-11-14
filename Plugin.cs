@@ -80,6 +80,9 @@ public sealed class Plugin : IDalamudPlugin
     /// <summary>The Grid's shared high-score boards, handed to the arcade module; see <see cref="ArcadeScoreboard"/>.</summary>
     private readonly ArcadeScoreboard arcadeScoreboard;
 
+    /// <summary>WebSockets to the relay for the arcade's games between decks, such as pool; see <see cref="ArcadeRelayLink"/>.</summary>
+    private readonly ArcadeRelayLink arcadeLink;
+
     /// <summary>The last venue check, refreshed every second, so the zones do not repeat it every frame.</summary>
     private VenuePresence lastVenuePresence = VenuePresence.Unknown;
     private readonly object modAddedLock = new();
@@ -180,9 +183,10 @@ public sealed class Plugin : IDalamudPlugin
             remoteAssets);
 
         arcadeScoreboard = new ArcadeScoreboard(Config, catalogService);
+        arcadeLink = new ArcadeRelayLink(Config);
         arcade = ArcadeModule.TryLoad(
             pluginInterface.AssemblyLocation.DirectoryName,
-            new ArcadeHost(Config, pluginInterface.ConfigDirectory.FullName, cyberdeckWindow.ArcadeMenu, arcadeScoreboard),
+            new ArcadeHost(Config, pluginInterface.ConfigDirectory.FullName, cyberdeckWindow.ArcadeMenu, arcadeScoreboard, arcadeLink),
             out arcadeStatus);
         PluginService.Log.Information("Arcade module: {Status}.", arcadeStatus);
 
@@ -191,6 +195,7 @@ public sealed class Plugin : IDalamudPlugin
             () => lastVenuePresence == VenuePresence.Confirmed,
             IsMannequinObject,
             cabinet => arcade?.CabinetTitle(cabinet),
+            () => arcade is IGridArcadePool,
             OpenVenueZone,
             CloseVenueZone,
             IsVenueZoneOpen);
@@ -205,7 +210,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             PluginService.Commands.AddHandler(commandName, new CommandInfo(OnCommand)
             {
-                HelpMessage = "Open The Grid Cyberdeck. Aliases: /thegrid, /cyberdeck. Subcommands: update, repair, config, vault.",
+                HelpMessage = "Open The Grid Cyberdeck. Aliases: /thegrid, /cyberdeck. Subcommands: update, repair, config, vault, pool.",
                 ShowInHelp = commandName == PrimaryCommandName,
             });
         }
@@ -270,6 +275,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         arcadeScoreboard.Dispose();
+        arcadeLink.Dispose();
 
         foreach (var commandName in CommandNames)
             PluginService.Commands.RemoveHandler(commandName);
@@ -291,11 +297,20 @@ public sealed class Plugin : IDalamudPlugin
         {
             case "":
                 OpenMainUi();
-                PluginService.Chat.Print("Opening The Grid Cyberdeck. Subcommands: update, repair, config, vault.", "TheGrid");
+                PluginService.Chat.Print("Opening The Grid Cyberdeck. Subcommands: update, repair, config, vault, pool.", "TheGrid");
                 break;
             case "update":
                 QueueReconcile(announce: true);
                 PluginService.Chat.Print("Update queued. Checking Penumbra and the latest The Grid release...", "TheGrid");
+                break;
+            case "pool":
+                // The table from anywhere; at the venue, a Billiard Table has a zone that opens it.
+                if (arcade is IGridArcadePool pool)
+                    pool.OpenPool();
+                else
+                    PluginService.Chat.PrintError(
+                        arcade is null ? $"The arcade is {arcadeStatus}, so there is no pool table." : "This arcade has no pool table.",
+                        "TheGrid");
                 break;
             case "repair":
                 QueueRepair();
@@ -315,7 +330,7 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 #endif
             default:
-                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /grid, or /cyberdeck with optional update/repair/config/vault.", "TheGrid");
+                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /grid, or /cyberdeck with optional update/repair/config/vault/pool.", "TheGrid");
                 break;
         }
     }
@@ -396,7 +411,7 @@ public sealed class Plugin : IDalamudPlugin
                 venueZones.ShowAnywhere = !venueZones.ShowAnywhere;
                 PluginService.Chat.Print(
                     venueZones.ShowAnywhere
-                        ? "DEBUG: Venue zones now show in any house, at a Vending Machine Nine or a mannequin wearing the arcade earrings."
+                        ? "DEBUG: Venue zones now show in any house, at a Billiard Table or a mannequin wearing the arcade earrings."
                         : "DEBUG: Venue zones back to The Grid only.",
                     "TheGrid");
                 break;
@@ -563,6 +578,9 @@ public sealed class Plugin : IDalamudPlugin
             case VenueZoneKind.Arcade:
                 arcade?.Open(zone.Cabinet);
                 break;
+            case VenueZoneKind.Pool:
+                (arcade as IGridArcadePool)?.OpenPool();
+                break;
         }
     }
 
@@ -576,6 +594,10 @@ public sealed class Plugin : IDalamudPlugin
             case VenueZoneKind.Arcade:
                 arcade?.Close();
                 break;
+            case VenueZoneKind.Pool:
+                // Walking away from the table leaves it, the same as walking away from a cabinet.
+                (arcade as IGridArcadePool)?.ClosePool();
+                break;
         }
     }
 
@@ -583,7 +605,8 @@ public sealed class Plugin : IDalamudPlugin
         => kind switch
         {
             VenueZoneKind.VendingMachine => cyberdeckWindow.IsVendingMachineOpen,
-            VenueZoneKind.Arcade => arcade?.IsOpen == true,
+            VenueZoneKind.Arcade => arcade?.IsOpen == true && (arcade as IGridArcadePool)?.PoolOpen != true,
+            VenueZoneKind.Pool => (arcade as IGridArcadePool)?.PoolOpen == true,
             _ => false,
         };
 
