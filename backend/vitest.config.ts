@@ -52,6 +52,9 @@ export default defineWorkersConfig({
 						// secret; the development sign-in path also requires
 						// ENVIRONMENT === "development", which production never sets.
 						ADMIN_ALLOWED_EMAILS: "editor@thegrid.test, other@thegrid.test",
+						// Test-only, and never sent anywhere: the short link tests answer
+						// Discord's re-signing endpoint with fetchMock.
+						DISCORD_BOT_TOKEN: "test-bot-token",
 						TEST_MEDIA_FIXTURES: mediaFixtures,
 						TEST_WRANGLER_CONFIG: wranglerConfig,
 					},

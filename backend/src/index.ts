@@ -9,6 +9,7 @@ import { enforceRateLimit, isRateLimited } from "./security/ratelimit.js";
 import type { Env, RequestContext } from "./types.js";
 
 // Durable Object classes are found by name among the main module's exports.
+export { CardHall } from "./cards/hall.js";
 export { PoolHall } from "./pool/hall.js";
 
 /**

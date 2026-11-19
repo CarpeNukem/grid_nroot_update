@@ -60,6 +60,7 @@ export async function resetTables(): Promise<void> {
 		env.DB.prepare("DELETE FROM menu_items"),
 		env.DB.prepare("DELETE FROM news_posts"),
 		env.DB.prepare("DELETE FROM arcade_scores"),
+		env.DB.prepare("DELETE FROM short_links"),
 	]);
 
 	const stored = await env.MEDIA.list();

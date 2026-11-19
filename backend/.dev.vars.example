@@ -14,3 +14,10 @@ CF_ACCESS_TEAM_DOMAIN=
 # Comma-separated allowlist of staff emails permitted through admin routes.
 # Access enforces this first; the Worker re-checks it as defence in depth.
 ADMIN_ALLOWED_EMAILS=
+
+# Optional. A Discord bot token, used only to re-sign Discord attachment
+# addresses behind short links (grid.nroot.io/s/<code>). Discord's copied
+# attachment links stop working after about a day; with this set, a short link
+# asks Discord for a fresh one when needed. Without it, short links to Discord
+# files die when the copied address does.
+DISCORD_BOT_TOKEN=

@@ -191,12 +191,18 @@ deck the next time it checks in, which for a deck left closed is up to an hour.
 
 ### Pool hall
 
-Multiplayer 8-ball for the arcade's pool table: one hibernating Durable Object,
-`PoolHall` (`src/pool/hall.ts`), holding the lobby and every table. Shaped around
-the free plan like the boards:
+Multiplayer 8-ball, 9-ball and free pyramid for the arcade's pool table, with room to watch:
+one hibernating Durable Object, `PoolHall` (`src/pool/hall.ts`), holding the
+lobby and every table. Shaped around the free plan like the boards:
 
-- **One Worker request per player per visit.** `GET /v1/pool?name=ABC` with a
-  WebSocket upgrade, plus `&resume=<seat token>` to get back to a kept seat.
+- **Players are characters.** A deck connects as the character logged in,
+  `name=Forename Surname@World` (URL-encoded), and that is who the lobby, the
+  table and the opponent see. The hall still takes the initials decks sent
+  before (up to six of `A-Z`, `0-9`, `-`), so a deck not yet updated keeps
+  playing. The card hall takes characters only.
+- **One Worker request per player per visit.** `GET /v1/pool?name=...` with a
+  WebSocket upgrade, plus `&v=3` for the protocol the deck speaks and
+  `&resume=<seat token>` to get back to a kept seat.
   Everything after that is messages on the socket, which go to the Durable
   Object and never through the Worker again.
 - **About two incoming messages a shot.** The shooter's deck plays the shot and
@@ -215,19 +221,57 @@ the free plan like the boards:
 
 | Deck sends | Hall does |
 | --- | --- |
-| `open` `{private}` | Opens a table with a four-letter code and seats the sender. Public tables are listed in the lobby. |
-| `join` `{code}` | Seats the sender opposite the host and starts the game, host to break. |
-| `aim` `{seq, a, p, cx?, cy?}` | Passes a cue preview to the opponent. Dropped if closer than 250 ms to the last. |
-| `shot` `{seq, shot}` | Passes the shot to the opponent. Only the player whose turn it is, for the shot the table is on. |
-| `settle` `{seq, turn, winner, state}` | Stores the settled table, moves the turn on, ends the game on a winner, and passes it on. |
+| `open` `{private, rules?, assist?}` | Opens a table with a four-letter code and seats the sender. `rules` is `"eight"`, `"nine"` or `"pyramid"` (free pyramid, protocol 3 only), `"eight"` when left out. `assist` is `true` or `false`, `true` when left out: `false` is a tournament table, where both decks draw only the cue ball's line and no collision predictions. Anything else in either is refused (`bad-message`). The table keeps both for good, rematches included. Public tables are listed in the lobby. |
+| `join` `{code}` | Seats the sender opposite the host and starts the game, host to break. A deck on protocol 2 is refused a pyramid table (`needs-update`). |
+| `watch` `{code}` | Takes the sender to the table with that code to watch it: open, in play or over, private ones too. A deck on protocol 2 is refused a pyramid table (`needs-update`). |
+| `aim` `{seq, a, p, cx?, cy?, k?, s?}` | Passes a cue preview to the opponent and the watchers. Dropped if closer than 250 ms to the last. |
+| `shot` `{seq, shot}` | Passes the shot to the opponent and the watchers. Only the player whose turn it is, for the shot the table is on. |
+| `settle` `{seq, turn, winner, state}` | Stores the settled table, moves the turn on, ends the game on a winner, and passes it on to the opponent and the watchers. |
 | `rematch` | Racks a new game once both players ask. The break alternates. |
-| `leave` | Gives up the seat. A game in play goes to the opponent. |
-| `sync` | Sends the sender's table again. |
+| `leave` | Gives up the seat. A game in play goes to the opponent. A watcher just stops watching. |
+| `sync` | Sends the sender's table again, a watcher's included. |
+
+`k` is the called pocket, a whole number from 0 to 5, on a preview or inside a
+shot. Left out, nothing is called; any other value makes the shot `bad-message`
+and drops the preview, like any other bad field. `s` is the ball struck, a whole
+number from 0 to 15, on a preview or inside a shot, the same way: left out, it
+is the cue ball, 0, and only free pyramid strikes another. The settled `state`
+is the decks' own, and carries free pyramid's points; the hall does not read it.
 
 The hall sends `welcome` (protocol version, seat token, lobby), `lobby`,
-`table` (one seat's view: players, status, seed, shot number, turn, winner,
-settled state), the opponent's `aim`/`shot`/`settle`, and `error` with a code.
+`table` (one seat's view: rules, assist, players, watchers, status, seed, shot
+number, turn, winner, settled state), the opponent's `aim`/`shot`/`settle`,
+`closed` `{code, why}` when a table is cleared away, and `error` with a code.
 
+- **The lobby.** Up to 20 public tables, newest first: open ones whose host is
+  there, to join, and games in play, to watch. Finished games are not listed.
+  Each entry is `{code, host, rules, assist, status, players, watchers}`, with
+  `status` `waiting` or `playing` and `players` the two names, `null` for an
+  empty chair. It is sent again whenever one of those changes, a watcher count
+  included.
+- **Watching.** A watcher is a socket at a table without a seat. Its `table`
+  view has `seat: null` and `watching: true` (a player's has `false`), and it
+  is sent every `aim`, `shot` and `settle` the opponent is, in the same shape.
+  It has no say in the game: a shot, settle or rematch from it is refused
+  (`not-seated`), a preview dropped, and it cannot open, join or watch another
+  table (`already-seated`) until it sends `leave`. A table takes 8 watchers; the
+  ninth is refused (`no-room`). Watchers count toward the 200 sockets. When
+  both players have left, watchers get `closed` with `why: "empty"` and are
+  back in the lobby. A table cleared for sitting idle sends `why: "idle"`.
+- **Protocol versions.** The hall speaks 3: free pyramid and the ball a shot
+  strikes, on top of 2's 9-ball, called pockets, watching and tables without aim
+  assist. A deck says its version when it connects (`v=3`) and `welcome.v` is
+  that version back, down to 2, the hall's newest for a deck newer still. A deck
+  that says nothing is one from before free pyramid, on 2: it is welcomed with
+  2 and keeps playing 8-ball and 9-ball against any deck, but it is never listed
+  a pyramid table, cannot open one (`bad-message`) and is refused one's code
+  (`needs-update`), since it would read the table as 8-ball. That is the choice
+  made over bumping every deck: an old deck is not asked to update until it
+  meets a game it cannot play. A deck refuses to play on any version but its
+  own and asks to be updated, so a deck still on 1 (welcomed with 2) is told to
+  update, and a deck on 3 meeting a hall not yet updated waits for it: the
+  relay goes out before the deck. The hall only carries `assist`; the decks
+  draw it.
 - **Dropped connections.** A seat is kept for a minute. A deck that reconnects
   with its seat token gets its table back. After that, a game in play goes to the
   player who stayed, and an open table is cleared. A table nobody has touched
@@ -239,7 +283,230 @@ settled state), the opponent's `aim`/`shot`/`settle`, and `error` with a code.
   per address, on top of the public limit.
 - **Not trustworthy, and not scored.** The shooter's deck judges its own shots,
   so a modified deck could claim anything. Nothing is ranked, and nothing
-  identifies a player beyond the name they type.
+  identifies a player beyond the character name their deck reads from the
+  game, which a modified deck could fake.
+
+### Card hall
+
+The arcade's card games: blackjack, Texas Hold'em, and BLACK ICE, the liar's
+game, picked at any of the venue's card tables. One hibernating
+Durable Object, `CardHall` (`src/cards/hall.ts`), holds the card lobby and
+every card table. It is built like the pool hall, with one difference that
+matters: **the hall deals.** A pool table hides nothing, so each deck can play
+every shot itself. A card table has a shoe, a hole card, other players' hands,
+the rest of a Hold'em deck, and at BLACK ICE where each player's black ICE
+sits; a deck that held any of
+that could be read by anyone who decompiles the module. So every shuffle (the
+platform's cryptographic randomness), every deal, every move and every
+judgement happens in the hall, and a deck is only ever sent what its seat may
+see. Each game's rules are a module of their own, met through `games.ts`:
+`blackjack.ts`, `holdem.ts` (with `poker.ts`, which ranks hands) and
+`blackice.ts`. The hall seats players, passes each game its
+moves, runs the clocks and sends each seat its view.
+
+- **Players are characters**, as at the pool hall, and nothing else: each
+  name is 2 to 15 capitalised letters, apostrophes or hyphens, then `@` and a
+  one-word home world, as `Forename Surname@World`. Initials are refused.
+- **One Worker request per player per visit.** `GET /v1/cards?name=...`, with
+  `&resume=<seat token>` to get back to a kept seat, metered on a connect limit
+  of its own (`CARD_CONNECT_LIMITER`, ten a minute per address).
+- **Two or three incoming messages a round.** A bet, then a move or two. The
+  hall answers every change with the whole table, which costs nothing to send.
+  Measured: 2.2 to 2.6 messages a round over twelve solo rounds.
+- **Nothing between messages**, as in the pool hall: hibernation, auto-answered
+  `ping`, tables in SQLite (`card_tables`), the shoe included.
+
+| Deck sends | Hall does |
+| --- | --- |
+| `open` `{private, game?}` | Opens a table with a four-letter code and seats the sender. `game` is `"blackjack"` (the default), `"holdem"` or `"blackice"`, for the table's whole life. Public tables are listed in the lobby. |
+| `join` `{code}` | Seats the sender in the first empty seat: five at blackjack, six at Hold'em, four at BLACK ICE. During a hand or a game they sit out until the next one. |
+| `bet` `{amount}` | Places, changes or (with 0) takes back the sender's stake for the next round: 10 to 500, in tens, no more than their chips. Deals at once when everyone seated has bet; otherwise the others have 15 seconds from the first bet. |
+| `act` `{move, seq}` | `hit`, `stand`, `double` or `split`, on the hand on turn, only from its player and only against the table's current `seq`, so a double click is one move (`out-of-order`). |
+| `topup` | Back to 1,000 chips, only once the player cannot cover the smallest bet (`has-chips`). |
+| `leave` | Gives up the seat, and the stake on it. Play moves on without them. |
+| `sync` | Sends the sender's table again. |
+
+`bet`, `act` and `topup` are blackjack's; Hold'em's and BLACK ICE's are below. A message
+meant for another game's table is refused (`unknown-message`).
+
+The hall sends `welcome` (protocol version 1, seat token, blackjack's limits,
+the lobby), `lobby` (public tables with a person there: code, game, the seats'
+names, bots included, whether a hand is in play), `table` after every change,
+`closed` `{code, why}`, and `error` with a code. Every `table` names its game,
+and the rest of it is that game's view.
+
+#### Blackjack
+
+- **What a seat sees.** `table` holds the phase (`betting` or `playing`), the
+  round and `seq`, `left` (milliseconds on the clock, or null), the dealer's
+  cards with the hole card as `null` while it is down, `shoe` (a count, never
+  the cards), the hand on turn, the sender's own `moves`, and each seat's name,
+  chips, next bet and hands. A hand has its cards, stake, whether it was
+  doubled or split, and once the round settles its `result` (`blackjack`,
+  `win`, `push`, `lose`, `bust`) and what it `paid`, stake included. The last
+  round's hands stay up, with their results, until the next deal. Cards are two
+  characters, rank then suit: `AS`, `TD`, `9H`.
+- **The rules.** Six decks, a fresh shoe once fewer than 78 cards are left.
+  Dealer stands on all 17s and peeks under an ace or a ten. Blackjack pays 3 to
+  2. Double on any two cards and after a split; split any pair, tens of any
+  kind included, to four hands; split aces take one card each, and 21 on one is
+  not blackjack. No insurance and no surrender. Chips are play money: 1,000 to
+  sit down with, nothing carried between tables, nothing ranked.
+- **The clocks.** Bets close 15 seconds after the first one; a player has 30
+  seconds a decision before their hand stands. A player who is away does not
+  hold up the bets, and their turn stands on its clock. A seat is kept for a
+  minute, then given up with its stake; a table with nobody left, or untouched
+  for two hours, is cleared. All of it runs on the object's one alarm.
+#### BLACK ICE
+
+The Grid's liar's game, for two to four. Twenty cards: six each of queens,
+kings and aces, and two jokers, which are wild. Each round every player still
+in is dealt five and the hall names a table rank. A player lays one to three
+cards face down, claiming they are all that rank, or calls LIAR on the last
+cards laid. A call turns them over: if all were the rank or jokers the caller
+was wrong, otherwise the liar was caught, and whoever lost jacks into the ICE.
+Each player's ICE has six slots, one of them black, hidden by the hall when the
+game starts; each jack-in tries the next slot, so the odds climb from one in
+six to certain. A player on the black slot flatlines and is out; the last one
+standing wins. A player with no cards is passed over, and when nobody but the
+player on turn has any, they must call.
+
+| Deck sends | Hall does |
+| --- | --- |
+| `addbot` | Fills the first empty seat with a bot (`Glitch@Ice`, `Daemon@Ice`, ...). Only the host, the person in the lowest seat, and only between games (`not-host`, `not-waiting`). |
+| `removebot` `{seat}` | Takes that seat's bot away, on the same terms (`no-bot`). |
+| `start` | Starts a game, or the next one, with everyone seated: fresh ICE, a black slot hidden in each. The host only, with at least two seated, bots counting (`too-few`). |
+| `play` `{cards, seq}` | Lays the cards at those places in the sender's hand, one to three of them, on their turn (`bad-play`, `out-of-order`). |
+| `call` `{seq}` | Calls LIAR on the last cards laid, on the sender's turn and not on their own (`cannot-call`). |
+
+- **What a seat sees.** The phase (`waiting`, `playing`, `reveal` while a call
+  plays out, `over`), the round, `seq`, `left`, the host's seat, the table rank,
+  whose turn it is, how many cards are down, who laid the last ones and how
+  many, the sender's own `hand` and `moves`, and each seat's name, whether it is
+  a bot, how many cards it holds, how many slots it has tried, and whether it
+  is out. Laid cards are a count until a call: `reveal` then holds the caller,
+  the liar, the cards, whether they were true, the victim, the slot tried and
+  whether it flatlined them, and stays up through the reveal and to the end of
+  a game it ended. Nobody's hand but the sender's, and nobody's black slot, is
+  ever sent. Cards are `QS`, `KH`, `AD` and so on, and the jokers `ZR` and `ZB`.
+- **Bots** play on the hall's own clock, a second and a half to three after
+  their turn comes, so the table can follow them, and know only what a player
+  in their seat would: their own hand and what was laid. A bot calls a claim it
+  can prove false (more of the rank laid than it cannot see), and otherwise with
+  a chance that grows as the claim gets less likely; it lays true cards when it
+  has them, sometimes slipping a false one in, and bluffs with one or two when
+  it has none. A table with no person left at it, only bots, is cleared away.
+- **The clocks.** A player has 30 seconds a decision; when it runs out the hall
+  lays their first card, or calls if that is all they can do. A call's reveal
+  lasts five seconds before the next deal. Someone who leaves during a game is
+  out of it: their cards go with them and their last play can no longer be
+  called.
+
+#### Hold'em
+
+Texas Hold'em, no limit, for two to six, for play chips: everyone sits down
+with 1,000, and the blinds are 5 and 10, fixed. Once two players with chips
+are seated, a hand is dealt three seconds later, and the next one six seconds
+after each showdown, for as long as two can play. Two cards each face down,
+then the flop, turn and river face up, with a round of betting before each and
+after the last. A raise is at least the size of the last full one, up to all a
+player has; an all-in short of that does not reopen the betting to those who
+have already acted on the street. Heads up, the button posts the small blind
+and acts first before the flop. The best five of seven win; a tie splits the
+pot, the odd chip to the first winner left of the button, and a player all in
+can win only what they matched, the rest going into side pots.
+
+| Deck sends | Hall does |
+| --- | --- |
+| `act` `{move, to?, seq}` | `fold`, `check`, `call`, or `raise` with `to`, what the sender's bet on this street comes to: at least the least raise, at most everything, or all in for less (`bad-raise`, `cannot`, `out-of-order`). On the sender's turn only. |
+| `rebuy` | Back to 1,000 chips, only once the sender has run out and is not still in a hand (`has-chips`). |
+| `addbot` | Fills the first empty seat with a bot (`Chrome@Grid`, `Vex@Grid`, ...), which plays from the next hand. The host only, the person in the lowest seat, at any time. |
+| `removebot` `{seat}` | Sends that seat's bot away; in the middle of a hand it folds first (`no-bot`). |
+
+- **What a seat sees.** The phase (`waiting`, `betting`, `runout` while the
+  board is dealt out to players all in, `showdown`), the hand number, `seq`,
+  `left`, the host, the blinds and the starting stack, the button and the
+  blinds' seats, the street, the board, whose turn it is, the bet to match, the
+  pot gathered so far, the sender's own two cards (`hole`) and `moves` (fold,
+  check, the price of a call, and the least and most a raise may come to), and
+  each seat's name, bot or not, stack, bet on this street, whether they are in
+  the hand, folded or all in, what they last did, and how many cards they hold.
+  Nobody's cards but the sender's, and never the deck, until they are turned
+  over: everyone still in shows theirs once all but one are all in, and at a
+  showdown. `result` then holds each pot, who took it and with what hand
+  (`PAIR OF KINGS`, `SEVENS FULL OF TWOS`), each hand turned over with the five
+  cards that made it, and what each seat won; a hand everyone folded shows
+  nothing.
+- **Bots** play on the hall's clock, a second or two after their turn comes,
+  and know only their own cards and the board: they deal the unseen cards out
+  at random a few hundred times against as many hands as are still in to
+  judge their chances, then bet a good hand, call when the price is right,
+  bluff now and then when nobody has bet, and otherwise check or fold. A bot
+  that runs out buys back in by itself.
+- **The clocks.** A player has 30 seconds a decision, then checks if they can
+  and folds if not; one who is away gets three seconds, and is not dealt into
+  the next hand until they are back. Someone who leaves mid-hand folds, and
+  what they put in stays in the pots. A player who runs out sits out until
+  they buy back in.
+
+#### Both
+
+- **Its own budget.** Text frames only, up to 512 characters. A socket sending
+  more than 60 messages in 10 seconds is closed (1008); a fast player alone
+  sends around twenty. At most 200 sockets and 64 tables.
+
+### Short links
+
+`https://grid.nroot.io/s/<code>` redirects (302) to an address staff chose:
+a TinyURL for the venue, mostly for Discord attachments. Links are made in the
+admin panel's **Links** tab (paste, Enter, copy) or through the admin API.
+Anyone can follow one, but only an administrator can make one, so strangers
+can't use the domain to disguise their own addresses.
+
+| Route | Effect |
+| --- | --- |
+| `GET /s/:code` | Public. 302 to the target; `404 LINK_NOT_FOUND` if there is none. Case-insensitive. |
+| `GET /v1/admin/links` | Every link, newest first, plus `discordRefresh` (whether a bot token is set). |
+| `POST /v1/admin/links` | `{"url": "https://…", "code": "optional"}`. `201` new, `200` if the address already has a link, `409` if a chosen code is taken. |
+| `DELETE /v1/admin/links/:code` | Remove. The link 404s from then on. |
+
+- Generated codes are six characters of lowercase letters and digits, without
+  `l`, `1`, `o` or `0`. A chosen code is 1–40 lowercase letters, digits or
+  inner dashes.
+- Only absolute `http`/`https` addresses are accepted. No embedded
+  credentials, no links to other short links, and at most 2048 characters.
+- Links cannot be edited. A link already posted in a channel can never quietly
+  start pointing somewhere else; make a new one instead.
+- The same Discord file pasted twice (even with a different signature) gives
+  back the link it already has.
+
+**Discord attachments expire.** Discord signs each copied attachment address
+(`?ex=…&is=…&hm=…`), and the signature runs out after about a day. With a
+`DISCORD_BOT_TOKEN` secret set, a short link to a Discord file asks Discord
+for a fresh signature when the one it holds has less than an hour left. It then
+keeps working for as long as the message stays on Discord. Without the token,
+the link only works until the copied address expires, and the admin panel says
+so. The re-signing endpoint (`POST /api/v10/attachments/refresh-urls`) is not in
+Discord's published reference. If Discord refuses, the link falls back to the
+last address it held and waits ten minutes before asking again.
+
+Setting up the token:
+
+1. In the Discord Developer Portal, create an application, add a bot, and copy
+   its token. It needs no permissions or intents.
+2. `npx wrangler secret put DISCORD_BOT_TOKEN --env production`
+3. If links still don't refresh, look for `short-link-refresh-failed` in the
+   Worker logs. If it shows `rejected` with a 403, invite the bot to the server
+   the files are posted in.
+
+**Free plan cost.** A click is one Worker request and one D1 row read by
+primary key. A Discord link adds one call to Discord and one D1 write about once
+a day, and only on days someone follows it. Simultaneous clicks share one
+refresh. The refusal back-off is kept in memory, so it costs no writes.
+Browsers may reuse a redirect for five minutes (`private, max-age=300`), which
+saves a request on every repeat click. This is also the longest a deleted link
+keeps working in a browser that had already followed it. Clicks count toward
+the public read limit (60 a minute per address) like any other public route.
 
 ### Errors
 
@@ -336,6 +603,11 @@ src/
     validation.ts       write-payload rules, shared with the importer
     profiles.ts menu.ts news.ts    parameterised SQL
     arcade.ts           score boards: allowlist, limits, SQL
+  pool/                 the pool hall: protocol.ts, hall.ts (Durable Object)
+  cards/                the card hall: protocol.ts, games.ts (where the hall
+                        meets each game), blackjack.ts, holdem.ts and
+                        blackice.ts (each game's rules, deals and bots),
+                        poker.ts (ranks Hold'em hands), hall.ts (Durable Object)
   security/
     auth.ts             Cloudflare Access JWT verification
     errors.ts validate.ts headers.ts

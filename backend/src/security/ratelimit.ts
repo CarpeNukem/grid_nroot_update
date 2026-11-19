@@ -120,3 +120,26 @@ export async function enforcePoolConnectLimit(request: Request, env: Env): Promi
 		limit: POOL_CONNECTS_PER_MINUTE,
 	});
 }
+
+/**
+ * The card hall's connections, on a limit of their own for the same reason as
+ * the pool hall's: a deck connects once a visit to the card tables.
+ */
+const CARD_CONNECTS_PER_MINUTE = 10;
+
+/** The limit on WebSocket connections to the card hall, on top of the public one. */
+export async function enforceCardConnectLimit(request: Request, env: Env): Promise<void> {
+	const limiter = env.CARD_CONNECT_LIMITER;
+	if (limiter === undefined) {
+		return;
+	}
+
+	const { success } = await limiter.limit({ key: callerKey(request) });
+	if (success) {
+		return;
+	}
+
+	throw new ApiError(429, ErrorCode.RATE_LIMITED, "Too many connections. Try again shortly.", {
+		limit: CARD_CONNECTS_PER_MINUTE,
+	});
+}

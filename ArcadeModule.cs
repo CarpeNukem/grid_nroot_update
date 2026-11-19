@@ -54,6 +54,35 @@ internal interface IGridArcadePool
 }
 
 /// <summary>
+/// The arcade's card tables, for a module that has them: a card room where
+/// the player picks a game, and each game's table, opened by its id
+/// ("blackjack", "blackice"). At the venue every Everkeep Dining Table on the
+/// top floor opens the card room. Apart from the other contracts for the same reasons as
+/// <see cref="IGridArcadePool"/>. The relay's card hall deals at every table;
+/// the module only shows it and sends what the player chose.
+/// </summary>
+internal interface IGridArcadeCards
+{
+    /// <summary>The card games this module has, by id.</summary>
+    IReadOnlyList<string> CardGames { get; }
+
+    /// <summary>Whether the card room, where a game is picked, is open.</summary>
+    bool CardRoomOpen { get; }
+
+    /// <summary>Shows the card room, to pick a game. Closes any cabinet or table that is open.</summary>
+    void OpenCardRoom();
+
+    /// <summary>The game whose table is open, or null when none is.</summary>
+    string? OpenCardGame { get; }
+
+    /// <summary>Shows a game's table, at its menu. Closes any cabinet or other table that is open. An id the module does not have opens nothing.</summary>
+    void OpenCardTable(string game);
+
+    /// <summary>Closes the card room and any card table, which gives up the player's seat there.</summary>
+    void CloseCardTable();
+}
+
+/// <summary>
 /// The deck's WebSocket to The Grid's relay, for the arcade's games that are
 /// played between decks.
 ///
@@ -158,6 +187,14 @@ internal interface IArcadeScoreboard
     void Submit(IReadOnlyList<ArcadeSubmission> scores, Action<bool> answered);
 }
 
+/// <summary>
+/// The character the player is logged in as, which is who they are at the
+/// tables played between decks: the name the game shows over their head, and
+/// their home world, so two characters of the same name on different worlds
+/// are two players.
+/// </summary>
+internal sealed record ArcadeCharacter(string Name, string World);
+
 /// <summary>What the deck hands the arcade module when it loads it.</summary>
 /// <param name="DataDirectory">The deck's own config folder, for anything the module keeps between sessions, such as high scores.</param>
 /// <param name="Menu">
@@ -167,12 +204,19 @@ internal interface IArcadeScoreboard
 /// </param>
 /// <param name="Scoreboard">The Grid's shared high-score boards. Null on a deck that has none, where scores stay on this machine.</param>
 /// <param name="Link">WebSockets to the relay, for games played between decks. Null on a deck that has none, where those games are offline only.</param>
+/// <param name="Character">
+/// The character logged in right now, or null at the title screen or between
+/// characters. The tables played between decks seat players as their
+/// character rather than by a name typed in; the cabinets' high scores still
+/// take initials.
+/// </param>
 internal sealed record ArcadeHost(
     PluginConfig Config,
     string DataDirectory,
     Func<IReadOnlyList<ArcadeDrink>>? Menu = null,
     IArcadeScoreboard? Scoreboard = null,
-    IArcadeLink? Link = null);
+    IArcadeLink? Link = null,
+    Func<ArcadeCharacter?>? Character = null);
 
 internal static class ArcadeModule
 {

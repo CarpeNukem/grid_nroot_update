@@ -30,7 +30,9 @@
 		// with no public bucket. Point it at a CDN origin later if one is added.
 		"PUBLIC_MEDIA_BASE_URL": "http://127.0.0.1:8787/media",
 		// Exact origin of the Pages admin site. Admin CORS is never a wildcard.
-		"ADMIN_ALLOWED_ORIGIN": "http://127.0.0.1:8788"
+		"ADMIN_ALLOWED_ORIGIN": "http://127.0.0.1:8788",
+		// Short links are this plus "/<code>". See src/data/links.ts.
+		"SHORT_LINK_BASE_URL": "http://127.0.0.1:8787/s"
 		// No ADMIN_HOSTNAME here on purpose. Development has no stable hostname
 		// to match, so `isAdminHostname` exempts it — the same way this
 		// environment already accepts a header in place of an Access token.
@@ -78,6 +80,12 @@
 			"name": "POOL_CONNECT_LIMITER",
 			"namespace_id": "1003",
 			"simple": { "limit": 10, "period": 60 }
+		},
+		// The same for the card hall, which a deck joins once a visit to the card tables.
+		{
+			"name": "CARD_CONNECT_LIMITER",
+			"namespace_id": "1004",
+			"simple": { "limit": 10, "period": 60 }
 		}
 	],
 
@@ -85,10 +93,18 @@
 	// every table (src/pool/hall.ts). SQLite-backed, which is what the free
 	// plan offers and what lets the hall sleep between messages without losing
 	// a table.
+	// The card hall beside it is the same kind of object (src/cards/hall.ts),
+	// and deals the cards itself so no deck ever holds one face down.
 	"durable_objects": {
-		"bindings": [{ "name": "POOL_HALL", "class_name": "PoolHall" }]
+		"bindings": [
+			{ "name": "POOL_HALL", "class_name": "PoolHall" },
+			{ "name": "CARD_HALL", "class_name": "CardHall" }
+		]
 	},
-	"migrations": [{ "tag": "pool-hall-v1", "new_sqlite_classes": ["PoolHall"] }],
+	"migrations": [
+		{ "tag": "pool-hall-v1", "new_sqlite_classes": ["PoolHall"] },
+		{ "tag": "card-hall-v1", "new_sqlite_classes": ["CardHall"] }
+	],
 
 	// Deployed environments are declared explicitly so `wrangler deploy` alone
 	// cannot ship the development settings above. That matters more than it
@@ -127,7 +143,10 @@
 				// enforces this line, Access enforces its own, and admin is safe
 				// only where both agree. Removing it locks admin out entirely,
 				// which is the correct way for this setting to fail.
-				"ADMIN_HOSTNAME": "api.nroot.io"
+				"ADMIN_HOSTNAME": "api.nroot.io",
+				// Links are made in admin on api.nroot.io and handed out on the
+				// public hostname, which serves /s/<code> like any public route.
+				"SHORT_LINK_BASE_URL": "https://grid.nroot.io/s"
 			},
 
 			"d1_databases": [
@@ -163,13 +182,21 @@
 					"name": "POOL_CONNECT_LIMITER",
 					"namespace_id": "1003",
 					"simple": { "limit": 10, "period": 60 }
+				},
+				{
+					"name": "CARD_CONNECT_LIMITER",
+					"namespace_id": "1004",
+					"simple": { "limit": 10, "period": 60 }
 				}
 			],
 
-			// Bindings are not inherited by an environment, so the hall is named again.
-			// The migration above is shared by every environment.
+			// Bindings are not inherited by an environment, so the halls are named again.
+			// The migrations above are shared by every environment.
 			"durable_objects": {
-				"bindings": [{ "name": "POOL_HALL", "class_name": "PoolHall" }]
+				"bindings": [
+					{ "name": "POOL_HALL", "class_name": "PoolHall" },
+					{ "name": "CARD_HALL", "class_name": "CardHall" }
+				]
 			}
 		}
 	}

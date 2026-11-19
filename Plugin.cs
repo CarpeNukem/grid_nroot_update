@@ -186,7 +186,7 @@ public sealed class Plugin : IDalamudPlugin
         arcadeLink = new ArcadeRelayLink(Config);
         arcade = ArcadeModule.TryLoad(
             pluginInterface.AssemblyLocation.DirectoryName,
-            new ArcadeHost(Config, pluginInterface.ConfigDirectory.FullName, cyberdeckWindow.ArcadeMenu, arcadeScoreboard, arcadeLink),
+            new ArcadeHost(Config, pluginInterface.ConfigDirectory.FullName, cyberdeckWindow.ArcadeMenu, arcadeScoreboard, arcadeLink, CurrentCharacter),
             out arcadeStatus);
         PluginService.Log.Information("Arcade module: {Status}.", arcadeStatus);
 
@@ -196,6 +196,7 @@ public sealed class Plugin : IDalamudPlugin
             IsMannequinObject,
             cabinet => arcade?.CabinetTitle(cabinet),
             () => arcade is IGridArcadePool,
+            () => arcade is IGridArcadeCards { CardGames.Count: > 0 },
             OpenVenueZone,
             CloseVenueZone,
             IsVenueZoneOpen);
@@ -210,7 +211,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             PluginService.Commands.AddHandler(commandName, new CommandInfo(OnCommand)
             {
-                HelpMessage = "Open The Grid Cyberdeck. Aliases: /thegrid, /cyberdeck. Subcommands: update, repair, config, vault, pool.",
+                HelpMessage = "Open The Grid Cyberdeck. Aliases: /thegrid, /cyberdeck. Subcommands: update, repair, config, vault, pool, cards, blackjack, holdem, blackice.",
                 ShowInHelp = commandName == PrimaryCommandName,
             });
         }
@@ -287,6 +288,30 @@ public sealed class Plugin : IDalamudPlugin
         lifetime.Dispose();
     }
 
+    /// <summary>
+    /// The character logged in, as the arcade's tables seat players: the name
+    /// over their head and their home world. Null when nobody is logged in, or
+    /// before the world has loaded. Read on the draw thread, where the arcade asks.
+    /// </summary>
+    private static ArcadeCharacter? CurrentCharacter()
+    {
+        var player = PluginService.Objects.LocalPlayer;
+        var name = player?.Name.TextValue;
+        var world = player?.HomeWorld.ValueNullable?.Name.ExtractText();
+        return string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(world) ? null : new ArcadeCharacter(name, world);
+    }
+
+    /// <summary>A card game's table, from anywhere; at the venue each booth table will open its own. The relay's card hall deals.</summary>
+    private void OpenCardTable(string game, string name)
+    {
+        if (arcade is IGridArcadeCards cards && cards.CardGames.Contains(game))
+            cards.OpenCardTable(game);
+        else
+            PluginService.Chat.PrintError(
+                arcade is null ? $"The arcade is {arcadeStatus}, so there is no {name} table." : $"This arcade has no {name} table.",
+                "TheGrid");
+    }
+
     private void OnCommand(string command, string args)
     {
         var trimmed = args.Trim();
@@ -297,7 +322,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             case "":
                 OpenMainUi();
-                PluginService.Chat.Print("Opening The Grid Cyberdeck. Subcommands: update, repair, config, vault, pool.", "TheGrid");
+                PluginService.Chat.Print("Opening The Grid Cyberdeck. Subcommands: update, repair, config, vault, pool, cards, blackjack, holdem, blackice.", "TheGrid");
                 break;
             case "update":
                 QueueReconcile(announce: true);
@@ -311,6 +336,24 @@ public sealed class Plugin : IDalamudPlugin
                     PluginService.Chat.PrintError(
                         arcade is null ? $"The arcade is {arcadeStatus}, so there is no pool table." : "This arcade has no pool table.",
                         "TheGrid");
+                break;
+            case "cards":
+                // The card room from anywhere, to pick a game; at the venue every Everkeep Dining Table on the top floor has a zone that opens it.
+                if (arcade is IGridArcadeCards { CardGames.Count: > 0 } room)
+                    room.OpenCardRoom();
+                else
+                    PluginService.Chat.PrintError(arcade is null ? $"The arcade is {arcadeStatus}, so there are no card tables." : "This arcade has no card tables.", "TheGrid");
+                break;
+            case "blackjack":
+                OpenCardTable("blackjack", "blackjack");
+                break;
+            case "holdem":
+            case "poker":
+                OpenCardTable("holdem", "HOLD'EM");
+                break;
+            case "blackice":
+            case "ice":
+                OpenCardTable("blackice", "BLACK ICE");
                 break;
             case "repair":
                 QueueRepair();
@@ -330,7 +373,7 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 #endif
             default:
-                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /grid, or /cyberdeck with optional update/repair/config/vault/pool.", "TheGrid");
+                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /grid, or /cyberdeck with optional update/repair/config/vault/pool/cards/blackjack/holdem/blackice.", "TheGrid");
                 break;
         }
     }
@@ -407,17 +450,21 @@ public sealed class Plugin : IDalamudPlugin
             case "zones":
                 PluginService.Chat.Print($"DEBUG: Venue zones: arcade module {arcadeStatus} | {venueZones.Describe()}", "TheGrid");
                 break;
+            case "furniture":
+                foreach (var line in venueZones.DescribeFurniture())
+                    PluginService.Chat.Print($"DEBUG: Furniture: {line}", "TheGrid");
+                break;
             case "zones-anywhere":
                 venueZones.ShowAnywhere = !venueZones.ShowAnywhere;
                 PluginService.Chat.Print(
                     venueZones.ShowAnywhere
-                        ? "DEBUG: Venue zones now show in any house, at a Billiard Table or a mannequin wearing the arcade earrings."
+                        ? "DEBUG: Venue zones now show in any house, at a Billiard Table, an Everkeep Dining Table on the top floor or a mannequin wearing the arcade earrings."
                         : "DEBUG: Venue zones back to The Grid only.",
                     "TheGrid");
                 break;
             default:
                 PluginService.Chat.PrintError(
-                    "Debug usage: /grid debug tarot-invite | tarot-next | tarot-host | tarot-reset | tarot | blackice-clear | vault-s-clear | vault-a-clear | vault-b-clear | vault-c-clear | vending | arcade 1-6 | zones | zones-anywhere",
+                    "Debug usage: /grid debug tarot-invite | tarot-next | tarot-host | tarot-reset | tarot | blackice-clear | vault-s-clear | vault-a-clear | vault-b-clear | vault-c-clear | vending | arcade 1-6 | zones | furniture | zones-anywhere",
                     "TheGrid");
                 break;
         }
@@ -581,6 +628,9 @@ public sealed class Plugin : IDalamudPlugin
             case VenueZoneKind.Pool:
                 (arcade as IGridArcadePool)?.OpenPool();
                 break;
+            case VenueZoneKind.Cards:
+                (arcade as IGridArcadeCards)?.OpenCardRoom();
+                break;
         }
     }
 
@@ -598,6 +648,10 @@ public sealed class Plugin : IDalamudPlugin
                 // Walking away from the table leaves it, the same as walking away from a cabinet.
                 (arcade as IGridArcadePool)?.ClosePool();
                 break;
+            case VenueZoneKind.Cards:
+                // Walking away from a card table closes the card room, or the game picked there, which leaves its table.
+                (arcade as IGridArcadeCards)?.CloseCardTable();
+                break;
         }
     }
 
@@ -605,8 +659,10 @@ public sealed class Plugin : IDalamudPlugin
         => kind switch
         {
             VenueZoneKind.VendingMachine => cyberdeckWindow.IsVendingMachineOpen,
-            VenueZoneKind.Arcade => arcade?.IsOpen == true && (arcade as IGridArcadePool)?.PoolOpen != true,
+            // A cabinet, that is: the module counts its tables as open too.
+            VenueZoneKind.Arcade => arcade?.IsOpen == true && (arcade as IGridArcadePool)?.PoolOpen != true && (arcade as IGridArcadeCards) is not { CardRoomOpen: true } && (arcade as IGridArcadeCards)?.OpenCardGame is null,
             VenueZoneKind.Pool => (arcade as IGridArcadePool)?.PoolOpen == true,
+            VenueZoneKind.Cards => arcade is IGridArcadeCards cards && (cards.CardRoomOpen || cards.OpenCardGame is not null),
             _ => false,
         };
 

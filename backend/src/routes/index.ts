@@ -1,11 +1,14 @@
 import { adminArcadeRoutes } from "./admin/arcade.js";
 import { adminRoutes } from "./admin/index.js";
+import { adminLinkRoutes } from "./admin/links.js";
 import { adminMediaRoutes } from "./admin/media.js";
 import { adminUiRoute } from "./admin/ui.js";
 import { healthRoute } from "./health.js";
 import { arcadeSubmitRoute } from "./public/arcade.js";
 import { siteAssetRoute } from "./public/assets.js";
+import { cardsConnectRoute } from "./public/cards.js";
 import { catalogRoute } from "./public/catalog.js";
+import { shortLinkRoute } from "./public/links.js";
 import { mediaObjectRoute } from "./public/media.js";
 import { menuDetailRoute, menuListRoute } from "./public/menu.js";
 import { newsDetailRoute, newsListRoute } from "./public/news.js";
@@ -51,8 +54,15 @@ export const routes: readonly Route[] = [
 	// A WebSocket into the pool hall. The game itself is messages on it.
 	poolConnectRoute,
 
+	// A WebSocket into the card hall, where the hall deals.
+	cardsConnectRoute,
+
+	// grid.nroot.io/s/<code>. Made in admin, followed by anyone.
+	shortLinkRoute,
+
 	adminUiRoute,
 	...adminRoutes,
 	...adminMediaRoutes,
 	...adminArcadeRoutes,
+	...adminLinkRoutes,
 ];

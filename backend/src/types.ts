@@ -1,3 +1,4 @@
+import type { CardHall } from "./cards/hall.js";
 import type { PoolHall } from "./pool/hall.js";
 
 /**
@@ -17,6 +18,9 @@ export interface Env {
 	readonly PUBLIC_MEDIA_BASE_URL: string;
 	readonly ADMIN_ALLOWED_ORIGIN: string;
 
+	/** Where short links live, e.g. `https://grid.nroot.io/s`. Codes are appended to it. */
+	readonly SHORT_LINK_BASE_URL: string;
+
 	/**
 	 * The only hostname on which the admin page and admin API are served.
 	 *
@@ -29,6 +33,14 @@ export interface Env {
 	readonly CF_ACCESS_AUD?: string;
 	readonly CF_ACCESS_TEAM_DOMAIN?: string;
 	readonly ADMIN_ALLOWED_EMAILS?: string;
+
+	/**
+	 * A Discord bot token, used only to re-sign Discord attachment addresses
+	 * behind short links (see `src/data/discord.ts`). A secret. Without it a
+	 * short link to a Discord file works until the copied signature runs out,
+	 * about a day.
+	 */
+	readonly DISCORD_BOT_TOKEN?: string;
 
 	/**
 	 * Public-read throttle. Optional because local development and the test
@@ -44,6 +56,12 @@ export interface Env {
 
 	/** WebSocket connections to the pool hall. Optional for the same reason as the others. */
 	readonly POOL_CONNECT_LIMITER?: RateLimit;
+
+	/** The venue's card hall: one Durable Object holding the card lobby and every card table, and dealing at them. */
+	readonly CARD_HALL: DurableObjectNamespace<CardHall>;
+
+	/** WebSocket connections to the card hall. Optional for the same reason as the others. */
+	readonly CARD_CONNECT_LIMITER?: RateLimit;
 }
 
 /** Per-request state threaded through route handlers. */

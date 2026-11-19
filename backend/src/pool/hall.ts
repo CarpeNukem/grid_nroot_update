@@ -7,23 +7,28 @@ import {
 	HALL_NAME,
 	IDLE_TABLE_MS,
 	isPlayerName,
+	isRules,
 	isSeat,
 	isSeatToken,
 	isTableCode,
+	knowsRules,
 	MAX_LISTED,
 	MAX_MESSAGE_CHARS,
 	MAX_SOCKETS,
 	MAX_TABLES,
+	MAX_WATCHERS,
 	MESSAGE_WINDOW_MS,
 	MESSAGES_PER_WINDOW,
-	PROTOCOL_VERSION,
+	OLDEST_PROTOCOL,
 	parseAim,
 	parseShot,
 	parseState,
 	RECONNECT_GRACE_MS,
 	REFUSALS,
 	type RefusalCode,
+	type Rules,
 	type Seat,
+	spokenVersion,
 } from "./protocol.js";
 
 export { HALL_NAME };
@@ -41,6 +46,14 @@ type TableStatus = "waiting" | "playing" | "over";
 interface Table {
 	readonly code: string;
 	readonly private: boolean;
+	/** The game played here, for good: a rematch is the same game again. */
+	readonly rules: Rules;
+	/**
+	 * Whether the decks draw aim assist, their collision predictions. Off for
+	 * a tournament, when both players see only the cue ball's line. The hall
+	 * only carries it; like the rules, it is kept for good.
+	 */
+	readonly assist: boolean;
 	status: TableStatus;
 	chairs: [Chair | null, Chair | null];
 	/** Games played at this table, counting the one in progress. Seat 0 breaks the odd ones. */
@@ -59,6 +72,17 @@ interface Table {
 	updated: number;
 }
 
+/** A public table as the lobby lists it: an open one to join, or a game in play to watch. */
+interface Listing {
+	readonly code: string;
+	readonly host: string;
+	readonly rules: Rules;
+	readonly assist: boolean;
+	readonly status: TableStatus;
+	readonly players: (string | null)[];
+	readonly watchers: number;
+}
+
 /**
  * What the hall remembers about a socket, carried on the socket itself so it
  * survives the object hibernating between messages.
@@ -66,6 +90,13 @@ interface Table {
 interface Attachment {
 	readonly token: string;
 	readonly name: string;
+	/**
+	 * The protocol this socket's deck speaks, which decides the games it is
+	 * shown. Missing on a socket connected before the hall knew versions,
+	 * which is one on version 2.
+	 */
+	readonly version?: number;
+	/** The table this socket is at, and its chair there. A table with no chair is one it is watching. */
 	code: string | null;
 	seat: Seat | null;
 	/** Start of the current rate-limit window, and the messages counted in it. */
@@ -146,10 +177,12 @@ export class PoolHall extends DurableObject<Env> {
 		const server = pair[1];
 		this.ctx.acceptWebSocket(server);
 
+		const version = spokenVersion(url.searchParams.get("v"));
 		const attachment: Attachment = {
 			token: back?.chair.token ?? crypto.randomUUID(),
 			// A returning player keeps the name the table knows them by.
 			name: back?.chair.name ?? name,
+			version,
 			code: back?.table.code ?? null,
 			seat: back?.seat ?? null,
 			window: now,
@@ -160,10 +193,10 @@ export class PoolHall extends DurableObject<Env> {
 
 		this.send(server, {
 			t: "welcome",
-			v: PROTOCOL_VERSION,
+			v: version,
 			token: attachment.token,
 			name: attachment.name,
-			tables: this.lobby(),
+			tables: this.lobby(version),
 		});
 
 		if (back !== undefined) {
@@ -227,10 +260,13 @@ export class PoolHall extends DurableObject<Env> {
 		const fields = parsed as Record<string, unknown>;
 		switch (fields.t) {
 			case "open":
-				await this.open(ws, attachment, fields.private === true, now);
+				await this.open(ws, attachment, fields.private === true, fields.rules, fields.assist, now);
 				break;
 			case "join":
 				await this.join(ws, attachment, fields.code, now);
+				break;
+			case "watch":
+				this.watch(ws, attachment, fields.code);
 				break;
 			case "leave":
 				await this.leave(ws, attachment, now);
@@ -280,10 +316,19 @@ export class PoolHall extends DurableObject<Env> {
 		ws: WebSocket,
 		me: Attachment,
 		isPrivate: boolean,
+		askedRules: unknown,
+		askedAssist: unknown,
 		now: number,
 	): Promise<void> {
 		if (me.code !== null) {
 			this.refuse(ws, "already-seated");
+			return;
+		}
+
+		const rules = askedRules === undefined ? "eight" : askedRules;
+		const assist = askedAssist === undefined ? true : askedAssist;
+		if (!isRules(rules) || !knowsRules(versionOf(me), rules) || typeof assist !== "boolean") {
+			this.refuse(ws, "bad-message");
 			return;
 		}
 
@@ -295,6 +340,8 @@ export class PoolHall extends DurableObject<Env> {
 		const table: Table = {
 			code: this.newCode(),
 			private: isPrivate,
+			rules,
+			assist,
 			status: "waiting",
 			chairs: [{ name: me.name, token: me.token, away: null }, null],
 			game: 1,
@@ -324,10 +371,14 @@ export class PoolHall extends DurableObject<Env> {
 			return;
 		}
 
-		const wanted = typeof code === "string" ? code.trim().toUpperCase() : code;
-		const table = isTableCode(wanted) ? this.load(wanted) : undefined;
+		const table = this.tableCalled(code);
 		if (table === undefined) {
 			this.refuse(ws, "no-table");
+			return;
+		}
+
+		if (!knowsRules(versionOf(me), table.rules)) {
+			this.refuse(ws, "needs-update");
 			return;
 		}
 
@@ -349,7 +400,43 @@ export class PoolHall extends DurableObject<Env> {
 		await this.scheduleCleanup();
 	}
 
+	/**
+	 * Takes the sender to a table to watch, by its code: open, in play or over,
+	 * public or private. A watcher is sent everything the opponent is, and has
+	 * no say in the game. Nothing is stored: the socket's attachment is all.
+	 */
+	private watch(ws: WebSocket, me: Attachment, code: unknown): void {
+		if (me.code !== null) {
+			this.refuse(ws, "already-seated");
+			return;
+		}
+
+		const table = this.tableCalled(code);
+		if (table === undefined) {
+			this.refuse(ws, "no-table");
+			return;
+		}
+
+		if (!knowsRules(versionOf(me), table.rules)) {
+			this.refuse(ws, "needs-update");
+			return;
+		}
+
+		if (this.watchersOf(table.code).length >= MAX_WATCHERS) {
+			this.refuse(ws, "no-room");
+			return;
+		}
+
+		this.seat(ws, me, table.code, null);
+		this.watchersChanged(table);
+	}
+
 	private async leave(ws: WebSocket, me: Attachment, now: number): Promise<void> {
+		if (me.code !== null && me.seat === null) {
+			this.stopWatching(ws, me);
+			return;
+		}
+
 		if (me.code === null || me.seat === null) {
 			this.refuse(ws, "not-seated");
 			return;
@@ -358,13 +445,23 @@ export class PoolHall extends DurableObject<Env> {
 		const table = this.load(me.code);
 		const seat = me.seat;
 		this.seat(ws, me, null, null);
-		this.send(ws, { t: "lobby", tables: this.lobby() });
+		this.send(ws, { t: "lobby", tables: this.lobby(versionOf(me)) });
 		if (table !== undefined) {
 			this.vacate(table, seat, now);
 			this.broadcastLobby();
 		}
 
 		await this.scheduleCleanup();
+	}
+
+	/** Takes a watcher back to the lobby. The table itself is untouched. */
+	private stopWatching(ws: WebSocket, me: Attachment): void {
+		const table = me.code === null ? undefined : this.load(me.code);
+		this.seat(ws, me, null, null);
+		this.send(ws, { t: "lobby", tables: this.lobby(versionOf(me)) });
+		if (table !== undefined) {
+			this.watchersChanged(table);
+		}
 	}
 
 	/** A cue preview, passed to the opponent and never stored. Dropped rather than refused when it is not wanted. */
@@ -389,7 +486,7 @@ export class PoolHall extends DurableObject<Env> {
 		}
 
 		me.aimed = now;
-		this.sendToSeat(table, other(table.turn), { t: "aim", seq: table.seq, ...aim });
+		this.passOn(table, table.turn, { t: "aim", seq: table.seq, ...aim });
 	}
 
 	/** The shot itself, passed on so the opponent's deck plays it while the shooter's does. Not stored: the settled table is. */
@@ -405,7 +502,7 @@ export class PoolHall extends DurableObject<Env> {
 			return;
 		}
 
-		this.sendToSeat(table, other(table.turn), { t: "shot", seq: table.seq, shot });
+		this.passOn(table, table.turn, { t: "shot", seq: table.seq, shot });
 	}
 
 	/** The table after the shot: whose turn it is now, whether the game is won, and the balls as the shooter's deck left them. */
@@ -437,7 +534,7 @@ export class PoolHall extends DurableObject<Env> {
 		}
 
 		this.save(table, now);
-		this.sendToSeat(table, other(me.seat as Seat), {
+		this.passOn(table, me.seat as Seat, {
 			t: "settle",
 			seq,
 			turn: table.turn,
@@ -447,14 +544,19 @@ export class PoolHall extends DurableObject<Env> {
 
 		if (table.status === "over") {
 			this.sendTable(table);
+			// A finished game is no longer one to watch.
+			if (!table.private) {
+				this.broadcastLobby();
+			}
 		}
 	}
 
-	/** The caller's table again, for a deck that has lost step with it. Costs a message, writes nothing. */
+	/** The caller's table again, for a deck that has lost step with it, or a watcher's. Costs a message, writes nothing. */
 	private sync(ws: WebSocket, me: Attachment): void {
-		const table = this.seatedTable(ws, me, true);
-		if (table !== undefined && me.seat !== null) {
-			this.send(ws, viewOf(table, me.seat));
+		const watched = me.code !== null && me.seat === null ? this.load(me.code) : undefined;
+		const table = watched ?? this.seatedTable(ws, me, true);
+		if (table !== undefined) {
+			this.send(ws, viewOf(table, me.seat, this.watchersOf(table.code).length));
 		}
 	}
 
@@ -490,16 +592,29 @@ export class PoolHall extends DurableObject<Env> {
 
 		this.save(table, now);
 		this.sendTable(table);
+		// A new game is one to watch again.
+		if (table.status === "playing" && !table.private) {
+			this.broadcastLobby();
+		}
 	}
 
 	// ---------------------------------------------------- leaving and expiry
 
 	/**
 	 * A socket has gone. A seated player's chair is kept for the grace period,
-	 * in case they are only reconnecting. Safe to call twice for one socket:
-	 * a close the hall starts and the close handler that follows both land here.
+	 * in case they are only reconnecting; a watcher is simply one fewer. Safe
+	 * to call twice for one socket: a close the hall starts and the close
+	 * handler that follows both land here.
 	 */
 	private async leftHall(gone: WebSocket, me: Attachment, now: number): Promise<void> {
+		if (me.code !== null && me.seat === null) {
+			const watched = this.load(me.code);
+			if (watched !== undefined) {
+				this.watchersChanged(watched, gone);
+			}
+			return;
+		}
+
 		if (me.code === null || me.seat === null) {
 			return;
 		}
@@ -537,7 +652,8 @@ export class PoolHall extends DurableObject<Env> {
 
 	/**
 	 * Gives up a chair. Leaving a game in play hands it to the opponent; a
-	 * table with nobody left at it is cleared away.
+	 * table with nobody left at it is cleared away, and anyone watching it is
+	 * sent back to the lobby. Every caller broadcasts the lobby after this.
 	 */
 	private vacate(table: Table, seat: Seat, now: number): void {
 		if (table.status === "playing") {
@@ -550,12 +666,24 @@ export class PoolHall extends DurableObject<Env> {
 		table.chairs[seat] = null;
 		table.rematch = [false, false];
 		if (table.chairs[0] === null && table.chairs[1] === null) {
-			this.remove(table.code);
+			this.closeTable(table, "empty");
 			return;
 		}
 
 		this.save(table, now);
 		this.sendTable(table);
+	}
+
+	/**
+	 * Clears a table away, telling everyone still at it why and taking them
+	 * back to the lobby. The caller broadcasts the lobby they arrive in.
+	 */
+	private closeTable(table: Table, why: "empty" | "idle"): void {
+		for (const socket of this.socketsAt(table.code)) {
+			this.send(socket, { t: "closed", code: table.code, why });
+			this.unseat(socket);
+		}
+		this.remove(table.code);
 	}
 
 	/** Runs when the earliest kept seat or idle table falls due. */
@@ -565,11 +693,7 @@ export class PoolHall extends DurableObject<Env> {
 
 		for (const table of this.allTables()) {
 			if (now - table.updated >= IDLE_TABLE_MS) {
-				for (const socket of this.socketsAt(table.code)) {
-					this.send(socket, { t: "closed", code: table.code });
-					this.unseat(socket);
-				}
-				this.remove(table.code);
+				this.closeTable(table, "idle");
 				lobbyChanged = true;
 				continue;
 			}
@@ -625,14 +749,20 @@ export class PoolHall extends DurableObject<Env> {
 			.exec<{ data: string }>("SELECT data FROM pool_tables WHERE code = ?", code)
 			.toArray()[0];
 
-		return row === undefined ? undefined : (JSON.parse(row.data) as Table);
+		return row === undefined ? undefined : readTable(row.data);
 	}
 
 	private allTables(): Table[] {
 		return this.ctx.storage.sql
 			.exec<{ data: string }>("SELECT data FROM pool_tables ORDER BY updated")
 			.toArray()
-			.map((row) => JSON.parse(row.data) as Table);
+			.map((row) => readTable(row.data));
+	}
+
+	/** The table a deck named by its code, which it may have typed in lower case or with spaces. */
+	private tableCalled(code: unknown): Table | undefined {
+		const wanted = typeof code === "string" ? code.trim().toUpperCase() : code;
+		return isTableCode(wanted) ? this.load(wanted) : undefined;
 	}
 
 	private tableCount(): number {
@@ -692,6 +822,34 @@ export class PoolHall extends DurableObject<Env> {
 	}
 
 	/**
+	 * The table a socket is watching, or null. Only a socket still connected
+	 * counts, and never `gone`, the one whose leaving is being handled.
+	 */
+	private watchedBy(socket: WebSocket, gone?: WebSocket): string | null {
+		const attachment = this.attachmentOf(socket);
+		return socket !== gone && socket.readyState === WebSocket.OPEN && attachment?.seat === null
+			? attachment.code
+			: null;
+	}
+
+	private watchersOf(code: string, gone?: WebSocket): WebSocket[] {
+		return this.ctx.getWebSockets().filter((socket) => this.watchedBy(socket, gone) === code);
+	}
+
+	/** Watchers at every table, counted in one pass over the sockets. */
+	private watcherCounts(gone?: WebSocket): Map<string, number> {
+		const counts = new Map<string, number>();
+		for (const socket of this.ctx.getWebSockets()) {
+			const code = this.watchedBy(socket, gone);
+			if (code !== null) {
+				counts.set(code, (counts.get(code) ?? 0) + 1);
+			}
+		}
+
+		return counts;
+	}
+
+	/**
 	 * Moves the caller to a table or back to the lobby. Written to the socket
 	 * at once, because the broadcasts that follow find sockets by what their
 	 * attachments say.
@@ -747,32 +905,83 @@ export class PoolHall extends DurableObject<Env> {
 		return table;
 	}
 
-	private lobby(): { code: string; host: string }[] {
+	/**
+	 * Public tables worth showing a browsing deck: open ones whose host is
+	 * here, to join, and games in play, to watch, of the games that deck
+	 * knows. A game always has both players, since one leaving ends it, so
+	 * either kind has a host.
+	 */
+	private lobby(version: number, gone?: WebSocket): Listing[] {
+		const watchers = this.watcherCounts(gone);
 		return this.allTables()
 			.filter(
-				(table) => !table.private && table.status === "waiting" && table.chairs[0]?.away === null,
+				(table) =>
+					!table.private &&
+					knowsRules(version, table.rules) &&
+					(table.status === "playing" ||
+						(table.status === "waiting" && table.chairs[0]?.away === null)),
 			)
 			.slice(-MAX_LISTED)
 			.reverse()
-			.map((table) => ({ code: table.code, host: (table.chairs[0] as Chair).name }));
+			.map((table) => ({
+				code: table.code,
+				host: (table.chairs[0] as Chair).name,
+				rules: table.rules,
+				assist: table.assist,
+				status: table.status,
+				players: playersOf(table),
+				watchers: watchers.get(table.code) ?? 0,
+			}));
 	}
 
-	private broadcastLobby(): void {
-		const message = { t: "lobby", tables: this.lobby() };
+	/** The lobby to every deck browsing it, each listed the games it knows: worked out once for each version. */
+	private broadcastLobby(gone?: WebSocket): void {
+		const messages = new Map<number, unknown>();
 		for (const socket of this.ctx.getWebSockets()) {
-			if (this.attachmentOf(socket)?.code === null) {
-				this.send(socket, message);
+			const attachment = this.attachmentOf(socket);
+			if (attachment === null || attachment.code !== null) {
+				continue;
 			}
+
+			const version = versionOf(attachment);
+			let message = messages.get(version);
+			if (message === undefined) {
+				message = { t: "lobby", tables: this.lobby(version, gone) };
+				messages.set(version, message);
+			}
+
+			this.send(socket, message);
 		}
 	}
 
-	/** Each seated player's view of their table. */
-	private sendTable(table: Table): void {
+	/** Each seated player's view of their table, and each watcher's. */
+	private sendTable(table: Table, gone?: WebSocket): void {
+		const watchers = this.watchersOf(table.code, gone);
 		for (const socket of this.socketsAt(table.code)) {
 			const seat = this.attachmentOf(socket)?.seat;
 			if (seat === 0 || seat === 1) {
-				this.send(socket, viewOf(table, seat));
+				this.send(socket, viewOf(table, seat, watchers.length));
 			}
+		}
+
+		for (const socket of watchers) {
+			this.send(socket, viewOf(table, null, watchers.length));
+		}
+	}
+
+	/** Someone started or stopped watching: everyone at the table, and a browsing lobby, sees the new count. */
+	private watchersChanged(table: Table, gone?: WebSocket): void {
+		this.sendTable(table, gone);
+		if (!table.private) {
+			this.broadcastLobby(gone);
+		}
+	}
+
+	/** The shooter's aim, shot or settled table, to the other seat and to everyone watching. */
+	private passOn(table: Table, from: Seat, message: unknown): void {
+		this.sendToSeat(table, other(from), message);
+		for (const socket of this.watchersOf(table.code)) {
+			this.send(socket, message);
 		}
 	}
 
@@ -810,6 +1019,9 @@ export class PoolHall extends DurableObject<Env> {
 
 const other = (seat: Seat): Seat => (seat === 0 ? 1 : 0);
 
+/** The protocol a socket's deck speaks; one connected before the hall asked is on the oldest it speaks. */
+const versionOf = (attachment: Attachment): number => attachment.version ?? OLDEST_PROTOCOL;
+
 /** Seat 0, the player who opened the table, breaks the first game; the break alternates after that. */
 const breakerOf = (game: number): Seat => (game % 2 === 1 ? 0 : 1);
 
@@ -819,15 +1031,34 @@ function randomSeed(): number {
 	return value >>> 1;
 }
 
-/** What one seat sees of its table. Seat tokens are never part of it. */
-function viewOf(table: Table, seat: Seat) {
+/** A stored table. Protocol 1 stored no rules or assist: every table then was 8-ball, with aim assist. */
+function readTable(data: string): Table {
+	const stored = JSON.parse(data) as Omit<Table, "rules" | "assist"> & {
+		rules?: Rules;
+		assist?: boolean;
+	};
+	return { ...stored, rules: stored.rules ?? "eight", assist: stored.assist ?? true };
+}
+
+const playersOf = (table: Table): (string | null)[] =>
+	table.chairs.map((chair) => chair?.name ?? null);
+
+/**
+ * What one seat sees of its table, or a watcher, whose seat is null. Seat
+ * tokens are never part of it.
+ */
+function viewOf(table: Table, seat: Seat | null, watchers: number) {
 	return {
 		t: "table",
 		code: table.code,
 		private: table.private,
+		rules: table.rules,
+		assist: table.assist,
 		seat,
-		players: table.chairs.map((chair) => chair?.name ?? null),
+		watching: seat === null,
+		players: playersOf(table),
 		away: table.chairs.map((chair) => chair?.away != null),
+		watchers,
 		status: table.status,
 		game: table.game,
 		seed: table.seed,

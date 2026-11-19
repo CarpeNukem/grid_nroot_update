@@ -60,6 +60,9 @@ textarea { min-height: 74px; resize: vertical; }
 .notice { padding: 9px 12px; border-radius: 4px; margin-bottom: 12px; font-size: 13px; }
 .notice.error { background: rgba(255,92,108,.12); border: 1px solid var(--error); color: var(--error); }
 .notice.ok { background: rgba(49,230,223,.1); border: 1px solid var(--cyan); color: var(--cyan); }
+.notice.warn { background: rgba(255,182,72,.1); border: 1px solid var(--amber); color: var(--amber); }
+.shortlink { display: flex; gap: 8px; margin-bottom: 12px; }
+.shortlink input { font-family: ui-monospace, Consolas, monospace; color: var(--cyan); }
 .media { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
 .media img, .media video { max-width: 260px; max-height: 170px; border: 1px solid var(--line); border-radius: 4px; }
 code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--amber); word-break: break-all; }
@@ -242,6 +245,17 @@ let draft = null;
 
 /** The board on screen in the arcade tab. */
 let selectedBoard = null;
+
+/*
+ * Short links (grid.nroot.io/s/<code>) are the other tab that is not a
+ * collection. A link is made, copied and, if need be, deleted. There is no
+ * edit, so a link already posted in a channel can never quietly start pointing
+ * somewhere else. `selectedId` holds the selected link's code.
+ */
+const LINKS = "links";
+
+/** Whether the Worker can re-sign Discord attachment links. Reported with every list. */
+let discordRefresh = true;
 
 const $ = (id) => document.getElementById(id);
 const identity = () => $("identity").value.trim();
@@ -499,6 +513,12 @@ function renderTabs() {
   arcade.setAttribute("aria-selected", String(collection === ARCADE));
   arcade.onclick = () => { collection = ARCADE; selectedId = null; draft = null; load(); };
   $("tabs").append(arcade);
+
+  const links = document.createElement("button");
+  links.textContent = "Links";
+  links.setAttribute("aria-selected", String(collection === LINKS));
+  links.onclick = () => { collection = LINKS; selectedId = null; draft = null; load(); };
+  $("tabs").append(links);
 }
 
 /** The arcade's scores grouped by board, in the order the API returns them: best first. */
@@ -653,10 +673,234 @@ function renderBoard() {
   form.append(table);
 }
 
+/** What a link points at, short enough for the list: a Discord file's name, or host and path. */
+function linkLabel(link) {
+  try {
+    const url = new URL(link.target);
+    if (link.discord) return decodeURIComponent(url.pathname.split("/").pop() || url.hostname);
+    return url.hostname + (url.pathname === "/" ? "" : url.pathname);
+  } catch {
+    return link.target;
+  }
+}
+
+/** Clipboard access needs a secure origin and a user gesture; either can be missing. */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function noticeBox(text, kind) {
+  const box = document.createElement("div");
+  box.className = `notice ${kind}`;
+  box.textContent = text;
+  return box;
+}
+
+const NO_DISCORD_TOKEN =
+  "The Worker has no DISCORD_BOT_TOKEN, so a short link to a Discord file stops working when the copied address expires, about a day after it was copied.";
+
+function renderLinkList() {
+  $("filters").innerHTML = "";
+  $("listTitle").textContent = `Short links (${records.length})`;
+  $("list").innerHTML = "";
+
+  if (records.length === 0) {
+    const empty = document.createElement("li");
+    const note = document.createElement("div");
+    note.className = "empty";
+    note.textContent = "No short links yet.";
+    empty.append(note);
+    $("list").append(empty);
+    return;
+  }
+
+  for (const link of records) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.setAttribute("aria-current", String(link.code === selectedId));
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const code = document.createElement("span");
+    code.textContent = `/s/${link.code}`;
+    const kind = document.createElement("span");
+    kind.className = link.discord ? "tag pinned" : "tag draft";
+    kind.textContent = link.discord ? "discord" : "web";
+    row.append(code, kind);
+
+    const target = document.createElement("div");
+    target.className = "tag draft";
+    target.style.textTransform = "none";
+    target.style.wordBreak = "break-all";
+    target.textContent = linkLabel(link);
+
+    button.append(row, target);
+    button.onclick = () => { selectedId = link.code; renderList(); renderEditor(); };
+    item.append(button);
+    $("list").append(item);
+  }
+}
+
+function renderLinkEditor() {
+  const form = $("editor");
+  form.innerHTML = "";
+
+  const link = records.find((record) => record.code === selectedId);
+  if (link) renderLinkDetail(form, link);
+  else renderShortenForm(form);
+}
+
+function labelled(text, input, hintText) {
+  const label = document.createElement("label");
+  const caption = document.createElement("span");
+  caption.textContent = text;
+  label.append(caption, input);
+  if (!hintText) return [label];
+
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.textContent = hintText;
+  return [label, hint];
+}
+
+function renderShortenForm(form) {
+  $("editorTitle").textContent = "Shorten a link";
+
+  if (!discordRefresh) form.append(noticeBox(NO_DISCORD_TOKEN, "warn"));
+
+  const url = document.createElement("input");
+  url.name = "url";
+  url.type = "url";
+  url.required = true;
+  url.placeholder = "https://cdn.discordapp.com/attachments/…";
+  form.append(...labelled("Address", url,
+    "Any http or https address. For a Discord file, right-click it and choose Copy Link. Pasting the same file again gives back the link it already has."));
+
+  const code = document.createElement("input");
+  code.name = "code";
+  code.placeholder = "optional, e.g. rooftop-flyer";
+  code.maxLength = 40;
+  form.append(...labelled("Code", code,
+    "Leave blank for a random six-character code. Lowercase letters, digits and dashes."));
+
+  const bar = document.createElement("div");
+  bar.className = "actions";
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "primary";
+  submit.textContent = "Shorten";
+  bar.append(submit);
+  form.append(bar);
+
+  url.focus();
+}
+
+async function shorten() {
+  const form = $("editor");
+  const url = form.elements.url.value.trim();
+  const code = form.elements.code.value.trim();
+  if (!url) { say("Paste the address to shorten.", "error"); return; }
+
+  try {
+    const link = await api("/v1/admin/links", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(code ? { url, code } : { url }),
+    });
+    selectedId = link.code;
+    const copied = await copyText(link.short_url);
+    const lead = link.existing ? "That address already has a short link" : "Short link made";
+    say(`${lead}: ${link.short_url}${copied ? " (copied)" : ""}`);
+    await load();
+  } catch (error) { say(error.message, "error"); }
+}
+
+function renderLinkDetail(form, link) {
+  $("editorTitle").textContent = `/s/${link.code}`;
+
+  const line = document.createElement("div");
+  line.className = "shortlink";
+  const short = document.createElement("input");
+  short.readOnly = true;
+  short.value = link.short_url;
+  short.onfocus = () => short.select();
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "primary";
+  copy.textContent = "Copy";
+  copy.onclick = async () => {
+    if (await copyText(link.short_url)) say(`Copied ${link.short_url}`);
+    else { short.focus(); say("Press Ctrl+C to copy the selected link."); }
+  };
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.textContent = "Open";
+  open.onclick = () => window.open(link.short_url, "_blank", "noopener,noreferrer");
+
+  line.append(short, copy, open);
+  form.append(line);
+
+  if (link.discord) {
+    form.append(discordRefresh
+      ? noticeBox("Discord file. The Worker re-signs it as it expires, so this link keeps working for as long as the message is on Discord.", "ok")
+      : noticeBox(NO_DISCORD_TOKEN, "warn"));
+  }
+
+  const caption = document.createElement("div");
+  caption.className = "slotTitle";
+  caption.textContent = "Goes to";
+  const target = document.createElement("div");
+  target.className = "preview";
+  const targetCode = document.createElement("code");
+  targetCode.textContent = link.target;
+  target.append(targetCode);
+  form.append(caption, target);
+
+  const made = new Date(link.created_at);
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = `Made by ${link.created_by}, ${Number.isNaN(made.getTime()) ? link.created_at : made.toLocaleString()}. Links cannot be edited: to send people somewhere else, make a new one.`;
+  form.append(meta);
+
+  const bar = document.createElement("div");
+  bar.className = "actions";
+  bar.style.marginTop = "12px";
+
+  const another = document.createElement("button");
+  another.type = "button";
+  another.textContent = "Shorten another";
+  another.onclick = () => { selectedId = null; renderList(); renderEditor(); };
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "danger";
+  remove.textContent = "Delete";
+  remove.onclick = async () => {
+    if (!confirm(`Delete /s/${link.code}? Anyone who follows it afterwards gets a "does not exist" answer. This cannot be undone.`)) return;
+    try {
+      await api(`/v1/admin/links/${encodeURIComponent(link.code)}`, { method: "DELETE" });
+      selectedId = null;
+      say(`Deleted /s/${link.code}.`);
+      await load();
+    } catch (error) { say(error.message, "error"); }
+  };
+
+  bar.append(another, remove);
+  form.append(bar);
+}
+
 function renderList() {
   // Scores come from the cabinets; there is nothing for staff to create.
   $("newRecord").hidden = collection === ARCADE;
   if (collection === ARCADE) { renderBoardList(); return; }
+  if (collection === LINKS) { renderLinkList(); return; }
 
   const config = COLLECTIONS[collection];
   renderFilters();
@@ -764,6 +1008,7 @@ function toEditable(record) {
 
 function renderEditor() {
   if (collection === ARCADE) { renderBoard(); return; }
+  if (collection === LINKS) { renderLinkEditor(); return; }
 
   const config = COLLECTIONS[collection];
   const raw = currentRecord();
@@ -1090,6 +1335,7 @@ async function load() {
     if (requested !== collection) return;
 
     records = body.items || [];
+    if (requested === LINKS) discordRefresh = body.discordRefresh !== false;
     renderList();
     renderEditor();
   } catch (error) {
@@ -1099,12 +1345,29 @@ async function load() {
     renderList();
     // A board that could not be loaded must not stay on screen with live
     // Remove buttons. The record editors are left as they were.
-    if (collection === ARCADE) renderEditor();
+    if (collection === ARCADE || collection === LINKS) renderEditor();
     say(error.message, "error");
   }
 }
 
+/*
+ * Enter in the shorten form submits it. Every other editor saves from its own
+ * buttons, and the page's CSP refuses a real form submission anyway, so the
+ * default is always prevented.
+ */
+$("editor").onsubmit = (event) => {
+  event.preventDefault();
+  if (collection === LINKS && !records.some((record) => record.code === selectedId)) shorten();
+};
+
 $("newRecord").onclick = () => {
+  if (collection === LINKS) {
+    selectedId = null;
+    renderList();
+    renderEditor();
+    return;
+  }
+
   const defaults = { __new: true, id: "", sortOrder: 0, pinned: false };
   if (collection === "news") defaults.publishedAt = new Date().toISOString().slice(0, 10);
   draft = defaults;

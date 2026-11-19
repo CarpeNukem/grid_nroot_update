@@ -6,6 +6,7 @@ using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Objects.Types;
+using Dalamud.Utility;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
@@ -27,6 +28,9 @@ internal enum VenueZoneKind
 
     /// <summary>The arcade module's pool table, on a Billiard Table furnishing.</summary>
     Pool,
+
+    /// <summary>The arcade module's card room, where a card game is picked, on an Everkeep Dining Table.</summary>
+    Cards,
 }
 
 /// <summary>The icon drawn in a zone's marker.</summary>
@@ -35,6 +39,7 @@ internal enum VenueZoneGlyph
     Vending,
     Arcade,
     Pool,
+    Cards,
 }
 
 /// <summary>
@@ -53,6 +58,13 @@ internal enum VenueZoneGlyph
 /// marker. The cabinets and the pool table go without: the furniture itself
 /// shows where to stand, and the marker over it is enough.
 /// </param>
+/// <param name="Beacon">
+/// Seen from across the house rather than only nearby: drawn from much
+/// further away and from another floor, so long as nothing stands between
+/// it and the camera, and saying which way to go when it is on another
+/// floor. For the card tables upstairs, which guests downstairs should
+/// notice.
+/// </param>
 internal sealed record VenueZoneDefinition(
     string Id,
     VenueZoneKind Kind,
@@ -61,7 +73,8 @@ internal sealed record VenueZoneDefinition(
     float Radius,
     bool Compact,
     int Cabinet = 0,
-    bool FloorRing = true);
+    bool FloorRing = true,
+    bool Beacon = false);
 
 /// <summary>
 /// A zone pinned to a piece of housing furniture.
@@ -79,7 +92,13 @@ internal sealed record VenueZoneDefinition(
 /// zones on, and a rule about where they stand, unlike a list of positions,
 /// still holds when the furniture is rearranged.
 /// </param>
-internal sealed record FurnitureZoneAnchor(VenueZoneDefinition Zone, uint FurnitureRowId, uint FurnitureItemId, float FrontOffset, int KeepHighest = 0);
+/// <param name="TopFloorOnly">
+/// Only the ones on the highest floor that has any get a zone. The floor is
+/// measured over every one placed in the house, loaded or not, so it is the
+/// same whichever floor the player stands on; the same item on a lower floor
+/// is only furniture.
+/// </param>
+internal sealed record FurnitureZoneAnchor(VenueZoneDefinition Zone, uint FurnitureRowId, uint FurnitureItemId, float FrontOffset, int KeepHighest = 0, bool TopFloorOnly = false);
 
 /// <summary>
 /// A zone on a prop the venue mod draws as part of a mannequin's gear.
@@ -125,17 +144,37 @@ internal sealed class VenueZones
     internal const uint BilliardTableFurnitureRow = 198164;
     internal const uint BilliardTableItem = 44896;
 
+    // The card tables are the game's Everkeep Dining Table (Item 51258,
+    // HousingFurniture 198354), found the same way, on the house's top floor:
+    // every one there opens the card room, where the player picks the game to
+    // play there. The same table on a lower floor is a dining table.
+    internal const uint EverkeepDiningTableFurnitureRow = 198354;
+    internal const uint EverkeepDiningTableItem = 51258;
+
     internal static readonly FurnitureZoneAnchor[] FurnitureZones =
     [
         new(
-            new VenueZoneDefinition("pool", VenueZoneKind.Pool, "8-BALL", VenueZoneGlyph.Pool, Radius: 1.6f, Compact: false, FloorRing: false),
+            new VenueZoneDefinition("pool", VenueZoneKind.Pool, "POOL", VenueZoneGlyph.Pool, Radius: 1.6f, Compact: false, FloorRing: false),
             BilliardTableFurnitureRow,
             BilliardTableItem,
             FrontOffset: 0f),
+        new(
+            new VenueZoneDefinition("cards", VenueZoneKind.Cards, "CARDS", VenueZoneGlyph.Cards, Radius: 1.4f, Compact: false, FloorRing: false, Beacon: true),
+            EverkeepDiningTableFurnitureRow,
+            EverkeepDiningTableItem,
+            FrontOffset: 0f,
+            TopFloorOnly: true),
     ];
 
     /// <summary>How high over a pool table its marker floats: over the cloth, below a standing player's eye.</summary>
     private const float PoolMarkerHeight = 1.35f;
+
+    /// <summary>
+    /// How high over a card table its marker floats: over the heads of the
+    /// players seated at it and the backs of the booth's seats, so it is
+    /// seen over them from across the room.
+    /// </summary>
+    private const float CardsMarkerHeight = 2.1f;
 
     // The arcade row the venue mod draws in place of a mannequin's earrings
     // (a0001, Copper Earrings, any variant). Measured from c0901a0001_ear.mdl,
@@ -169,11 +208,22 @@ internal sealed class VenueZones
     /// <summary>A zone further than this is not drawn at all.</summary>
     private const float DrawDistance = 20.0f;
 
+    /// <summary>A beacon is drawn out to this far, from any floor, when nothing is in the way.</summary>
+    private const float BeaconDistance = 45.0f;
+
+    /// <summary>
+    /// What a wall test hits this close to the zone, sideways, and no higher
+    /// than just over its marker, is the zone's own furniture: the table, its
+    /// chairs, the booth around it. Without this a marker over a booth showed
+    /// only once the camera was close enough to look down into the booth.
+    /// </summary>
+    private const float OwnFurnitureReach = 0.6f;
+
     /// <summary>Closer than this a zone is drawn in full; further out, only its ring and marker.</summary>
     private const float DetailDistance = 8.0f;
 
-    /// <summary>At most this many zones are drawn, the nearest ones.</summary>
-    private const int MaxDrawnZones = 10;
+    /// <summary>At most this many zones are drawn, the nearest ones: enough for the arcade row, the pool table and the card tables at once.</summary>
+    private const int MaxDrawnZones = 14;
 
     /// <summary>A zone's wall test is not redone more often than this.</summary>
     private const long OcclusionIntervalMs = 66;
@@ -183,6 +233,12 @@ internal sealed class VenueZones
 
     /// <summary>More height difference than this is another floor of the house.</summary>
     private const float MaxHeightGap = 3.5f;
+
+    /// <summary>The furniture debug listing names what stands this close to the player.</summary>
+    private const float NearbyFurnitureRange = 10f;
+
+    /// <summary>A placed furnishing and the object the game loaded for it share a position this close.</summary>
+    private const float SamePlaceTolerance = 0.25f;
 
     private const float FurnitureMarkerHeight = 1.55f;
     private const int RingSegments = 48;
@@ -195,11 +251,14 @@ internal sealed class VenueZones
     private readonly Func<IGameObject, bool> isMannequin;
     private readonly Func<int, string?> cabinetTitle;
     private readonly Func<bool> hasPool;
+    private readonly Func<bool> hasCards;
     private readonly Action<VenueZoneDefinition> open;
     private readonly Action<VenueZoneKind> close;
     private readonly Func<VenueZoneKind, bool> isOpen;
     private readonly List<ResolvedVenueZone> zones = [];
     private readonly List<string> mannequinNotes = [];
+    private readonly List<string> furnitureNotes = [];
+    private readonly Dictionary<uint, string> furnitureNames = new();
     private readonly List<ZoneCandidate> candidates = [];
     private readonly List<ZoneOnScreen> onScreen = [];
     private readonly List<int> forgotten = [];
@@ -244,6 +303,7 @@ internal sealed class VenueZones
         Func<IGameObject, bool> isMannequin,
         Func<int, string?> cabinetTitle,
         Func<bool> hasPool,
+        Func<bool> hasCards,
         Action<VenueZoneDefinition> open,
         Action<VenueZoneKind> close,
         Func<VenueZoneKind, bool> isOpen)
@@ -253,6 +313,7 @@ internal sealed class VenueZones
         this.isMannequin = isMannequin;
         this.cabinetTitle = cabinetTitle;
         this.hasPool = hasPool;
+        this.hasCards = hasCards;
         this.open = open;
         this.close = close;
         this.isOpen = isOpen;
@@ -296,14 +357,159 @@ internal sealed class VenueZones
         drawMsPeak = 0;
         if (player is not null)
             parts.Add($"you at {Format(player.Position)}");
+        parts.AddRange(furnitureNotes);
         parts.AddRange(mannequinNotes);
-        foreach (var zone in zones)
+        for (var index = 0; index < zones.Count; index++)
         {
+            var zone = zones[index];
             var distance = player is null ? float.NaN : HorizontalDistance(player.Position, zone.Center);
-            parts.Add($"{zone.Definition.Id} at {Format(zone.Center)} ({distance:0.0}y)");
+            parts.Add($"{zone.Definition.Id} at {Format(zone.Center)} ({distance:0.0}y, {ZoneState(index, player?.Position)})");
         }
 
         return string.Join(" | ", parts);
+    }
+
+    /// <summary>Why a zone is or is not showing, for the debug description.</summary>
+    private string ZoneState(int index, Vector3? playerPosition)
+    {
+        var zone = zones[index];
+        if (playerPosition is { } position)
+        {
+            var rise = zone.Center.Y - position.Y;
+            if (MathF.Abs(rise) > MaxHeightGap && !zone.Definition.Beacon)
+                return $"another floor, {rise:+0.0;-0.0}y up";
+            if (HorizontalDistance(position, zone.Center) > (zone.Definition.Beacon ? BeaconDistance : DrawDistance))
+                return "too far to draw";
+        }
+
+        if (!IsOnScreen(index))
+            return "off screen, or not among the nearest";
+        if (!occlusion.TryGetValue(index, out var check))
+            return "on screen, wall test pending";
+        return check.Occluded ? "on screen, behind scenery" : $"showing at {visibility.GetValueOrDefault(index):0.00}";
+    }
+
+    /// <summary>
+    /// Lines for chat about the house's furniture, for setting zones up: every
+    /// furnishing a zone looks for and every table, floor by floor, and what
+    /// stands near the player. When a zone does not show on a piece of
+    /// furniture, this says what the game thinks that furniture is.
+    /// </summary>
+    public unsafe IReadOnlyList<string> DescribeFurniture()
+    {
+        var lines = new List<string>();
+        var player = PluginService.Objects.LocalPlayer;
+        var housing = HousingManager.Instance();
+        if (player is null || housing is null || housing->IndoorTerritory is null)
+        {
+            lines.Add("not inside a house.");
+            return lines;
+        }
+
+        try
+        {
+            var territory = housing->IndoorTerritory;
+            var furniture = &territory->FurnitureManager;
+            var memory = furniture->FurnitureMemory;
+
+            // Every furnishing placed, on every floor: the anchors' items and anything called a table, by height.
+            var placed = 0;
+            var heights = new SortedDictionary<string, List<float>>(StringComparer.Ordinal);
+            foreach (var record in memory)
+            {
+                if (record.Id == 0)
+                    continue;
+
+                placed++;
+                var label = FurnitureLabel(record.Id);
+                if (FurnitureZones.Any(anchor => Matches(anchor, record.Id)) || label.Contains("Table", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!heights.TryGetValue(label, out var list))
+                        heights[label] = list = [];
+                    list.Add(record.Position.Y);
+                }
+            }
+
+            var loaded = 0;
+            var near = new List<(float Distance, string Line)>();
+            var you = player.Position;
+            foreach (var pointer in furniture->ObjectManager.ObjectArray.Objects)
+            {
+                var gameObject = pointer.Value;
+                if (gameObject is null)
+                    continue;
+
+                loaded++;
+                Vector3 position = gameObject->Position;
+                var distance = HorizontalDistance(you, position);
+                if (distance > NearbyFurnitureRange || MathF.Abs(position.Y - you.Y) > MaxHeightGap)
+                    continue;
+
+                var furnitureIndex = ((HousingObject*)gameObject)->HousingFurnitureIndex;
+                var recordId = furnitureIndex >= 0 && furnitureIndex < memory.Length ? memory[furnitureIndex].Id : 0;
+                var baseId = gameObject->BaseId;
+                var key = recordId != 0 ? recordId : baseId;
+                var anchor = FurnitureZones.FirstOrDefault(candidate => Matches(candidate, baseId) || Matches(candidate, recordId));
+                var zone = zones.FindIndex(found => Vector3.Distance(found.Center, position) < SamePlaceTolerance + (anchor?.FrontOffset ?? 0f));
+                var verdict = zone >= 0 ? $" // {zones[zone].Definition.Label} zone" : anchor is not null ? $" // no {anchor.Zone.Label} zone here" : string.Empty;
+                near.Add((distance, $"{FurnitureLabel(key)} at {Format(position)}, {distance:0.0}y{verdict}"));
+            }
+
+            lines.Add($"floor {territory->CurrentFloor}, {loaded} furnishings loaded, {placed} placed on every floor, you at {Format(you)}");
+            lines.AddRange(furnitureNotes);
+            foreach (var (label, ys) in heights)
+                lines.Add($"{label}: {string.Join(", ", Floors(ys))}");
+            if (near.Count == 0)
+                lines.Add($"nothing within {NearbyFurnitureRange:0} yalms on this floor.");
+            foreach (var (_, line) in near.OrderBy(entry => entry.Distance).Take(12))
+                lines.Add($"near: {line}");
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Could not list the house's furniture.");
+            lines.Add("could not read the furniture.");
+        }
+
+        return lines;
+    }
+
+    /// <summary>Heights grouped into floors, highest first: "y 7.10 x4, y 0.00 x2".</summary>
+    private static IEnumerable<string> Floors(List<float> heights)
+    {
+        var sorted = heights.OrderByDescending(height => height).ToList();
+        var start = 0;
+        for (var index = 1; index <= sorted.Count; index++)
+        {
+            if (index < sorted.Count && sorted[start] - sorted[index] <= 1f)
+                continue;
+
+            yield return $"y {sorted[start]:0.00} x{index - start}";
+            start = index;
+        }
+    }
+
+    /// <summary>A furnishing's name and ids from the game's sheets, by its row in the HousingFurniture sheet (with or without the base) or its item.</summary>
+    private string FurnitureLabel(uint key)
+    {
+        if (furnitureNames.TryGetValue(key, out var known))
+            return known;
+
+        var label = $"furnishing {key}";
+        try
+        {
+            var row = key >= HousingFurnitureRowBase ? key : key + HousingFurnitureRowBase;
+            if (PluginService.Data.GetExcelSheet<Lumina.Excel.Sheets.HousingFurniture>()?.GetRowOrDefault(row) is { } furniture && furniture.Item.ValueNullable is { } item)
+                label = $"{item.Name.ExtractText()} (item {item.RowId}, furniture {row})";
+            else if (PluginService.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>()?.GetRowOrDefault(key) is { } direct)
+                label = $"{direct.Name.ExtractText()} (item {direct.RowId})";
+        }
+        catch (Exception exception)
+        {
+            PluginService.Log.Debug(exception, "Could not name a furnishing.");
+        }
+
+        furnitureNames[key] = label;
+        return label;
     }
 
     private static MannequinZoneAnchor[] BuildArcadeZones()
@@ -361,11 +567,12 @@ internal sealed class VenueZones
         for (var index = 0; index < zones.Count; index++)
         {
             var zone = zones[index];
-            if (MathF.Abs(playerPosition.Y - zone.Center.Y) > MaxHeightGap)
+            var beacon = zone.Definition.Beacon;
+            if (MathF.Abs(playerPosition.Y - zone.Center.Y) > MaxHeightGap && !beacon)
                 continue;
 
             var distance = HorizontalDistance(playerPosition, zone.Center);
-            if (distance <= DrawDistance)
+            if (distance <= (beacon ? BeaconDistance : DrawDistance))
                 candidates.Add(new ZoneCandidate(index, distance));
         }
 
@@ -503,6 +710,7 @@ internal sealed class VenueZones
     {
         zones.Clear();
         mannequinNotes.Clear();
+        furnitureNotes.Clear();
         ScanFurniture();
         ScanMannequins();
 
@@ -515,6 +723,7 @@ internal sealed class VenueZones
     private unsafe void ScanFurniture()
     {
         var found = new List<(FurnitureZoneAnchor Anchor, ResolvedVenueZone Zone)>();
+        var topFloors = new Dictionary<FurnitureZoneAnchor, float>();
         try
         {
             var housing = HousingManager.Instance();
@@ -523,6 +732,9 @@ internal sealed class VenueZones
 
             var furniture = &housing->IndoorTerritory->FurnitureManager;
             var memory = furniture->FurnitureMemory;
+
+            // Whether the placed furniture's positions are where the game draws it, checked on what is loaded.
+            var recordsAgree = false;
             foreach (var pointer in furniture->ObjectManager.ObjectArray.Objects)
             {
                 var gameObject = pointer.Value;
@@ -540,17 +752,58 @@ internal sealed class VenueZones
                     if (!Matches(anchor, gameObject->BaseId) && !Matches(anchor, recordId))
                         continue;
 
-                    // A pool table with no pool game to open gets no zone.
-                    if (anchor.Zone.Kind == VenueZoneKind.Pool && !hasPool())
+                    // A pool table with no pool game to open gets no zone, and a card table with no card games none.
+                    if ((anchor.Zone.Kind == VenueZoneKind.Pool && !hasPool()) || (anchor.Zone.Kind == VenueZoneKind.Cards && !hasCards()))
                         break;
 
                     Vector3 position = gameObject->Position;
+                    if (recordId != 0)
+                        recordsAgree |= Vector3.Distance(memory[furnitureIndex].Position, position) < SamePlaceTolerance;
                     var rotation = gameObject->Rotation;
                     var facing = new Vector3(MathF.Sin(rotation), 0f, MathF.Cos(rotation));
                     var center = position + (facing * anchor.FrontOffset);
-                    var height = anchor.Zone.Kind == VenueZoneKind.Pool ? PoolMarkerHeight : FurnitureMarkerHeight;
+                    var height = anchor.Zone.Kind switch
+                    {
+                        VenueZoneKind.Pool => PoolMarkerHeight,
+                        VenueZoneKind.Cards => CardsMarkerHeight,
+                        _ => FurnitureMarkerHeight,
+                    };
                     found.Add((anchor, new ResolvedVenueZone(anchor.Zone, center, center + new Vector3(0f, height, 0f), ShowLeader: anchor.Zone.FloorRing)));
                     break;
+                }
+            }
+
+            // The top floor of each such item: from every floor's placed furniture when its
+            // positions can be trusted, so standing downstairs does not make downstairs the top.
+            foreach (var anchor in FurnitureZones)
+            {
+                if (!anchor.TopFloorOnly)
+                    continue;
+
+                var top = float.NegativeInfinity;
+                foreach (var (match, zone) in found)
+                {
+                    if (match == anchor)
+                        top = MathF.Max(top, zone.Center.Y);
+                }
+
+                if (recordsAgree)
+                {
+                    foreach (var record in memory)
+                    {
+                        if (Matches(anchor, record.Id))
+                            top = MathF.Max(top, record.Position.Y);
+                    }
+                }
+
+                var source = recordsAgree ? "from every floor" : "from what is loaded";
+
+                if (float.IsFinite(top))
+                {
+                    topFloors[anchor] = top;
+                    var kept = found.Count(entry => entry.Anchor == anchor && entry.Zone.Center.Y >= top - MaxHeightGap);
+                    var lower = found.Count(entry => entry.Anchor == anchor) - kept;
+                    furnitureNotes.Add($"{anchor.Zone.Id}: top floor y {top:0.00} ({source}), {kept} loaded there, {lower} loaded lower get none");
                 }
             }
         }
@@ -563,6 +816,8 @@ internal sealed class VenueZones
         foreach (var anchor in FurnitureZones)
         {
             var matches = found.Where(match => match.Anchor == anchor).Select(match => match.Zone);
+            if (topFloors.TryGetValue(anchor, out var top))
+                matches = matches.Where(zone => zone.Center.Y >= top - MaxHeightGap);
             if (anchor.KeepHighest > 0)
                 matches = matches.OrderByDescending(zone => zone.Center.Y).Take(anchor.KeepHighest);
             zones.AddRange(matches);
@@ -710,7 +965,7 @@ internal sealed class VenueZones
 
         var zone = onScreen[chosen];
         var distance = Vector3.Distance(cameraPosition, zone.MarkerWorld);
-        occlusion[zone.Index] = new OcclusionCheck(IsOccluded(zone.Marker, cameraPosition, distance), now);
+        occlusion[zone.Index] = new OcclusionCheck(IsOccluded(zones[zone.Index], zone.Marker, zone.MarkerWorld, cameraPosition, distance), now);
     }
 
     private void DrawZone(ZoneOnScreen entry, bool hasCamera, Vector3 cameraPosition, long now, float seconds)
@@ -720,7 +975,10 @@ internal sealed class VenueZones
         var definition = zone.Definition;
         var distance = entry.Distance;
         var marker = entry.Marker;
-        var inRange = distance <= ActivationRange;
+        // A beacon seen from another floor is reached by going there, not by standing under it.
+        var rise = zone.Center.Y - (PluginService.Objects.LocalPlayer?.Position.Y ?? zone.Center.Y);
+        var elsewhere = definition.Beacon && MathF.Abs(rise) > MaxHeightGap;
+        var inRange = distance <= ActivationRange && !elsewhere;
         var detailed = distance <= DetailDistance && !definition.Compact;
 
         // A zone not tested yet counts as behind a wall, so it never flashes through one.
@@ -737,8 +995,10 @@ internal sealed class VenueZones
         var size = (definition.Compact ? 26f : 34f) * uiScale * Math.Clamp(6f / MathF.Max(cameraDistance, 0.5f), 0.8f, 1.3f);
         var tooFar = tooFarZone == index && now < tooFarUntil;
         var label = definition.Label;
-        var status = inRange
-            ? definition.Kind is VenueZoneKind.Arcade or VenueZoneKind.Pool ? "CLICK TO PLAY" : "CLICK TO ACCESS"
+        var status = elsewhere
+            ? $"{(rise > 0f ? "UPSTAIRS" : "DOWNSTAIRS")} // {distance:0}y"
+            : inRange
+            ? definition.Kind is VenueZoneKind.Arcade or VenueZoneKind.Pool or VenueZoneKind.Cards ? "CLICK TO PLAY" : "CLICK TO ACCESS"
             : tooFar
                 ? $"MOVE CLOSER // {tooFarDistance:0.0}y"
                 : "STEP INTO THE ZONE";
@@ -1009,6 +1269,9 @@ internal sealed class VenueZones
             case VenueZoneGlyph.Pool:
                 DrawPoolGlyph(drawList, center, size * 0.62f, color, secondary, alpha, uiScale);
                 break;
+            case VenueZoneGlyph.Cards:
+                DrawCardsGlyph(drawList, center, size * 0.62f, color, secondary, alpha, uiScale);
+                break;
             default:
                 DrawVendingGlyph(drawList, center, size * 0.62f, color, secondary, alpha, uiScale);
                 break;
@@ -1089,6 +1352,27 @@ internal sealed class VenueZones
         var eight = ImGui.CalcTextSize("8");
         var scale = MathF.Min(1f, 0.44f * size / MathF.Max(1f, eight.Y));
         drawList.AddText(ImGui.GetFont(), ImGui.GetFontSize() * scale, ball - (eight * scale / 2f), Color(CyberdeckTheme.Palette.Background, alpha), "8");
+    }
+
+    /// <summary>The card tables' mark: two cards fanned, the one in front with a diamond on it.</summary>
+    private static void DrawCardsGlyph(ImDrawListPtr drawList, Vector2 center, float size, Vector4 color, Vector4 secondary, float alpha, float uiScale)
+    {
+        var line = MathF.Max(1f, 1.3f * uiScale);
+        var fill = Color(CyberdeckTheme.Palette.Background, alpha);
+        void Card(Vector2 middle, float turn, uint outline)
+        {
+            var (across, down) = (new Vector2(MathF.Cos(turn), MathF.Sin(turn)), new Vector2(-MathF.Sin(turn), MathF.Cos(turn)));
+            Vector2 Corner(float x, float y) => middle + (across * x * size) + (down * y * size);
+            var (a, b, c, d) = (Corner(-0.46f, -0.66f), Corner(0.46f, -0.66f), Corner(0.46f, 0.66f), Corner(-0.46f, 0.66f));
+            drawList.AddQuadFilled(a, b, c, d, fill);
+            drawList.AddQuad(a, b, c, d, outline, line);
+        }
+
+        Card(center + new Vector2(-0.28f, 0.04f) * size, -0.32f, Color(secondary, alpha));
+        Card(center + new Vector2(0.22f, -0.02f) * size, 0.18f, Color(color, alpha));
+        var pip = center + new Vector2(0.22f, -0.02f) * size;
+        var r = 0.2f * size;
+        drawList.AddQuadFilled(pip + new Vector2(0f, -r * 1.3f), pip + new Vector2(r, 0f), pip + new Vector2(0f, r * 1.3f), pip + new Vector2(-r, 0f), Color(color, alpha));
     }
 
     private static void DrawShadowedText(ImDrawListPtr drawList, Vector2 position, string text, Vector4 color, float alpha)
@@ -1176,14 +1460,21 @@ internal sealed class VenueZones
     /// The overlay has no depth of its own, so without this a zone would show
     /// through the wall of the next room.
     /// </summary>
-    private static bool IsOccluded(Vector2 marker, Vector3 cameraPosition, float markerDistance)
+    private static bool IsOccluded(ResolvedVenueZone zone, Vector2 marker, Vector3 markerWorld, Vector3 cameraPosition, float markerDistance)
     {
         try
         {
             if (!PluginService.GameGui.ScreenToWorld(marker, out var hit, markerDistance + 1f))
                 return false;
 
-            return Vector3.Distance(cameraPosition, hit) < markerDistance - 0.35f;
+            if (Vector3.Distance(cameraPosition, hit) >= markerDistance - 0.35f)
+                return false;
+
+            // A furniture zone's own table and seats do not hide it; a cabinet's marker is right at its screen, so it gets no such allowance.
+            var own = zone.Definition.Kind is VenueZoneKind.Pool or VenueZoneKind.Cards &&
+                      HorizontalDistance(hit, zone.Center) <= zone.Definition.Radius + OwnFurnitureReach &&
+                      hit.Y <= markerWorld.Y + 0.3f;
+            return !own;
         }
         catch (Exception exception)
         {
