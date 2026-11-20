@@ -23,6 +23,7 @@ import {
 	parseAim,
 	parseShot,
 	parseState,
+	physicsOf,
 	RECONNECT_GRACE_MS,
 	REFUSALS,
 	type RefusalCode,
@@ -54,6 +55,13 @@ interface Table {
 	 * only carries it; like the rules, it is kept for good.
 	 */
 	readonly assist: boolean;
+	/**
+	 * How the decks at this table play a shot, from the deck that opened it
+	 * (see `physicsOf`). Only decks of the same physics are seated, shown it
+	 * in the lobby or let watch it, since every deck there plays each shot
+	 * itself. A table stored before the hall knew is of the first.
+	 */
+	readonly physics: number;
 	status: TableStatus;
 	chairs: [Chair | null, Chair | null];
 	/** Games played at this table, counting the one in progress. Seat 0 breaks the odd ones. */
@@ -342,6 +350,7 @@ export class PoolHall extends DurableObject<Env> {
 			private: isPrivate,
 			rules,
 			assist,
+			physics: physicsOf(versionOf(me)),
 			status: "waiting",
 			chairs: [{ name: me.name, token: me.token, away: null }, null],
 			game: 1,
@@ -377,8 +386,9 @@ export class PoolHall extends DurableObject<Env> {
 			return;
 		}
 
-		if (!knowsRules(versionOf(me), table.rules)) {
-			this.refuse(ws, "needs-update");
+		const mismatch = deckMismatch(me, table);
+		if (mismatch !== undefined) {
+			this.refuse(ws, mismatch);
 			return;
 		}
 
@@ -417,8 +427,9 @@ export class PoolHall extends DurableObject<Env> {
 			return;
 		}
 
-		if (!knowsRules(versionOf(me), table.rules)) {
-			this.refuse(ws, "needs-update");
+		const mismatch = deckMismatch(me, table);
+		if (mismatch !== undefined) {
+			this.refuse(ws, mismatch);
 			return;
 		}
 
@@ -918,6 +929,7 @@ export class PoolHall extends DurableObject<Env> {
 				(table) =>
 					!table.private &&
 					knowsRules(version, table.rules) &&
+					physicsOf(version) === table.physics &&
 					(table.status === "playing" ||
 						(table.status === "waiting" && table.chairs[0]?.away === null)),
 			)
@@ -1031,13 +1043,38 @@ function randomSeed(): number {
 	return value >>> 1;
 }
 
-/** A stored table. Protocol 1 stored no rules or assist: every table then was 8-ball, with aim assist. */
+/**
+ * A stored table. Protocol 1 stored no rules or assist: every table then was
+ * 8-ball, with aim assist. Before protocol 4 no table stored its physics, and
+ * every one was of the first.
+ */
 function readTable(data: string): Table {
-	const stored = JSON.parse(data) as Omit<Table, "rules" | "assist"> & {
+	const stored = JSON.parse(data) as Omit<Table, "rules" | "assist" | "physics"> & {
 		rules?: Rules;
 		assist?: boolean;
+		physics?: number;
 	};
-	return { ...stored, rules: stored.rules ?? "eight", assist: stored.assist ?? true };
+	return {
+		...stored,
+		rules: stored.rules ?? "eight",
+		assist: stored.assist ?? true,
+		physics: stored.physics ?? 1,
+	};
+}
+
+/**
+ * Why a deck may not sit at or watch a table, or nothing when it may: the
+ * table's game, or its physics, is newer than the deck's, which is told to
+ * update; or its physics is older, from decks that would play every shot
+ * differently.
+ */
+function deckMismatch(me: Attachment, table: Table): RefusalCode | undefined {
+	const version = versionOf(me);
+	if (!knowsRules(version, table.rules) || physicsOf(version) < table.physics) {
+		return "needs-update";
+	}
+
+	return physicsOf(version) > table.physics ? "older-deck" : undefined;
 }
 
 const playersOf = (table: Table): (string | null)[] =>

@@ -21,15 +21,30 @@
  * A deck refuses to play when the version in `welcome` is not its own, and
  * asks to be updated. Version 2 added 9-ball, called pockets, watching and
  * tables without aim assist. Version 3 added free pyramid, and with it the
- * ball a shot strikes, which in that game is any ball.
+ * ball a shot strikes, which in that game is any ball. Version 4 changed how
+ * the decks play a shot: two balls part along the line between their
+ * centres at the moment they touch, worked out within the step, where
+ * before they parted from where the step found them already overlapping.
+ * Version 5 corrected free pyramid's corner pockets, whose corridor is 5.5 mm
+ * again, so a ball drops in them where it did not on 4.
  *
- * A deck says its version when it connects (`v=3`); one that says nothing is
+ * A deck says its version when it connects (`v=5`); one that says nothing is
  * on version 2, from before decks did. The hall speaks each deck's own
  * version back, down to {@link OLDEST_PROTOCOL}, so a deck from before free
  * pyramid keeps playing 8-ball and 9-ball: it is never shown a pyramid table,
- * and is told to update if it tries one's code.
+ * and is told to update if it tries one's code. And since both decks at a
+ * table play every shot themselves, a table only ever seats decks that play
+ * shots the same way ({@link physicsOf}).
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 5;
+
+/**
+ * How a deck on `version` plays a shot: 1 before version 4, 2 on 4, and 3
+ * since 5's pyramid pockets. Decks of different physics would end the same
+ * shot on different tables, so the hall seats and lists a table only for
+ * decks of the physics that opened it.
+ */
+export const physicsOf = (version: number): number => (version >= 5 ? 3 : version >= 4 ? 2 : 1);
 
 /** The oldest version the hall still speaks. A deck older than that is welcomed with it, sees a version not its own and asks to be updated. */
 export const OLDEST_PROTOCOL = 2;
@@ -279,7 +294,8 @@ export type RefusalCode =
 	| "out-of-order"
 	| "not-over"
 	| "no-opponent"
-	| "needs-update";
+	| "needs-update"
+	| "older-deck";
 
 export const REFUSALS: Readonly<Record<RefusalCode, string>> = {
 	"bad-message": "That message could not be read.",
@@ -294,5 +310,7 @@ export const REFUSALS: Readonly<Record<RefusalCode, string>> = {
 	"out-of-order": "That shot is out of step with the table.",
 	"not-over": "The game is still being played.",
 	"no-opponent": "Your opponent has left the table.",
-	"needs-update": "That table plays free pyramid. Update the deck to play it.",
+	"needs-update": "That table needs a newer deck. Update the deck to play at it.",
+	"older-deck":
+		"That table's players are on an older deck, which plays shots differently. Open a table of your own.",
 };

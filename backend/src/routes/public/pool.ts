@@ -5,7 +5,7 @@ import { enforcePoolConnectLimit } from "../../security/ratelimit.js";
 import type { Route } from "../router.js";
 
 /**
- * The way into the pool hall: `GET /v1/pool?name=Forename%20Surname%40World[&v=3][&resume=<seat token>]`
+ * The way into the pool hall: `GET /v1/pool?name=Forename%20Surname%40World[&v=5][&resume=<seat token>]`
  * (or a deck's old initials, `name=ABC`)
  * with a WebSocket upgrade. `v` is the protocol the deck speaks; the hall
  * reads it, and a deck that sends none is one from before free pyramid.

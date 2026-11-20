@@ -105,13 +105,15 @@ class Deck {
 const open: Deck[] = [];
 
 /**
- * A deck connecting as `name`. It says it speaks protocol 3, as a deck does
- * now; `version: null` is a deck from before free pyramid, which says nothing.
+ * A deck connecting as `name`. It says it speaks protocol 5, as a deck does
+ * now; "4" is a deck from before the corrected pyramid pockets, "3" one from
+ * before shots met at the moment the balls touch, and `version: null` one from
+ * before free pyramid, which says nothing.
  */
 async function connect(
 	name: string,
 	resume?: string,
-	version: string | null = "3",
+	version: string | null = "5",
 ): Promise<{ deck: Deck; welcome: Message }> {
 	const query = new URLSearchParams({
 		name,
@@ -237,8 +239,8 @@ describe("connecting to the pool hall", () => {
 	it("welcomes a deck with its protocol version, a seat token and the lobby", async () => {
 		const { welcome } = await connect("ABC");
 
-		// Protocol 3: free pyramid and the ball a shot strikes.
-		expect(welcome.v).toBe(3);
+		// Protocol 5: free pyramid's corrected pockets, on top of 4's balls that part as they touch.
+		expect(welcome.v).toBe(5);
 		expect(welcome.name).toBe("ABC");
 		expect(welcome.token).toMatch(/^[0-9a-f-]{36}$/);
 		expect(welcome.tables).toEqual([]);
@@ -249,8 +251,11 @@ describe("connecting to the pool hall", () => {
 		expect((await connect("OLD", undefined, null)).welcome.v).toBe(2);
 		expect((await connect("ODD", undefined, "x")).welcome.v).toBe(2);
 		expect((await connect("ONE", undefined, "1")).welcome.v).toBe(2);
-		// A newer deck than the hall sees 3, and waits for the hall to be updated.
-		expect((await connect("NEW", undefined, "4")).welcome.v).toBe(3);
+		// Decks from before balls parted as they touch, and before the pyramid pockets were corrected, are welcomed on their own.
+		expect((await connect("MID", undefined, "3")).welcome.v).toBe(3);
+		expect((await connect("FOUR", undefined, "4")).welcome.v).toBe(4);
+		// A newer deck than the hall sees 5, and waits for the hall to be updated.
+		expect((await connect("NEW", undefined, "6")).welcome.v).toBe(5);
 	});
 
 	it("answers a text ping without a message of its own", async () => {
@@ -570,9 +575,10 @@ describe("table rules", () => {
 
 describe("free pyramid", () => {
 	it("opens a pyramid table for a deck that knows the game, and lists it only to decks that do", async () => {
-		const { deck: browser } = await connect("LOOK");
+		// Decks on protocol 3 and 2, which play shots the same way and so share a lobby, but only 3 knows free pyramid.
+		const { deck: browser } = await connect("LOOK", undefined, "3");
 		const { deck: older } = await connect("OLDY", undefined, null);
-		const { deck: host } = await connect("HOST");
+		const { deck: host } = await connect("HOST", undefined, "3");
 		host.send({ t: "open", rules: "pyramid" });
 		const table = await host.next("table");
 		expect(table).toMatchObject({ rules: "pyramid", status: "waiting", seat: 0 });
@@ -582,7 +588,7 @@ describe("free pyramid", () => {
 		expect((await older.next("lobby")).tables).toEqual([]);
 
 		// An 8-ball table beside it is listed to both.
-		const { deck: eight } = await connect("EIGHT");
+		const { deck: eight } = await connect("EIGHT", undefined, "3");
 		eight.send({ t: "open" });
 		const eightTable = await eight.next("table");
 		expect((await older.next("lobby")).tables).toMatchObject([
@@ -592,7 +598,7 @@ describe("free pyramid", () => {
 		expect((await connect("LATE", undefined, null)).welcome.tables).toMatchObject([
 			{ code: eightTable.code },
 		]);
-		expect((await connect("LATER")).welcome.tables).toHaveLength(2);
+		expect((await connect("LATER", undefined, "3")).welcome.tables).toHaveLength(2);
 	});
 
 	it("tells a deck from before free pyramid to update, rather than seat it at a pyramid table or let it open one", async () => {
@@ -622,7 +628,8 @@ describe("free pyramid", () => {
 		const { deck: older } = await connect("OLDY", undefined, null);
 		older.send({ t: "open" });
 		const table = await older.next("table");
-		const { deck: newer } = await connect("NEWY");
+		// Protocols 2 and 3 play a shot the same way, so they share a table.
+		const { deck: newer } = await connect("NEWY", undefined, "3");
 		newer.send({ t: "join", code: table.code });
 		await older.next("table");
 		expect(await newer.next("table")).toMatchObject({ rules: "eight", status: "playing" });
@@ -677,6 +684,83 @@ describe("free pyramid", () => {
 			game: 2,
 			rules: "pyramid",
 		});
+	});
+});
+
+describe("decks that play a shot differently", () => {
+	it("lists a table only to decks that play shots as the one that opened it", async () => {
+		const { deck: current } = await connect("LOOK");
+		const { deck: earlier } = await connect("PAST", undefined, "3");
+		const { deck: oldest } = await connect("OLDY", undefined, null);
+
+		const { deck: host } = await connect("HOST");
+		host.send({ t: "open" });
+		const table = await host.next("table");
+		expect((await current.next("lobby")).tables).toMatchObject([{ code: table.code }]);
+		expect((await earlier.next("lobby")).tables).toEqual([]);
+		expect((await oldest.next("lobby")).tables).toEqual([]);
+
+		const { deck: pastHost } = await connect("PHOST", undefined, "3");
+		pastHost.send({ t: "open" });
+		const pastTable = await pastHost.next("table");
+		expect((await earlier.next("lobby")).tables).toMatchObject([{ code: pastTable.code }]);
+		expect((await oldest.next("lobby")).tables).toMatchObject([{ code: pastTable.code }]);
+		expect((await current.next("lobby")).tables).toMatchObject([{ code: table.code }]);
+	});
+
+	it("tells an older deck to update at a newer table, and a newer deck to open its own at an older one", async () => {
+		const { deck: host } = await connect("HOST");
+		host.send({ t: "open", private: true });
+		const table = await host.next("table");
+		const { deck: earlier } = await connect("PAST", undefined, "3");
+		earlier.send({ t: "join", code: table.code });
+		expect((await earlier.next("error")).code).toBe("needs-update");
+		earlier.send({ t: "watch", code: table.code });
+		expect((await earlier.next("error")).code).toBe("needs-update");
+
+		earlier.send({ t: "open", private: true });
+		const pastTable = await earlier.next("table");
+		const { deck: current } = await connect("NOWY");
+		current.send({ t: "join", code: pastTable.code });
+		expect(await current.next("error")).toMatchObject({ code: "older-deck" });
+		current.send({ t: "watch", code: pastTable.code });
+		expect((await current.next("error")).code).toBe("older-deck");
+
+		// Each can still sit with its own kind.
+		const { deck: guest } = await connect("GUEST");
+		guest.send({ t: "join", code: table.code });
+		expect(await guest.next("table")).toMatchObject({ status: "playing", seat: 1 });
+	});
+
+	it("keeps a deck from before the corrected pyramid pockets apart from today's", async () => {
+		const { deck: host } = await connect("HOST");
+		host.send({ t: "open", private: true, rules: "pyramid" });
+		const table = await host.next("table");
+		const { deck: before } = await connect("FOUR", undefined, "4");
+		before.send({ t: "join", code: table.code });
+		expect((await before.next("error")).code).toBe("needs-update");
+
+		before.send({ t: "open", private: true, rules: "pyramid" });
+		const beforeTable = await before.next("table");
+		const { deck: current } = await connect("NOWY");
+		current.send({ t: "join", code: beforeTable.code });
+		expect((await current.next("error")).code).toBe("older-deck");
+	});
+
+	it("reads a table stored before the hall knew a deck's physics as one of the older decks'", async () => {
+		const { deck: host } = await connect("HOST", undefined, "3");
+		host.send({ t: "open" });
+		const table = await host.next("table");
+		await runInDurableObject(hall(), (_instance, state) => {
+			state.storage.sql.exec("UPDATE pool_tables SET data = json_remove(data, '$.physics')");
+		});
+
+		const { deck: current } = await connect("NOWY");
+		current.send({ t: "join", code: table.code });
+		expect((await current.next("error")).code).toBe("older-deck");
+		const { deck: guest } = await connect("GUEST", undefined, null);
+		guest.send({ t: "join", code: table.code });
+		expect(await guest.next("table")).toMatchObject({ status: "playing", seat: 1 });
 	});
 });
 

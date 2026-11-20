@@ -201,7 +201,7 @@ lobby and every table. Shaped around the free plan like the boards:
   before (up to six of `A-Z`, `0-9`, `-`), so a deck not yet updated keeps
   playing. The card hall takes characters only.
 - **One Worker request per player per visit.** `GET /v1/pool?name=...` with a
-  WebSocket upgrade, plus `&v=3` for the protocol the deck speaks and
+  WebSocket upgrade, plus `&v=5` for the protocol the deck speaks and
   `&resume=<seat token>` to get back to a kept seat.
   Everything after that is messages on the socket, which go to the Durable
   Object and never through the Worker again.
@@ -222,8 +222,8 @@ lobby and every table. Shaped around the free plan like the boards:
 | Deck sends | Hall does |
 | --- | --- |
 | `open` `{private, rules?, assist?}` | Opens a table with a four-letter code and seats the sender. `rules` is `"eight"`, `"nine"` or `"pyramid"` (free pyramid, protocol 3 only), `"eight"` when left out. `assist` is `true` or `false`, `true` when left out: `false` is a tournament table, where both decks draw only the cue ball's line and no collision predictions. Anything else in either is refused (`bad-message`). The table keeps both for good, rematches included. Public tables are listed in the lobby. |
-| `join` `{code}` | Seats the sender opposite the host and starts the game, host to break. A deck on protocol 2 is refused a pyramid table (`needs-update`). |
-| `watch` `{code}` | Takes the sender to the table with that code to watch it: open, in play or over, private ones too. A deck on protocol 2 is refused a pyramid table (`needs-update`). |
+| `join` `{code}` | Seats the sender opposite the host and starts the game, host to break. A deck on protocol 2 is refused a pyramid table, and a deck of other physics any table (`needs-update`, `older-deck`). |
+| `watch` `{code}` | Takes the sender to the table with that code to watch it: open, in play or over, private ones too, with the same refusals as `join`. |
 | `aim` `{seq, a, p, cx?, cy?, k?, s?}` | Passes a cue preview to the opponent and the watchers. Dropped if closer than 250 ms to the last. |
 | `shot` `{seq, shot}` | Passes the shot to the opponent and the watchers. Only the player whose turn it is, for the shot the table is on. |
 | `settle` `{seq, turn, winner, state}` | Stores the settled table, moves the turn on, ends the game on a winner, and passes it on to the opponent and the watchers. |
@@ -258,20 +258,29 @@ number, turn, winner, settled state), the opponent's `aim`/`shot`/`settle`,
   ninth is refused (`no-room`). Watchers count toward the 200 sockets. When
   both players have left, watchers get `closed` with `why: "empty"` and are
   back in the lobby. A table cleared for sitting idle sends `why: "idle"`.
-- **Protocol versions.** The hall speaks 3: free pyramid and the ball a shot
-  strikes, on top of 2's 9-ball, called pockets, watching and tables without aim
-  assist. A deck says its version when it connects (`v=3`) and `welcome.v` is
-  that version back, down to 2, the hall's newest for a deck newer still. A deck
-  that says nothing is one from before free pyramid, on 2: it is welcomed with
-  2 and keeps playing 8-ball and 9-ball against any deck, but it is never listed
-  a pyramid table, cannot open one (`bad-message`) and is refused one's code
-  (`needs-update`), since it would read the table as 8-ball. That is the choice
-  made over bumping every deck: an old deck is not asked to update until it
-  meets a game it cannot play. A deck refuses to play on any version but its
-  own and asks to be updated, so a deck still on 1 (welcomed with 2) is told to
-  update, and a deck on 3 meeting a hall not yet updated waits for it: the
-  relay goes out before the deck. The hall only carries `assist`; the decks
-  draw it.
+- **Protocol versions.** The hall speaks 5: free pyramid's corner pockets
+  corrected to a 5.5 mm corridor, on top of 4's balls that part along the line
+  between their centres as they touch, a change to how the decks play every
+  shot, 3's free pyramid and the ball a shot strikes and 2's 9-ball,
+  called pockets, watching and tables without aim assist. A deck says its
+  version when it connects (`v=5`) and `welcome.v` is that version back, down
+  to 2, the hall's newest for a deck newer still. A deck that says nothing is
+  one from before free pyramid, on 2: it is never listed a pyramid table,
+  cannot open one (`bad-message`) and is refused one's code (`needs-update`),
+  since it would read the table as 8-ball. That is the choice made over bumping
+  every deck: an old deck is not asked to update until it meets a game it
+  cannot play.
+- **One physics to a table.** Both decks at a table play every shot
+  themselves, so a table records how the deck that opened it plays a shot
+  (`physics`: 1 for protocols 2 and 3, 2 for 4, 3 for 5; a table stored before
+  it was recorded is 1). Only decks of that physics are listed it, seated at it
+  or let watch it: a deck of older physics is refused with `needs-update`, one
+  of newer physics with `older-deck`. So decks on 2 and 3 still play each
+  other, and decks on 5 play decks on 5.
+- A deck refuses to play on any version but its own and asks to be updated, so
+  a deck still on 1 (welcomed with 2) is told to update, and a deck on 5
+  meeting a hall not yet updated waits for it: the relay goes out before the
+  deck. The hall only carries `assist`; the decks draw it.
 - **Dropped connections.** A seat is kept for a minute. A deck that reconnects
   with its seat token gets its table back. After that, a game in play goes to the
   player who stayed, and an open table is cleared. A table nobody has touched
