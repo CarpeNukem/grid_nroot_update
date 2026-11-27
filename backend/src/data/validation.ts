@@ -1,6 +1,7 @@
 import { ApiError, ErrorCode } from "../security/errors.js";
 import { isIdentifier, LIMITS } from "../security/validate.js";
 import { fromDiscordTimestamp } from "./schema.js";
+import { parseVenueAddress, VENUE_ADDRESS_PAGE } from "./venue.js";
 
 /**
  * Write-payload validation, shared by the admin routes and the seed importer.
@@ -456,10 +457,25 @@ export function parsePageInput(body: unknown, id?: string): PageInput {
 	const input = assertObject(body);
 	assertNoUnknownFields(input, PAGE_FIELDS);
 
+	const pageId = id ?? requiredSlug(input, "id");
+	let text = optionalText(input, "body", FIELD_LIMITS.longText);
+
+	// The address page moves the venue for every deck and the site, so it must be an address they can read.
+	if (pageId === VENUE_ADDRESS_PAGE) {
+		const address = parseVenueAddress(text);
+		if (address === null) {
+			throw invalid(
+				"body",
+				'must be the venue\'s address on one line: a world, a housing district, a ward and a plot, as in "Light Raiden Mist W29 P2"',
+			);
+		}
+		text = address;
+	}
+
 	return {
-		id: id ?? requiredSlug(input, "id"),
+		id: pageId,
 		title: requiredText(input, "title", FIELD_LIMITS.title),
-		body: optionalText(input, "body", FIELD_LIMITS.longText),
+		body: text,
 		sortOrder: optionalInt(input, "sortOrder", 0, FIELD_LIMITS.maxSortOrder, 0),
 	};
 }

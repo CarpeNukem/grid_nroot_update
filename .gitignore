@@ -28,3 +28,6 @@ backend/dist/
 # from whatever source file was used to make them.
 backend/test/fixtures/*.mp4
 backend/test/fixtures/*.gif
+
+# Local editor and tool settings
+.claude/

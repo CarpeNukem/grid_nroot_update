@@ -159,7 +159,9 @@ internal sealed class VenueZones
             BilliardTableItem,
             FrontOffset: 0f),
         new(
-            new VenueZoneDefinition("cards", VenueZoneKind.Cards, "CARDS", VenueZoneGlyph.Cards, Radius: 1.4f, Compact: false, FloorRing: false, Beacon: true),
+            // Seen as far as the pool table and the cabinets are, and on their own floor only: the new house has
+            // no upstairs to call guests up to, so the card tables need no beacon (2026-11-27).
+            new VenueZoneDefinition("cards", VenueZoneKind.Cards, "CARDS", VenueZoneGlyph.Cards, Radius: 1.4f, Compact: false, FloorRing: false),
             EverkeepDiningTableFurnitureRow,
             EverkeepDiningTableItem,
             FrontOffset: 0f,
@@ -184,7 +186,15 @@ internal sealed class VenueZones
     // is up to the arcade module (see ArcadeModule); a cabinet it has no game
     // for gets no zone. If the model is rebuilt, these are the numbers to
     // measure again.
+    //
+    // Those numbers are the row's own, measured from the model as it was built
+    // in November 2026. For the large house (2026-11-27) the row was turned half
+    // round about the vertical, so the controls face -Z, and moved; ArcadeRowShift
+    // is where it went. Every vertex of the rebuilt model is the November one
+    // turned and moved by exactly this, in the same order, so each cabinet is
+    // still the one it was. If the row is only moved again, measure the move.
     private const ushort ArcadeEarringModelId = 1;
+    private static readonly Vector3 ArcadeRowShift = new(10.135f, -0.033f, 38.995f);
     private const float ArcadeFloorY = 15.903f;
     private const float ArcadeTopY = 17.769f;
     private const float ArcadeFrontZ = 2.057f;
@@ -531,12 +541,16 @@ internal sealed class VenueZones
             anchors[index] = new MannequinZoneAnchor(
                 zone,
                 ArcadeEarringModelId,
-                Pad: new Vector3(x, ArcadeFloorY, ArcadeFrontZ + ArcadePadDepth),
-                Marker: new Vector3(x, ArcadeTopY + ArcadeMarkerLift, ArcadeMiddleZ));
+                Pad: InModel(new Vector3(x, ArcadeFloorY, ArcadeFrontZ + ArcadePadDepth)),
+                Marker: InModel(new Vector3(x, ArcadeTopY + ArcadeMarkerLift, ArcadeMiddleZ)));
         }
 
         return anchors;
     }
+
+    /// <summary>A point of the arcade row, from the row's own measurements to where the row stands in the model now: turned half round, then moved.</summary>
+    private static Vector3 InModel(Vector3 row)
+        => new Vector3(-row.X, row.Y, -row.Z) + ArcadeRowShift;
 
     private void DrawZones()
     {

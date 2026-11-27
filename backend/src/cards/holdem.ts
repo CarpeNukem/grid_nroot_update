@@ -1,8 +1,10 @@
 /**
  * Texas Hold'em, no limit, as the card hall deals it, for play money.
  *
- * Up to six at a table, each sitting down with {@link START_STACK} chips;
- * blinds are fixed at {@link SMALL_BLIND} and {@link BIG_BLIND}. Once two
+ * Up to six at a table, each sitting down with the table's starting stack;
+ * the blinds are the table's too, never rising. Whoever opens a table picks
+ * them from {@link HOLDEM_BLINDS} and {@link HOLDEM_STACKS}, 5/10 and 1,000
+ * chips when they do not say. Once two
  * players with chips are seated, a hand is dealt every few seconds, for as
  * long as two can play: each player gets two cards face down, and five are
  * dealt face up between them, three on the flop, one on the turn, one on the
@@ -32,9 +34,22 @@ import { bestHand, type Card } from "./poker.js";
 import type { RefusalCode } from "./protocol.js";
 
 export const HOLDEM_SEATS = 6;
+
+/** A table's stakes when its opener chose none, and every table's before tables chose theirs. */
 export const START_STACK = 1000;
 export const SMALL_BLIND = 5;
 export const BIG_BLIND = 10;
+
+/** The blinds a table may be opened with, small then big, the big twice the small. */
+export const HOLDEM_BLINDS: readonly (readonly [number, number])[] = [
+	[5, 10],
+	[10, 20],
+	[25, 50],
+	[50, 100],
+];
+
+/** The stacks a table may start everyone with, and buy them back in with. */
+export const HOLDEM_STACKS: readonly number[] = [1000, 2500, 5000, 10000];
 
 /** How long a player has to act before the hall checks for them, or folds. */
 export const HOLDEM_TURN_MS = 30_000;
@@ -114,7 +129,22 @@ export interface HoldemResult {
 	readonly uncontested: boolean;
 }
 
+/** A table's stakes, for its whole life: the blinds, and the stack everyone sits down and buys back in with. */
+export interface HoldemStakes {
+	readonly small: number;
+	readonly big: number;
+	readonly start: number;
+}
+
+export const DEFAULT_STAKES: HoldemStakes = {
+	small: SMALL_BLIND,
+	big: BIG_BLIND,
+	start: START_STACK,
+};
+
 export interface HoldemGame {
+	/** Missing from a table stored before tables chose their stakes, which plays the default ones. */
+	stakes?: HoldemStakes;
 	phase: HoldemPhase;
 	seats: (HoldemPlayer | null)[];
 	/** Hands dealt at this table. */
@@ -151,10 +181,34 @@ export interface HoldemMoves {
 export const isHoldemMove = (value: unknown): value is HoldemMove =>
 	value === "fold" || value === "check" || value === "call" || value === "raise";
 
+/**
+ * The stakes asked for when a table is opened, `blinds` as `[small, big]` and
+ * `start` the stack, or null when they are not ones a table offers. Either
+ * left out is the default's.
+ */
+export function holdemStakes(blinds: unknown, start: unknown): HoldemStakes | null {
+	const pair = blinds === undefined ? [SMALL_BLIND, BIG_BLIND] : blinds;
+	const stack = start === undefined ? START_STACK : start;
+	if (!Array.isArray(pair) || pair.length !== 2 || typeof stack !== "number") {
+		return null;
+	}
+
+	const offered = HOLDEM_BLINDS.find(([small, big]) => small === pair[0] && big === pair[1]);
+	if (offered === undefined || !HOLDEM_STACKS.includes(stack)) {
+		return null;
+	}
+
+	return { small: offered[0], big: offered[1], start: stack };
+}
+
+/** A table's stakes. */
+export const stakesOf = (game: HoldemGame): HoldemStakes => game.stakes ?? DEFAULT_STAKES;
+
 // ------------------------------------------------------------------ table
 
-export function newHoldemGame(): HoldemGame {
+export function newHoldemGame(stakes: HoldemStakes = DEFAULT_STAKES): HoldemGame {
 	return {
+		stakes,
 		phase: "waiting",
 		seats: Array.from({ length: HOLDEM_SEATS }, () => null),
 		hands: 0,
@@ -168,19 +222,19 @@ export function newHoldemGame(): HoldemGame {
 		deck: [],
 		turn: null,
 		current: 0,
-		minRaise: BIG_BLIND,
+		minRaise: stakes.big,
 		gone: [],
 		result: null,
 	};
 }
 
-function player(name: string, token: string, bot: boolean): HoldemPlayer {
+function player(name: string, token: string, bot: boolean, chips: number): HoldemPlayer {
 	return {
 		name,
 		token,
 		away: null,
 		bot,
-		chips: START_STACK,
+		chips,
 		hole: [],
 		bet: 0,
 		total: 0,
@@ -200,7 +254,7 @@ export function seatHoldem(
 	token: string,
 	now: number,
 ): void {
-	game.seats[seat] = player(name, token, false);
+	game.seats[seat] = player(name, token, false, stakesOf(game).start);
 	game.seq += 1;
 	refreshWaiting(game, now);
 }
@@ -226,7 +280,7 @@ export function addHoldemBot(game: HoldemGame, by: number, now: number): Refusal
 	const name =
 		BOT_NAMES.map((bot) => `${bot}@${BOT_WORLD}`).find((bot) => !taken.has(bot)) ??
 		`Bot ${seat + 1}@${BOT_WORLD}`;
-	game.seats[seat] = player(name, `bot-${seat}-${game.seq}`, true);
+	game.seats[seat] = player(name, `bot-${seat}-${game.seq}`, true, stakesOf(game).start);
 	game.seq += 1;
 	refreshWaiting(game, now);
 	return null;
@@ -250,7 +304,7 @@ export function removeHoldemBot(
 	return null;
 }
 
-/** A player who has run out buys back in, to a full stack, once they are no longer in a hand. */
+/** A player who has run out buys back in, to the table's starting stack, once they are no longer in a hand. */
 export function rebuy(game: HoldemGame, seat: number, now: number): RefusalCode | null {
 	const sitting = game.seats[seat];
 	if (sitting === null || sitting === undefined) {
@@ -263,7 +317,7 @@ export function rebuy(game: HoldemGame, seat: number, now: number): RefusalCode 
 		return "not-waiting";
 	}
 
-	sitting.chips = START_STACK;
+	sitting.chips = stakesOf(game).start;
 	game.seq += 1;
 	refreshWaiting(game, now);
 	return null;
@@ -296,12 +350,13 @@ function refreshWaiting(game: HoldemGame, now: number): void {
 
 /** Deals the next hand, or waits for players if fewer than two can play. */
 function startHand(game: HoldemGame, now: number): void {
+	const stakes = stakesOf(game);
 	for (const sitting of game.seats) {
 		if (sitting === null) {
 			continue;
 		}
 		if (sitting.bot && sitting.chips === 0) {
-			sitting.chips = START_STACK;
+			sitting.chips = stakes.start;
 		}
 		sitting.hole = [];
 		sitting.bet = 0;
@@ -319,7 +374,7 @@ function startHand(game: HoldemGame, now: number): void {
 	game.result = null;
 	game.turn = null;
 	game.current = 0;
-	game.minRaise = BIG_BLIND;
+	game.minRaise = stakes.big;
 	game.seq += 1;
 
 	const players = dealable(game);
@@ -355,10 +410,10 @@ function startHand(game: HoldemGame, now: number): void {
 
 	game.phase = "betting";
 	game.street = "preflop";
-	post(game, game.small, SMALL_BLIND, "SB");
-	post(game, game.big, BIG_BLIND, "BB");
-	game.current = BIG_BLIND;
-	game.minRaise = BIG_BLIND;
+	post(game, game.small, stakes.small, "SB");
+	post(game, game.big, stakes.big, "BB");
+	game.current = stakes.big;
+	game.minRaise = stakes.big;
 	openRound(game, game.big, now);
 }
 
@@ -451,7 +506,7 @@ export function holdemMovesFor(game: HoldemGame, seat: number | null): HoldemMov
 	const sitting = game.seats[seat] as HoldemPlayer;
 	const owed = Math.max(0, game.current - sitting.bet);
 	const most = sitting.bet + sitting.chips;
-	const least = game.current === 0 ? BIG_BLIND : game.current + game.minRaise;
+	const least = game.current === 0 ? stakesOf(game).big : game.current + game.minRaise;
 	// Raising needs someone left to bet against, the betting open to them, and more than a call.
 	const against = contenders(game).some(
 		(other) => other !== seat && !(game.seats[other] as HoldemPlayer).allIn,
@@ -521,7 +576,7 @@ export function holdemAct(
 
 			const opening = game.current === 0;
 			const added = to - game.current;
-			const full = opening ? to >= BIG_BLIND : added >= game.minRaise;
+			const full = opening ? to >= stakesOf(game).big : added >= game.minRaise;
 			put(sitting, to - sitting.bet);
 			if (full) {
 				game.minRaise = opening ? to : added;
@@ -571,7 +626,7 @@ function closeRound(game: HoldemGame, now: number): void {
 		}
 	}
 	game.current = 0;
-	game.minRaise = BIG_BLIND;
+	game.minRaise = stakesOf(game).big;
 	game.turn = null;
 	game.seq += 1;
 
@@ -865,7 +920,8 @@ function botMove(game: HoldemGame, seat: number, now: number): void {
 		if (range === null) {
 			return null;
 		}
-		const size = Math.max(game.minRaise, Math.round((pot * share) / BIG_BLIND) * BIG_BLIND);
+		const big = stakesOf(game).big;
+		const size = Math.max(game.minRaise, Math.round((pot * share) / big) * big);
 		return Math.min(range.max, Math.max(range.min, game.current + size));
 	};
 
@@ -994,14 +1050,15 @@ function randomBelow(bound: number): number {
 export function holdemView(game: HoldemGame, seat: number | null, now: number) {
 	const mine = seat === null ? null : game.seats[seat];
 	const tabled = game.phase === "runout";
+	const stakes = stakesOf(game);
 	return {
 		phase: game.phase,
 		hands: game.hands,
 		seq: game.seq,
 		left: game.deadline === null ? null : Math.max(0, game.deadline - now),
 		host: holdemHost(game),
-		blinds: [SMALL_BLIND, BIG_BLIND],
-		start: START_STACK,
+		blinds: [stakes.small, stakes.big],
+		start: stakes.start,
 		button: game.button,
 		small: game.small,
 		big: game.big,

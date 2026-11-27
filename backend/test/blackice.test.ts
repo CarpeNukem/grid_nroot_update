@@ -75,6 +75,23 @@ const at = (game: IceGame, seat: number) => {
 };
 
 describe("starting a game", () => {
+	it("gives the first turn to a person, never a bot", () => {
+		for (let attempt = 0; attempt < 40; attempt += 1) {
+			const alone = seated(1);
+			addBot(alone, 0);
+			addBot(alone, 0);
+			addBot(alone, 0);
+			expect(startGame(alone, 0, NOW)).toBeNull();
+			expect(alone.turn).toBe(0);
+
+			const pair = seated(2);
+			addBot(pair, 0);
+			addBot(pair, 0);
+			expect(startGame(pair, 0, NOW)).toBeNull();
+			expect([0, 1]).toContain(pair.turn);
+		}
+	});
+
 	it("deals five cards each from six queens, six kings, six aces and two jokers, and names a table rank", () => {
 		const game = started(4);
 		const dealt = game.seats.flatMap((player) => player?.hand ?? []);

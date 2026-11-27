@@ -9,7 +9,18 @@ namespace GridNrootUpdate;
 public sealed class PluginConfig : IPluginConfiguration
 {
     public int Version { get; set; } = 1;
-    public string VenueAddress { get; set; } = "Light Raiden Mist W2 P6";
+
+    /// <summary>Where The Grid is: the large house at Mist, Ward 29, Plot 2, on Raiden (Light), since 2026-11-27.</summary>
+    public const string CurrentVenueAddress = "Light Raiden Mist W29 P2";
+
+    /// <summary>
+    /// Where the venue used to be. The address is not editable anywhere in the
+    /// deck, and a saved setting wins over the default, so an install that saved
+    /// one of these would keep navigating to, and recognising, the old house.
+    /// </summary>
+    private static readonly string[] FormerVenueAddresses = ["Light Raiden Mist W2 P6"];
+
+    public string VenueAddress { get; set; } = CurrentVenueAddress;
     public string DiscordUrl { get; set; } = "https://discord.gg/kxZMbP3C5B";
     public bool AutoOpenOnVenueAddress { get; set; } = true;
     public bool NetworkAlertBadge { get; set; } = true;
@@ -183,6 +194,11 @@ public sealed class PluginConfig : IPluginConfiguration
 
         if (string.IsNullOrWhiteSpace(Mappings[0].PenumbraFolderPath))
             Mappings[0].PenumbraFolderPath = "TheGrid";
+
+        // The venue moved house. An install that saved an old address moves with it.
+        if (string.IsNullOrWhiteSpace(VenueAddress) ||
+            FormerVenueAddresses.Any(former => string.Equals(former, VenueAddress.Trim(), StringComparison.OrdinalIgnoreCase)))
+            VenueAddress = CurrentVenueAddress;
 
         // A stored relay address from an older build wins over the default,
         // which means an install that once pointed at a developer's machine

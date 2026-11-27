@@ -33,6 +33,7 @@ import {
 	holdemAway,
 	holdemBack,
 	holdemPlaying,
+	holdemStakes,
 	holdemTimeout,
 	holdemView,
 	isHoldemMove,
@@ -41,6 +42,7 @@ import {
 	removeHoldemBot,
 	removeHoldemPlayer,
 	seatHoldem,
+	stakesOf,
 } from "./holdem.js";
 import type { CardGame, RefusalCode } from "./protocol.js";
 
@@ -69,7 +71,10 @@ export interface GameState {
 export interface CardRules {
 	/** The messages, besides the hall's own, that this game's players send. */
 	readonly messages: readonly string[];
-	create(): GameState;
+	/** A new table, from the `open` message that asks for it: its options, or a refusal when they are not ones the game offers. */
+	create(options: Record<string, unknown>): GameState | RefusalCode;
+	/** What the lobby lists about a table beyond its seats, such as Hold'em's stakes. */
+	listing?(state: GameState): Record<string, unknown>;
 	seat(state: GameState, seat: number, name: string, token: string, now: number): void;
 	/** A player gone for good: they left, or did not come back in time. */
 	remove(state: GameState, seat: number, now: number): void;
@@ -177,7 +182,14 @@ const blackice: CardRules = {
 
 const holdem: CardRules = {
 	messages: ["act", "rebuy", "addbot", "removebot"],
-	create: () => newHoldemGame(),
+	create: (options) => {
+		const stakes = holdemStakes(options.blinds, options.start);
+		return stakes === null ? "bad-stakes" : newHoldemGame(stakes);
+	},
+	listing: (state) => {
+		const stakes = stakesOf(state as HoldemGame);
+		return { blinds: [stakes.small, stakes.big], start: stakes.start };
+	},
 	seat: (state, seat, name, token, now) => seatHoldem(state as HoldemGame, seat, name, token, now),
 	remove: (state, seat, now) => removeHoldemPlayer(state as HoldemGame, seat, now),
 	away: (state, now) => holdemAway(state as HoldemGame, now),

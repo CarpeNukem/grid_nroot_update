@@ -52,6 +52,13 @@ export const MAX_TABLES = 64;
 /** Public tables listed in the lobby. */
 export const MAX_LISTED = 20;
 
+/**
+ * Decks watching one table at once. A watcher is sent the table after every
+ * change, as a seat is, but with no hidden card in it: what anyone at the
+ * table can see, and no more.
+ */
+export const MAX_WATCHERS = 8;
+
 /** The longest frame the hall reads. A deck's longest is a bet, well under this. */
 export const MAX_MESSAGE_CHARS = 512;
 
@@ -92,7 +99,9 @@ export type RefusalCode =
 	| "bad-play"
 	| "cannot-call"
 	| "no-bot"
-	| "bad-raise";
+	| "bad-raise"
+	| "no-room"
+	| "bad-stakes";
 
 export const REFUSALS: Readonly<Record<RefusalCode, string>> = {
 	"bad-message": "That message could not be read.",
@@ -115,4 +124,6 @@ export const REFUSALS: Readonly<Record<RefusalCode, string>> = {
 	"cannot-call": "There is nothing to call.",
 	"no-bot": "There is no bot in that seat.",
 	"bad-raise": "Raise to at least the least raise, and no more than you have.",
+	"no-room": "That table has as many watchers as it can take.",
+	"bad-stakes": "Pick blinds and starting chips from the ones a table offers.",
 };

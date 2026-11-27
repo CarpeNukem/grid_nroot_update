@@ -204,8 +204,11 @@ public sealed class Plugin : IDalamudPlugin
         remoteAssets.LoadExisting();
         broadcastAlert = new BroadcastAlert(Config, OpenMainUi);
         catalogService.Updated += broadcastAlert.OnCatalogUpdated;
+        catalogService.Updated += OnCatalogUpdated;
 
         catalogService.Start();
+        // The cached catalogue is loaded by now: a move the relay announced last time holds before it is reached again.
+        ApplyVenueAddress(catalogService.Snapshot);
 
         foreach (var commandName in CommandNames)
         {
@@ -282,6 +285,7 @@ public sealed class Plugin : IDalamudPlugin
             PluginService.Commands.RemoveHandler(commandName);
         github.Dispose();
         catalogService.Updated -= broadcastAlert.OnCatalogUpdated;
+        catalogService.Updated -= OnCatalogUpdated;
         catalogService.Dispose();
         remoteAssets.Dispose();
         zoneTickCts?.Dispose();
@@ -777,18 +781,63 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    /// <summary>The relay's page whose body is the venue's address; see backend/src/data/venue.ts.</summary>
+    private const string VenueAddressPage = "address";
+
+    /// <summary>A fresh catalogue arrives on the refresh task; the address it carries is taken on the game's own thread.</summary>
+    private void OnCatalogUpdated(CatalogSnapshot snapshot)
+        => PluginService.Framework.RunOnTick(() => ApplyVenueAddress(snapshot), cancellationToken: lifetime.Token);
+
+    /// <summary>
+    /// Takes the venue's address from the relay's published address page, so the
+    /// venue can move house without a deck release: NAVIGATE, the venue check and
+    /// the venue's activators all follow it. It is kept in the config, so a deck
+    /// that cannot reach the relay later still knows where the venue went. An
+    /// address the deck cannot read in full, world, district, ward and plot, is
+    /// ignored, and the address the deck already has stands.
+    /// </summary>
+    private void ApplyVenueAddress(CatalogSnapshot snapshot)
+    {
+        if (disposed || !snapshot.IsLoaded)
+            return;
+
+        var page = snapshot.Pages.FirstOrDefault(
+            entry => string.Equals(entry.Id, VenueAddressPage, StringComparison.OrdinalIgnoreCase));
+        if (page is null)
+            return;
+
+        var address = Regex.Replace(page.Body.Trim(), @"\s+", " ");
+        if (string.Equals(address, Config.VenueAddress, StringComparison.Ordinal))
+            return;
+
+        if (!TryParseVenueAddress(address, out var parts) ||
+            parts.WorldName is null ||
+            parts.DistrictName is null ||
+            parts.Ward is not (>= 1 and <= 30) ||
+            parts.Plot is not (>= 1 and <= 60))
+        {
+            PluginService.Log.Warning("The relay's venue address '{Address}' is not one the deck can read; keeping {Current}.", address, Config.VenueAddress);
+            return;
+        }
+
+        PluginService.Log.Information("The relay moved the venue from {Previous} to {Address}.", Config.VenueAddress, address);
+        Config.VenueAddress = address;
+        Config.Save();
+        // Wherever the player is, it is judged again against the new address.
+        lastVenuePresence = VenuePresence.Unknown;
+    }
+
     private VenuePresence GetVenuePresence()
     {
         if (!PluginService.ClientState.IsLoggedIn ||
             !TryParseVenueAddress(Config.VenueAddress, out var expected))
             return VenuePresence.Unknown;
 
-        // Keep venue telemetry aligned with the existing arrival/update workflow.
-        // Indoor housing data can be incomplete, while a recognized venue mannequin
-        // in the object table is direct evidence that the player reached The Grid.
-        if (IsTargetNpcPresent(Config.GetPrimaryMapping().NpcName))
-            return VenuePresence.Confirmed;
-
+        // The address decides whenever the game can say where this is: the venue's
+        // activators, its guest counts and its furniture all hang on this answer, and
+        // a mannequin in someone else's house must not be able to overrule it. Indoor
+        // housing data can be incomplete, so the venue mannequin still counts, but only
+        // as evidence for a place whose address could not be read in full.
         var currentMaybe = TryGetCurrentHousingAddress();
         if (currentMaybe is null)
         {
@@ -798,7 +847,9 @@ public sealed class Plugin : IDalamudPlugin
                 !string.Equals(expected.DistrictName, currentDistrict, StringComparison.OrdinalIgnoreCase))
                 return VenuePresence.Elsewhere;
 
-            return VenuePresence.Unknown;
+            return IsTargetNpcPresent(Config.GetPrimaryMapping().NpcName)
+                ? VenuePresence.Confirmed
+                : VenuePresence.Unknown;
         }
 
         var current = currentMaybe.Value;
@@ -815,7 +866,7 @@ public sealed class Plugin : IDalamudPlugin
                               (string.IsNullOrWhiteSpace(expected.DistrictName) || !string.IsNullOrWhiteSpace(current.DistrictName)) &&
                               (expected.Ward is null || current.Ward is not null) &&
                               (expected.Plot is null || current.Plot is not null);
-        return addressComplete
+        return addressComplete || IsTargetNpcPresent(Config.GetPrimaryMapping().NpcName)
             ? VenuePresence.Confirmed
             : VenuePresence.Unknown;
     }
@@ -2744,13 +2795,22 @@ public sealed class Plugin : IDalamudPlugin
     /// that took the only mannequin nearby. That fallback was removed because
     /// it also assigned to other people's furniture, so the title has to be
     /// read for the venue's own setup to work.
+    ///
+    /// People and retainers are never it. Their Free Company tag sits in the same
+    /// slot as a mannequin's title, and the title match is loose, because either
+    /// side may hold part of the other: a guest tagged «MIEL» would otherwise be
+    /// taken for Chromiel. An object's own name has to be the whole name.
     /// </summary>
     private static bool IsTargetNpc(IGameObject gameObject, string npcName)
     {
-        if (!IsAssignableObject(gameObject))
+        if (!IsAssignableObject(gameObject) ||
+            gameObject.ObjectKind is ObjectKind.Pc or ObjectKind.Retainer)
             return false;
 
-        if (NamesMatch(gameObject.Name.TextValue, npcName))
+        if (string.Equals(
+                NormalizeObjectName(gameObject.Name.TextValue),
+                NormalizeObjectName(npcName),
+                StringComparison.OrdinalIgnoreCase))
             return true;
 
         return NamesMatch(TryGetObjectTag(gameObject), npcName);
@@ -3019,7 +3079,8 @@ public sealed class Plugin : IDalamudPlugin
                     ward = currentWard + 1;
             }
 
-            if (plot is null)
+            // An apartment has no plot, and must not borrow one and pass for a house.
+            if (plot is null && !(houseId.Id != 0 && houseId.IsApartment))
             {
                 var currentPlot = housing->GetCurrentPlot();
                 if (currentPlot >= 0)

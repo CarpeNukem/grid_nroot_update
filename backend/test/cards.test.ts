@@ -4,6 +4,7 @@ import { CUT_CARDS, START_CHIPS } from "../src/cards/blackjack.js";
 import {
 	HALL_NAME,
 	MAX_MESSAGE_CHARS,
+	MAX_WATCHERS,
 	MESSAGES_PER_WINDOW,
 	PROTOCOL_VERSION,
 	RECONNECT_GRACE_MS,
@@ -307,6 +308,7 @@ describe("playing at a shared table", () => {
 				game: "blackjack",
 				players: ["Host Player@Phoenix", null, null, null, null],
 				playing: false,
+				watchers: 0,
 			},
 		]);
 	});
@@ -732,6 +734,7 @@ describe("BLACK ICE at the card hall", () => {
 				game: "blackice",
 				players: ["Host Player@Phoenix", null, null, null],
 				playing: false,
+				watchers: 0,
 			},
 		]);
 	});
@@ -861,8 +864,200 @@ describe("Hold'em at the card hall", () => {
 				game: "holdem",
 				players: ["Host Player@Phoenix", null, null, null, null, null],
 				playing: false,
+				watchers: 0,
+				blinds: [5, 10],
+				start: 1000,
 			},
 		]);
+	});
+
+	it("opens a table at the stakes asked for, lists them, and refuses ones it does not offer", async () => {
+		const { deck: browser } = await connect("Look Around@Omega");
+		const { deck: host } = await connect("Host Player@Phoenix");
+		host.send({ t: "open", game: "holdem", blinds: [10, 20], start: 30000 });
+		expect(await host.next("error")).toMatchObject({ code: "bad-stakes" });
+		host.send({ t: "open", game: "holdem", blinds: [25, 45], start: 5000 });
+		expect(await host.next("error")).toMatchObject({ code: "bad-stakes" });
+		expect(await storedTables()).toBe(0);
+
+		host.send({ t: "open", game: "holdem", blinds: [25, 50], start: 5000 });
+		const view = await host.next("table");
+		expect(view).toMatchObject({ blinds: [25, 50], start: 5000 });
+		expect(holdemSeats(view)[0]).toMatchObject({ chips: 5000 });
+		const lobby = await browser.next("lobby");
+		expect(lobby.tables).toMatchObject([
+			{ code: view.code, game: "holdem", blinds: [25, 50], start: 5000 },
+		]);
+
+		// Stakes are Hold'em's alone: another game's table takes no notice of them.
+		const { deck: other } = await connect("Other Host@Phoenix");
+		other.send({ t: "open", private: true, game: "blackice", blinds: [1, 2], start: 7 });
+		expect(await other.next("table")).toMatchObject({ game: "blackice", phase: "waiting" });
+	});
+});
+
+describe("watching a card table", () => {
+	/** Card names in a view, of any game: ranks and suits, jokers included. */
+	const cardsIn = (view: Message) => JSON.stringify(view).match(/"[2-9TJQKAZ][SHDCRB]"/g) ?? [];
+
+	/** A host at a Hold'em table with one bot, the first hand dealt, the host holding two cards. */
+	async function dealtHoldem(isPrivate = true) {
+		const { deck: host } = await connect("Host Player@Phoenix");
+		host.send({ t: "open", private: isPrivate, game: "holdem" });
+		const opened = await host.next("table");
+		host.send({ t: "addbot" });
+		await host.next("table");
+		// The host on the button acts first, on a person's long clock, so no bot moves while a test looks on.
+		await rewrite((table) => {
+			table.button = 1;
+			table.deadline = Date.now() - 1;
+		});
+		expect(await runDurableObjectAlarm(hall())).toBe(true);
+		const dealt = await host.next("table");
+		expect(dealt.hole).toHaveLength(2);
+		expect(dealt.turn).toBe(0);
+		return { host, code: opened.code as string, dealt };
+	}
+
+	/** The next lobby a deck is sent that lists a table with this many watching. */
+	async function lobbyWatched(deck: Deck, code: string, watchers: number): Promise<Message> {
+		for (;;) {
+			const lobby = await deck.next("lobby");
+			const tables = lobby.tables as { code: string; watchers: number }[];
+			if (tables.some((table) => table.code === code && table.watchers === watchers)) {
+				return lobby;
+			}
+		}
+	}
+
+	it("shows a watcher the table by its code, private or not, with nobody's cards in it", async () => {
+		const { host, code } = await dealtHoldem();
+		const { deck: watcher } = await connect("Rail Bird@Omega");
+		watcher.send({ t: "watch", code: code.toLowerCase() });
+		const view = await watcher.next("table");
+		expect(view).toMatchObject({
+			code,
+			game: "holdem",
+			seat: null,
+			watchers: 1,
+			hole: [],
+			moves: null,
+		});
+		expect(view.phase).toBe("betting");
+		// Preflop the board is empty, so nothing in the view names a card.
+		expect(cardsIn(view)).toEqual([]);
+		expect(JSON.stringify(view)).not.toContain("token");
+		expect(JSON.stringify(view)).not.toContain("deck");
+
+		// Everyone at the table sees one more watching.
+		expect(await host.next("table")).toMatchObject({ seat: 0, watchers: 1 });
+	});
+
+	it("sends a watcher every change, but never the hand of anyone at a BLACK ICE table", async () => {
+		const { deck: host } = await connect("Host Player@Phoenix");
+		host.send({ t: "open", private: false, game: "blackice" });
+		const { code } = await host.next("table");
+		host.send({ t: "addbot" });
+		await host.next("table");
+
+		const { deck: watcher } = await connect("Rail Bird@Omega");
+		watcher.send({ t: "watch", code });
+		expect(await watcher.next("table")).toMatchObject({ phase: "waiting", seat: null });
+		await host.next("table");
+
+		host.send({ t: "start" });
+		const dealt = await host.next("table");
+		expect(dealt.hand).toHaveLength(5);
+		const watched = await watcher.next("table");
+		expect(watched).toMatchObject({
+			phase: "playing",
+			seat: null,
+			hand: [],
+			moves: [],
+			seq: dealt.seq,
+		});
+		expect(cardsIn(watched)).toEqual([]);
+		expect(JSON.stringify(watched)).not.toContain("deadly");
+	});
+
+	it("refuses a watcher's moves, and lets them take a seat that is free", async () => {
+		const { deck: host } = await connect("Host Player@Phoenix");
+		host.send({ t: "open", private: true, game: "blackice" });
+		const { code } = await host.next("table");
+		const { deck: watcher } = await connect("Rail Bird@Omega");
+		watcher.send({ t: "watch", code });
+		await watcher.next("table");
+		await host.next("table");
+
+		watcher.send({ t: "addbot" });
+		expect(await watcher.next("error")).toMatchObject({ code: "not-seated" });
+		watcher.send({ t: "open", private: true, game: "blackice" });
+		expect(await watcher.next("table")).toMatchObject({ seat: 0, watchers: 0 });
+		expect(await host.next("table")).toMatchObject({ seat: 0, watchers: 0 });
+		watcher.send({ t: "leave" });
+		await watcher.next("lobby");
+
+		watcher.send({ t: "watch", code });
+		await watcher.next("table");
+		await host.next("table");
+		watcher.send({ t: "join", code });
+		const sat = await watcher.next("table");
+		expect(sat).toMatchObject({ seat: 1, watchers: 0 });
+		expect((sat.seats as ({ name: string } | null)[])[1]?.name).toBe("Rail Bird@Omega");
+		watcher.send({ t: "watch", code });
+		expect(await watcher.next("error")).toMatchObject({ code: "already-seated" });
+	});
+
+	it("counts a watcher off when they leave or drop, and lists the count in the lobby", async () => {
+		const { deck: browser } = await connect("Look Around@Omega");
+		const { host, code } = await dealtHoldem(false);
+		await lobbyWatched(browser, code, 0);
+
+		const { deck: watcher } = await connect("Rail Bird@Omega");
+		watcher.send({ t: "watch", code });
+		await watcher.next("table");
+		expect(await host.next("table")).toMatchObject({ watchers: 1 });
+		const listed = await lobbyWatched(browser, code, 1);
+		expect(listed.tables).toMatchObject([{ code, game: "holdem", playing: true, watchers: 1 }]);
+
+		watcher.send({ t: "leave" });
+		expect(await watcher.next("lobby")).toMatchObject({ tables: [{ code, watchers: 0 }] });
+		expect(await host.next("table")).toMatchObject({ watchers: 0 });
+
+		const { deck: dropper } = await connect("Quick Look@Omega");
+		dropper.send({ t: "watch", code });
+		await dropper.next("table");
+		expect(await host.next("table")).toMatchObject({ watchers: 1 });
+		dropper.ws.close(1000, "Gone.");
+		expect(await host.next("table")).toMatchObject({ watchers: 0 });
+	});
+
+	it("refuses an unknown code and a watcher too many, and takes watchers away when the table is cleared", async () => {
+		const { deck: host } = await connect("Host Player@Phoenix");
+		host.send({ t: "open", private: true, game: "blackjack" });
+		const { code } = await host.next("table");
+
+		const { deck: lost } = await connect("Lost Bird@Omega");
+		lost.send({ t: "watch", code: "ZZZZ" });
+		expect(await lost.next("error")).toMatchObject({ code: "no-table" });
+		host.send({ t: "watch", code });
+		expect(await host.next("error")).toMatchObject({ code: "already-seated" });
+
+		const watchers: Deck[] = [];
+		for (let index = 0; index < MAX_WATCHERS; index += 1) {
+			const { deck } = await connect(`Rail Bird${String.fromCharCode(65 + index)}@Omega`);
+			deck.send({ t: "watch", code });
+			expect(await deck.next("table")).toMatchObject({ watchers: index + 1 });
+			watchers.push(deck);
+		}
+		lost.send({ t: "watch", code });
+		expect(await lost.next("error")).toMatchObject({ code: "no-room" });
+
+		host.send({ t: "leave" });
+		for (const deck of watchers) {
+			expect(await deck.next("closed")).toMatchObject({ code, why: "empty" });
+		}
+		expect(await storedTables()).toBe(0);
 	});
 });
 

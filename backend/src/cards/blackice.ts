@@ -232,7 +232,10 @@ export function startGame(game: IceGame, by: number, now: number): RefusalCode |
 	game.round = 0;
 	game.winner = null;
 	game.reveal = null;
-	game.starter = seated[randomBelow(seated.length)] as number;
+	// A person leads the first round, never a bot: the table starts on someone it can watch think.
+	const people = seated.filter((seat) => game.seats[seat]?.bot !== true);
+	const leaders = people.length > 0 ? people : seated;
+	game.starter = leaders[randomBelow(leaders.length)] as number;
 	dealRound(game, now);
 	return null;
 }

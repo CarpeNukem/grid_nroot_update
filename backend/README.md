@@ -327,22 +327,36 @@ moves, runs the clocks and sends each seat its view.
 
 | Deck sends | Hall does |
 | --- | --- |
-| `open` `{private, game?}` | Opens a table with a four-letter code and seats the sender. `game` is `"blackjack"` (the default), `"holdem"` or `"blackice"`, for the table's whole life. Public tables are listed in the lobby. |
-| `join` `{code}` | Seats the sender in the first empty seat: five at blackjack, six at Hold'em, four at BLACK ICE. During a hand or a game they sit out until the next one. |
+| `open` `{private, game?, blinds?, start?}` | Opens a table with a four-letter code and seats the sender. `game` is `"blackjack"` (the default), `"holdem"` or `"blackice"`, for the table's whole life. A Hold'em table takes its stakes too: `blinds` as `[small, big]`, one of `[5,10]`, `[10,20]`, `[25,50]` and `[50,100]`, and `start` the stack, one of 1000, 2500, 5000 and 10000; anything else is refused (`bad-stakes`), and either left out is 5/10 or 1000. The other games take no notice of them. Public tables are listed in the lobby, a Hold'em one with its `blinds` and `start`. |
+| `join` `{code}` | Seats the sender in the first empty seat: five at blackjack, six at Hold'em, four at BLACK ICE. During a hand or a game they sit out until the next one. A watcher may sit down, at the table watched or another. |
+| `watch` `{code}` | Watches a table by its code, public or private, between games or in one, lower case and spaces allowed. The sender's seat is null, and its view holds no hidden card at all: no hand, no hole cards, no moves, only what everyone at the table can see. Asking for another table moves the watcher there. Refused when seated (`already-seated`), for an unknown code (`no-table`), and past eight watchers (`no-room`). |
 | `bet` `{amount}` | Places, changes or (with 0) takes back the sender's stake for the next round: 10 to 500, in tens, no more than their chips. Deals at once when everyone seated has bet; otherwise the others have 15 seconds from the first bet. |
 | `act` `{move, seq}` | `hit`, `stand`, `double` or `split`, on the hand on turn, only from its player and only against the table's current `seq`, so a double click is one move (`out-of-order`). |
 | `topup` | Back to 1,000 chips, only once the player cannot cover the smallest bet (`has-chips`). |
-| `leave` | Gives up the seat, and the stake on it. Play moves on without them. |
-| `sync` | Sends the sender's table again. |
+| `leave` | Gives up the seat, and the stake on it. Play moves on without them. A watcher just stops watching, and is sent the lobby. |
+| `sync` | Sends the sender's table again, a watcher's included. |
 
 `bet`, `act` and `topup` are blackjack's; Hold'em's and BLACK ICE's are below. A message
 meant for another game's table is refused (`unknown-message`).
 
 The hall sends `welcome` (protocol version 1, seat token, blackjack's limits,
 the lobby), `lobby` (public tables with a person there: code, game, the seats'
-names, bots included, whether a hand is in play), `table` after every change,
-`closed` `{code, why}`, and `error` with a code. Every `table` names its game,
-and the rest of it is that game's view.
+names, bots included, whether a hand is in play, how many watch), `table` after
+every change, `closed` `{code, why}`, and `error` with a code. Every `table`
+names its game, its seat (null for a watcher) and how many watch it
+(`watchers`), and the rest of it is that game's view.
+
+- **Watching.** Up to eight decks watch a table at once. Each is sent the
+  table after every change, as a seat is, through the same per-seat view with
+  no seat, so a game shows a watcher nothing it would not show everyone at the
+  table: at Hold'em the board and cards turned over at a showdown, at BLACK ICE
+  how many cards each player holds and a call's cards once they turn over, at
+  blackjack the cards face up. Someone starting or stopping watching, or a
+  watcher's socket closing, sends everyone at the table the new count, and the
+  lobby when the table is listed. A watcher holds no seat, so a dropped
+  connection has nothing to keep: the deck asks to watch again on its new one.
+  When a table is cleared away, its watchers are sent `closed` with everyone
+  else. Watching added messages and fields only, so the protocol is still 1.
 
 #### Blackjack
 
@@ -384,7 +398,7 @@ player on turn has any, they must call.
 | --- | --- |
 | `addbot` | Fills the first empty seat with a bot (`Glitch@Ice`, `Daemon@Ice`, ...). Only the host, the person in the lowest seat, and only between games (`not-host`, `not-waiting`). |
 | `removebot` `{seat}` | Takes that seat's bot away, on the same terms (`no-bot`). |
-| `start` | Starts a game, or the next one, with everyone seated: fresh ICE, a black slot hidden in each. The host only, with at least two seated, bots counting (`too-few`). |
+| `start` | Starts a game, or the next one, with everyone seated: fresh ICE, a black slot hidden in each, and a person picked at random to lead the first round, never a bot. The host only, with at least two seated, bots counting (`too-few`). |
 | `play` `{cards, seq}` | Lays the cards at those places in the sender's hand, one to three of them, on their turn (`bad-play`, `out-of-order`). |
 | `call` `{seq}` | Calls LIAR on the last cards laid, on the sender's turn and not on their own (`cannot-call`). |
 
@@ -413,8 +427,10 @@ player on turn has any, they must call.
 
 #### Hold'em
 
-Texas Hold'em, no limit, for two to six, for play chips: everyone sits down
-with 1,000, and the blinds are 5 and 10, fixed. Once two players with chips
+Texas Hold'em, no limit, for two to six, for play chips. Whoever opens the
+table picks its stakes, for the table's whole life: blinds of 5/10, 10/20,
+25/50 or 50/100, which never rise, and 1,000, 2,500, 5,000 or 10,000 chips to
+sit down and buy back in with; 5/10 and 1,000 when they pick none. Once two players with chips
 are seated, a hand is dealt three seconds later, and the next one six seconds
 after each showdown, for as long as two can play. Two cards each face down,
 then the flop, turn and river face up, with a round of betting before each and
@@ -428,7 +444,7 @@ can win only what they matched, the rest going into side pots.
 | Deck sends | Hall does |
 | --- | --- |
 | `act` `{move, to?, seq}` | `fold`, `check`, `call`, or `raise` with `to`, what the sender's bet on this street comes to: at least the least raise, at most everything, or all in for less (`bad-raise`, `cannot`, `out-of-order`). On the sender's turn only. |
-| `rebuy` | Back to 1,000 chips, only once the sender has run out and is not still in a hand (`has-chips`). |
+| `rebuy` | Back to the table's starting stack, only once the sender has run out and is not still in a hand (`has-chips`). |
 | `addbot` | Fills the first empty seat with a bot (`Chrome@Grid`, `Vex@Grid`, ...), which plays from the next hand. The host only, the person in the lowest seat, at any time. |
 | `removebot` `{seat}` | Sends that seat's bot away; in the middle of a hand it folds first (`no-bot`). |
 
@@ -535,6 +551,17 @@ and diagnostic context go to the structured log, never the response.
   silently dropped on save.
 - **Future-dated news stays hidden** until its `publishedAt` passes, so an
   announcement can be written and published ahead of the night it belongs to.
+- **The `address` page moves the venue.** Published, its body is the venue's
+  address for every deck and for the site: NAVIGATE, the venue check that
+  decides where the venue's activators, guest counts and venue pack apply, and
+  the address shown. It has to be one line the deck can read in full, an
+  optional data centre, a world, a housing district, a ward and a plot, as in
+  `Light Raiden Mist W29 P2` (`Ward 29 Plot 2` works too); anything else is
+  refused when the page is saved (`src/data/venue.ts`). A deck keeps the last
+  address it was given, so it still knows the way when it cannot reach the
+  relay; with no page, the deck and the site use the address built into them.
+  Write it in the deck's own short form: NAVIGATE hands it to Lifestream as
+  written.
 
 ## Announcements
 

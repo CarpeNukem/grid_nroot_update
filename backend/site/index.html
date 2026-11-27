@@ -903,7 +903,8 @@
 				 * which is the point of the page: these can change without a release.
 				 */
 				var DECK = {
-					address: "Light Raiden Mist W2 P6",
+					// The fallback only: a published `address` page moves the venue without a release.
+					address: "Light Raiden Mist W29 P2",
 					discord: "https://discord.gg/kxZMbP3C5B",
 					relays: [
 						{ name: "Lightless", id: "LLS-6AAKEJBAPRB0" },
@@ -1431,8 +1432,9 @@
 				}
 
 				function viewAddress(into) {
-					into.appendChild(el("p", "body", DECK.address));
-					into.appendChild(termLine("Address", DECK.address));
+					var address = venueAddress();
+					into.appendChild(el("p", "body", address));
+					into.appendChild(termLine("Address", address));
 					// The deck's other control here is a Lifestream teleport, which
 					// only means anything inside the game, so it is not offered.
 					into.appendChild(
@@ -1448,8 +1450,19 @@
 					})[0];
 				}
 
+				/**
+				 * Where the venue is: the published `address` page when there is one,
+				 * which the relay only takes as a full address (world, district, ward and
+				 * plot; see src/data/venue.ts), else the address built in above.
+				 */
+				function venueAddress() {
+					var page = findPage("address");
+					var published = page ? String(page.body || "").replace(/\s+/g, " ").trim() : "";
+					return published || DECK.address;
+				}
+
 				function addressTelemetry() {
-					var segments = DECK.address.split(/\s+/).filter(Boolean);
+					var segments = venueAddress().split(/\s+/).filter(Boolean);
 					return segments.slice(Math.max(0, segments.length - 3)).join(" ").toUpperCase();
 				}
 

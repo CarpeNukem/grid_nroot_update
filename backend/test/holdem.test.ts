@@ -7,13 +7,16 @@ import {
 	DEAL_DELAY_MS,
 	equity,
 	FOLDOUT_MS,
+	HOLDEM_BLINDS,
 	HOLDEM_SEATS,
+	HOLDEM_STACKS,
 	HOLDEM_TURN_MS,
 	type HoldemGame,
 	type HoldemMove,
 	holdemAct,
 	holdemAway,
 	holdemMovesFor,
+	holdemStakes,
 	holdemTimeout,
 	holdemView,
 	newHoldemGame,
@@ -160,6 +163,87 @@ describe("poker hands", () => {
 		expect(threePair.five).toEqual(["KS", "KH", "9D", "9C", "AC"]);
 		expect(rank("7S", "7H", "7D", "5C", "5D", "5S", "2C").name).toBe("SEVENS FULL OF FIVES");
 		expect(rank("6S", "6H", "2D", "9C", "4D", "JS", "KH").name).toBe("PAIR OF SIXES");
+	});
+});
+
+describe("a table's stakes", () => {
+	it("takes only the blinds and stacks a table offers, and 5/10 with 1000 chips when none are asked for", () => {
+		expect(holdemStakes(undefined, undefined)).toEqual({ small: 5, big: 10, start: 1000 });
+		expect(holdemStakes([25, 50], 5000)).toEqual({ small: 25, big: 50, start: 5000 });
+		expect(holdemStakes([50, 100], undefined)).toEqual({ small: 50, big: 100, start: 1000 });
+		expect(holdemStakes(undefined, 10000)).toEqual({ small: 5, big: 10, start: 10000 });
+		for (const [small, big] of HOLDEM_BLINDS) {
+			expect(big).toBe(small * 2);
+		}
+		expect(HOLDEM_STACKS.every((stack) => stack >= 10 * (HOLDEM_BLINDS.at(-1)?.[1] ?? 0))).toBe(
+			true,
+		);
+
+		expect(holdemStakes([25, 40], 5000)).toBeNull();
+		expect(holdemStakes([25, 50], 3000)).toBeNull();
+		expect(holdemStakes([25, 50], "5000")).toBeNull();
+		expect(holdemStakes([5, 10, 20], 1000)).toBeNull();
+		expect(holdemStakes(10, 1000)).toBeNull();
+		expect(holdemStakes(["5", "10"], 1000)).toBeNull();
+	});
+
+	it("deals, raises, buys back in and shows the table at the stakes it was opened with", () => {
+		const stakes = { small: 25, big: 50, start: 5000 };
+		const game = newHoldemGame(stakes);
+		seatHoldem(game, 0, "Player A@Phoenix", "a", NOW);
+		seatHoldem(game, 1, "Player B@Phoenix", "b", NOW);
+		expect(addHoldemBot(game, 0, NOW)).toBeNull();
+		expect(game.seats.map((sitting) => sitting?.chips ?? null)).toEqual([
+			5000,
+			5000,
+			5000,
+			null,
+			null,
+			null,
+		]);
+
+		deal(game, 0);
+		expect(game).toMatchObject({ button: 0, small: 1, big: 2, current: 50, minRaise: 50 });
+		expect(at(game, 1)).toMatchObject({ bet: 25, chips: 4975, last: "SB" });
+		expect(at(game, 2)).toMatchObject({ bet: 50, chips: 4950, last: "BB" });
+		expect(holdemMovesFor(game, 0)).toEqual({
+			fold: true,
+			check: false,
+			call: 50,
+			raise: { min: 100, max: 5000 },
+		});
+		expect(holdemAct(game, 0, "raise", 90, NOW)).toBe("bad-raise");
+		go(game, 0, "raise", 150);
+		expect(holdemMovesFor(game, 1)?.raise).toEqual({ min: 250, max: 5000 });
+		go(game, 1, "call");
+		go(game, 2, "call");
+
+		// After the flop, the least bet is a big blind of this table's.
+		expect(game.street).toBe("flop");
+		expect(holdemMovesFor(game, game.turn as number)?.raise?.min).toBe(50);
+
+		const view = holdemView(game, 0, NOW);
+		expect(view).toMatchObject({ blinds: [25, 50], start: 5000 });
+
+		// Run out, a player buys back in to this table's stack.
+		const broke = newHoldemGame(stakes);
+		seatHoldem(broke, 0, "Player A@Phoenix", "a", NOW);
+		at(broke, 0).chips = 0;
+		expect(rebuy(broke, 0, NOW)).toBeNull();
+		expect(at(broke, 0).chips).toBe(5000);
+	});
+
+	it("plays a table stored before tables chose their stakes at 5/10 with 1000 chips", () => {
+		const game = table([START_STACK, START_STACK]);
+		delete (game as { stakes?: unknown }).stakes;
+		deal(game, 0);
+		expect(at(game, 0)).toMatchObject({ bet: SMALL_BLIND });
+		expect(at(game, 1)).toMatchObject({ bet: BIG_BLIND });
+		expect(holdemView(game, 0, NOW)).toMatchObject({ blinds: [5, 10], start: 1000 });
+		(game.seats[0] as { chips: number }).chips = 0;
+		game.phase = "waiting";
+		expect(rebuy(game, 0, NOW)).toBeNull();
+		expect(at(game, 0).chips).toBe(START_STACK);
 	});
 });
 
