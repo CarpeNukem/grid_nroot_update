@@ -214,7 +214,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             PluginService.Commands.AddHandler(commandName, new CommandInfo(OnCommand)
             {
-                HelpMessage = "Open The Grid Cyberdeck. Aliases: /thegrid, /cyberdeck. Subcommands: update, repair, config, vault, pool, cards, blackjack, holdem, blackice.",
+                HelpMessage = "Open The Grid Cyberdeck. Aliases: /thegrid, /cyberdeck. Subcommands: update, repair, config.",
                 ShowInHelp = commandName == PrimaryCommandName,
             });
         }
@@ -321,12 +321,22 @@ public sealed class Plugin : IDalamudPlugin
         var trimmed = args.Trim();
         var split = trimmed.Split(' ', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         var subCommand = split.Length == 0 ? string.Empty : split[0].ToLowerInvariant();
+        var manager = CyberdeckWindow.IsVenueManager();
+
+        // Guests reach the vault from the deck and the games from their zones at the
+        // venue; the shortcuts that open them from anywhere are the managers' alone.
+        // To anyone else they are commands that do not exist.
+        if (ManagerCommands.Contains(subCommand) && !manager)
+        {
+            PrintUnknownCommand(args, manager);
+            return;
+        }
 
         switch (subCommand)
         {
             case "":
                 OpenMainUi();
-                PluginService.Chat.Print("Opening The Grid Cyberdeck. Subcommands: update, repair, config, vault, pool, cards, blackjack, holdem, blackice.", "TheGrid");
+                PluginService.Chat.Print($"Opening The Grid Cyberdeck. Subcommands: {SubcommandList(manager)}.", "TheGrid");
                 break;
             case "update":
                 QueueReconcile(announce: true);
@@ -377,10 +387,24 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 #endif
             default:
-                PluginService.Chat.PrintError($"Unknown command '{args}'. Use /thegrid, /grid, or /cyberdeck with optional update/repair/config/vault/pool/cards/blackjack/holdem/blackice.", "TheGrid");
+                PrintUnknownCommand(args, manager);
                 break;
         }
     }
+
+    /// <summary>Subcommands only the venue managers have; everyone else is told they do not exist.</summary>
+    private static readonly HashSet<string> ManagerCommands = new(StringComparer.Ordinal)
+    {
+        "vault", "pool", "cards", "blackjack", "holdem", "poker", "blackice", "ice",
+    };
+
+    private static string SubcommandList(bool manager)
+        => manager ? "update, repair, config, vault, pool, cards, blackjack, holdem, blackice" : "update, repair, config";
+
+    private static void PrintUnknownCommand(string args, bool manager)
+        => PluginService.Chat.PrintError(
+            $"Unknown command '{args}'. Use /thegrid, /grid, or /cyberdeck with optional {SubcommandList(manager).Replace(", ", "/")}.",
+            "TheGrid");
 
 #if DEBUG
     private void HandleDebugCommand(string args)

@@ -897,7 +897,8 @@ internal sealed partial class CyberdeckWindow
         }
     }
 
-    private static bool IsVenueManager()
+    /// <summary>Whether the character logged in is one of the venue's three managers.</summary>
+    internal static bool IsVenueManager()
     {
         try
         {
